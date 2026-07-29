@@ -1,0 +1,48 @@
+# JavaScript dependencies and local pnpm store
+node_modules/
+.pnpm-store/
+.corepack/
+
+# Rust dependencies cache and build output
+.cargo-home/
+target/
+src-tauri/target/
+
+# Frontend build and test artifacts
+dist/
+coverage/
+
+# Local environment and editor files
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.log
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Sauvegardes locales de la base (volumineuses, non nécessaires au dépôt)
+backups/
+
+# Binaire portable produit par tauri build --no-bundle
+portable/
+
+# Environnement jetable de la conversion ONNX (scripts/export-demucs-onnx.py).
+.venv-export/
+
+# Le modèle de stems est produit par le script d'export et part dans le paquet
+# de release. Les deux petits modèles Beat This font au contraire partie du
+# moteur d'analyse : un clone frais doit pouvoir analyser sans téléchargement.
+src-tauri/resources/models/*
+!src-tauri/resources/models/beat_this_small.onnx
+!src-tauri/resources/models/mel_spectrogram.onnx
+
+# Journaux d'export ONNX : volumineux, propres à une machine.
+scripts/export-logs/
+
+# Bibliothèques ONNX Runtime : récupérées à part, embarquées dans le paquet
+# de release, jamais versionnées ici.
+src-tauri/resources/*.dll

@@ -1,0 +1,1768 @@
+pub mod analysis;
+mod audio;
+mod library;
+mod project;
+mod tempo;
+mod timeline;
+mod transport;
+
+use std::{
+    fs, io,
+    path::Path,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+
+use analysis::{BeatModelPaths, analyze_mp3, analyze_mp3_near, analyze_waveform};
+use audio::{
+    BounceSummary, PreviewEngine, PreviewSnapshot, TimelinePlaybackEngine, bounce_timeline,
+};
+use library::{AnalysisBatchResult, LibraryImportResult, LibraryStore, LibraryTrack};
+use tauri::{Emitter, Manager, State};
+use timeline::TimelineSnapshot;
+use transport::{TimelineTransport, TimelineTransportSnapshot};
+
+type AudioState = Arc<Mutex<PreviewEngine>>;
+type LibraryState = Arc<Mutex<LibraryStore>>;
+type AnalysisState = Arc<AtomicBool>;
+type TimelineTransportState = Arc<Mutex<TimelineTransport>>;
+type TimelinePlaybackState = Arc<Mutex<TimelinePlaybackEngine>>;
+
+fn with_audio_engine(
+    state: &State<'_, AudioState>,
+    operation: impl FnOnce(&mut PreviewEngine) -> Result<PreviewSnapshot, String>,
+) -> Result<PreviewSnapshot, String> {
+    let mut engine = state
+        .lock()
+        .map_err(|_| "The audio engine is in an invalid state.".to_owned())?;
+
+    operation(&mut engine)
+}
+
+#[tauri::command]
+fn load_preview(
+    path: String,
+    state: State<'_, AudioState>,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<PreviewSnapshot, String> {
+    suspend_timeline_audio(&library_state, &playback_state, &transport_state)?;
+    with_audio_engine(&state, |engine| engine.load(path))
+}
+
+fn suspend_timeline_audio(
+    library_state: &State<'_, LibraryState>,
+    playback_state: &State<'_, TimelinePlaybackState>,
+    transport_state: &State<'_, TimelineTransportState>,
+) -> Result<(), String> {
+    let (tempo_map, end_beat) = timeline_timing(library_state)?;
+    {
+        let mut playback = playback_state
+            .lock()
+            .map_err(|_| "The timeline audio engine is in an invalid state.".to_owned())?;
+        playback.pause_if_playing();
+        playback.release_output();
+    }
+    with_timeline_transport(transport_state, |transport| {
+        transport.pause(&tempo_map, end_beat)
+    })?;
+    Ok(())
+}
+
+#[tauri::command]
+fn play_preview(
+    state: State<'_, AudioState>,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<PreviewSnapshot, String> {
+    suspend_timeline_audio(&library_state, &playback_state, &transport_state)?;
+    with_audio_engine(&state, PreviewEngine::play)
+}
+
+#[tauri::command]
+fn pause_preview(state: State<'_, AudioState>) -> Result<PreviewSnapshot, String> {
+    with_audio_engine(&state, PreviewEngine::pause)
+}
+
+#[tauri::command]
+fn stop_preview(state: State<'_, AudioState>) -> Result<PreviewSnapshot, String> {
+    with_audio_engine(&state, PreviewEngine::stop)
+}
+
+#[tauri::command]
+fn seek_preview(position_ms: u64, state: State<'_, AudioState>) -> Result<PreviewSnapshot, String> {
+    with_audio_engine(&state, |engine| engine.seek(position_ms))
+}
+
+#[tauri::command]
+fn preview_snapshot(state: State<'_, AudioState>) -> Result<PreviewSnapshot, String> {
+    with_audio_engine(&state, |engine| Ok(engine.snapshot()))
+}
+
+fn with_library(
+    state: &State<'_, LibraryState>,
+    operation: impl FnOnce(&mut LibraryStore) -> Result<Vec<LibraryTrack>, String>,
+) -> Result<Vec<LibraryTrack>, String> {
+    let mut library = state
+        .lock()
+        .map_err(|_| "The library is in an invalid state.".to_owned())?;
+
+    operation(&mut library)
+}
+
+#[tauri::command]
+fn list_library_tracks(state: State<'_, LibraryState>) -> Result<Vec<LibraryTrack>, String> {
+    with_library(&state, |library| library.list_tracks())
+}
+
+#[tauri::command]
+async fn import_library_paths(
+    paths: Vec<String>,
+    state: State<'_, LibraryState>,
+) -> Result<LibraryImportResult, String> {
+    let library = Arc::clone(state.inner());
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut library = library
+            .lock()
+            .map_err(|_| "The library is in an invalid state.".to_owned())?;
+        library.import_paths(paths)
+    })
+    .await
+    .map_err(|error| format!("The library import failed: {error}"))?
+}
+
+#[tauri::command]
+fn remove_library_track(
+    id: i64,
+    state: State<'_, LibraryState>,
+) -> Result<Vec<LibraryTrack>, String> {
+    with_library(&state, |library| library.remove_track(id))
+}
+
+#[tauri::command]
+fn update_track_beatgrid(
+    id: i64,
+    bpm: f64,
+    first_beat_ms: u64,
+    state: State<'_, LibraryState>,
+) -> Result<Vec<LibraryTrack>, String> {
+    with_library(&state, |library| {
+        library.update_beatgrid_correction(id, bpm, first_beat_ms)
+    })
+}
+
+#[tauri::command]
+fn reset_track_beatgrid(
+    id: i64,
+    state: State<'_, LibraryState>,
+) -> Result<Vec<LibraryTrack>, String> {
+    with_library(&state, |library| library.reset_beatgrid_correction(id))
+}
+
+fn with_timeline(
+    state: &State<'_, LibraryState>,
+    operation: impl FnOnce(&mut rusqlite::Connection) -> Result<TimelineSnapshot, String>,
+) -> Result<TimelineSnapshot, String> {
+    let mut library = state
+        .lock()
+        .map_err(|_| "The library is in an invalid state.".to_owned())?;
+
+    operation(&mut library.connection)
+}
+
+/// Écrit la session courante dans un fichier de projet.
+/// Rend le mix complet dans un fichier WAV, hors ligne.
+///
+/// Le verrou de la bibliothèque n'est tenu que le temps de construire le plan :
+/// le rendu lui-même peut durer des minutes, et l'interface doit rester
+/// vivante. Il part sur un fil bloquant pour la même raison.
+#[tauri::command]
+async fn bounce_mix(
+    path: String,
+    app: tauri::AppHandle,
+    library_state: State<'_, LibraryState>,
+) -> Result<BounceSummary, String> {
+    let plan = {
+        let library = library_state
+            .lock()
+            .map_err(|_| "The library is in an invalid state.".to_owned())?;
+        timeline::render_plan(&library.connection)?
+    };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut report = |fraction: f64| {
+            // Un échec d'émission ne doit pas interrompre un rendu de plusieurs
+            // minutes : au pire la barre cesse d'avancer.
+            let _ = app.emit("bounce-progress", fraction);
+        };
+        bounce_timeline(&plan, std::path::Path::new(&path), &mut report)
+    })
+    .await
+    .map_err(|error| format!("The bounce was interrupted: {error}"))?
+}
+
+/// Où trouver la bibliothèque ONNX et le modèle.
+///
+/// Trois endroits possibles, dans cet ordre : le dossier de ressources du
+/// paquet installé, celui de l'exécutable, et l'arborescence du dépôt pendant
+/// le développement. Une seule de ces pistes marche selon la façon dont le
+/// programme a été lancé, et se tromper donnait « This install is missing its
+/// resources folder » — un message qui accuse l'installation alors que rien
+/// n'est cassé.
+///
+/// L'erreur énumère ce qui a été cherché et où : un chemin manquant se diagnostique
+/// en le lisant, pas en le devinant.
+/// Les deux fichiers lourds, emportés dans l'exécutable.
+///
+/// Compilés seulement avec `--features embed-resources`, pour le paquet
+/// portable : un utilisateur copie un fichier et il fonctionne, sans dossier
+/// à garder à côté ni rien à installer.
+#[cfg(feature = "embed-resources")]
+mod embedded {
+    pub const RUNTIME: &[u8] = include_bytes!("../resources/onnxruntime.dll");
+    pub const PROVIDERS: &[u8] = include_bytes!("../resources/onnxruntime_providers_shared.dll");
+    pub const MODEL: &[u8] = include_bytes!("../resources/models/open-unmix-vocals-fp16.onnx");
+    pub const BEAT_MODEL: &[u8] = include_bytes!("../resources/models/beat_this_small.onnx");
+    pub const MEL_MODEL: &[u8] = include_bytes!("../resources/models/mel_spectrogram.onnx");
+}
+
+/// Dépose les fichiers embarqués à côté de la base, une fois pour toutes.
+///
+/// Écrits une seule fois : les relire à chaque lancement coûterait trente-cinq
+/// mégaoctets de copie pour rien. La taille sert de contrôle — un fichier
+/// tronqué par un disque plein serait réécrit au lancement suivant plutôt que
+/// de faire échouer la séparation sans explication.
+#[cfg(feature = "embed-resources")]
+fn unpack_embedded_resources(folder: &Path) -> Result<(), String> {
+    fs::create_dir_all(folder.join("models"))
+        .map_err(|error| format!("Could not prepare the resources folder: {error}"))?;
+    for (relative, bytes) in [
+        ("onnxruntime.dll", embedded::RUNTIME),
+        ("onnxruntime_providers_shared.dll", embedded::PROVIDERS),
+        ("models/open-unmix-vocals-fp16.onnx", embedded::MODEL),
+        ("models/beat_this_small.onnx", embedded::BEAT_MODEL),
+        ("models/mel_spectrogram.onnx", embedded::MEL_MODEL),
+    ] {
+        let target = folder.join(relative);
+        if target
+            .metadata()
+            .is_ok_and(|data| data.len() == bytes.len() as u64)
+        {
+            continue;
+        }
+        fs::write(&target, bytes)
+            .map_err(|error| format!("Could not unpack {relative}: {error}"))?;
+    }
+    Ok(())
+}
+
+fn resource_folder_candidates(app: &tauri::AppHandle) -> Vec<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(resources) = app.path().resource_dir() {
+        candidates.push(resources.clone());
+        candidates.push(resources.join("resources"));
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(folder) = exe.parent()
+    {
+        candidates.push(folder.to_path_buf());
+        candidates.push(folder.join("resources"));
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(target) = exe.parent().and_then(|folder| folder.parent())
+        && let Some(root) = target.parent()
+    {
+        candidates.push(root.join("resources"));
+    }
+    candidates.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("resources"));
+    candidates.sort();
+    candidates.dedup();
+    candidates
+}
+
+fn beat_analysis_resources(app: &tauri::AppHandle) -> Result<BeatModelPaths, String> {
+    const MEL_MODEL: &str = "mel_spectrogram.onnx";
+    const BEAT_MODEL: &str = "beat_this_small.onnx";
+    let candidates = resource_folder_candidates(app);
+    for folder in &candidates {
+        let mel = folder.join("models").join(MEL_MODEL);
+        let beats = folder.join("models").join(BEAT_MODEL);
+        if mel.is_file() && beats.is_file() {
+            return Ok(BeatModelPaths { mel, beats });
+        }
+    }
+
+    #[cfg(feature = "embed-resources")]
+    if let Ok(data) = app.path().app_data_dir() {
+        let folder = data.join("resources");
+        unpack_embedded_resources(&folder)?;
+        let mel = folder.join("models").join(MEL_MODEL);
+        let beats = folder.join("models").join(BEAT_MODEL);
+        if mel.is_file() && beats.is_file() {
+            return Ok(BeatModelPaths { mel, beats });
+        }
+    }
+
+    let looked = candidates
+        .iter()
+        .map(|folder| folder.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "BPM analysis needs models/{MEL_MODEL} and models/{BEAT_MODEL}. Looked in: {looked}"
+    ))
+}
+
+fn separation_resources(
+    app: &tauri::AppHandle,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    const RUNTIME: &str = "onnxruntime.dll";
+    const MODEL: &str = "open-unmix-vocals-fp16.onnx";
+
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(resources) = app.path().resource_dir() {
+        candidates.push(resources.clone());
+        candidates.push(resources.join("resources"));
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(folder) = exe.parent()
+    {
+        candidates.push(folder.to_path_buf());
+        candidates.push(folder.join("resources"));
+    }
+    // Le dépôt, pendant le développement : l'exécutable est dans
+    // `src-tauri/target/debug`, les ressources trois niveaux plus haut.
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(target) = exe.parent().and_then(|folder| folder.parent())
+        && let Some(root) = target.parent()
+    {
+        candidates.push(root.join("resources"));
+    }
+
+    for folder in &candidates {
+        let runtime = folder.join(RUNTIME);
+        let model = folder.join("models").join(MODEL);
+        if runtime.is_file() && model.is_file() {
+            return Ok((runtime, model));
+        }
+    }
+
+    // Rien à côté de l'exécutable : le portable d'un seul fichier dépose ce
+    // qu'il porte, puis se sert dedans.
+    #[cfg(feature = "embed-resources")]
+    if let Ok(data) = app.path().app_data_dir() {
+        let folder = data.join("resources");
+        unpack_embedded_resources(&folder)?;
+        let runtime = folder.join(RUNTIME);
+        let model = folder.join("models").join(MODEL);
+        if runtime.is_file() && model.is_file() {
+            return Ok((runtime, model));
+        }
+    }
+
+    let looked = candidates
+        .iter()
+        .map(|folder| folder.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "Stem separation needs {RUNTIME} and models/{MODEL}. Looked in: {looked}"
+    ))
+}
+
+/// Sépare un morceau en deux stems, hors ligne.
+///
+/// Comme le bounce : le verrou n'est tenu que le temps de lire le chemin, et le
+/// travail part sur un fil bloquant. Une séparation dure des minutes, et
+/// l'interface doit rester vivante.
+///
+/// La séparation appartient au **morceau**. Elle n'est faite qu'une fois : tous
+/// les clips de ce morceau, présents et futurs, basculeront ensuite sans rien
+/// recalculer.
+#[tauri::command]
+async fn separate_clip_stems(
+    clip_id: i64,
+    app: tauri::AppHandle,
+    library_state: State<'_, LibraryState>,
+) -> Result<TimelineSnapshot, String> {
+    // La fenêtre du clip, en millisecondes de la source : c'est tout ce qui sera
+    // séparé. Elle est lue sous le verrou, puis relâchée — le rendu dure des
+    // minutes.
+    let (source, window) = {
+        let library = library_state
+            .lock()
+            .map_err(|_| "The library is in an invalid state.".to_owned())?;
+        let snapshot = timeline::snapshot(&library.connection)?;
+        let clip = snapshot
+            .clips
+            .iter()
+            .find(|clip| clip.id == clip_id)
+            .ok_or_else(|| "This clip is no longer on the timeline.".to_owned())?;
+        let window = timeline::clip_source_window_ms(clip)
+            .ok_or_else(|| "This track needs its BPM analyzed first.".to_owned())?;
+        (clip.file_path.clone(), window)
+    };
+
+    let (runtime, model) = separation_resources(&app)?;
+    let output_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "This install has nowhere to write its stems.".to_owned())?
+        .join("stems");
+
+    let reporter = app.clone();
+    let files = tauri::async_runtime::spawn_blocking(move || {
+        let mut report = |fraction: f64| {
+            // Comme pour le bounce : un échec d'émission ne doit pas
+            // interrompre un travail de plusieurs minutes.
+            let _ = reporter.emit("stems-progress", fraction);
+        };
+        audio::stems::separate_track(
+            std::path::Path::new(&source),
+            &runtime,
+            &model,
+            &output_dir,
+            Some(window),
+            &format!("clip-{clip_id}"),
+            &mut report,
+        )
+    })
+    .await
+    .map_err(|error| format!("The separation was interrupted: {error}"))??;
+
+    let library = library_state
+        .lock()
+        .map_err(|_| "The library is in an invalid state.".to_owned())?;
+    for (kind, path, peaks) in [
+        ("vocals", files.vocals, files.vocals_waveform),
+        (
+            "instrumental",
+            files.instrumental,
+            files.instrumental_waveform,
+        ),
+    ] {
+        library
+            .connection
+            .execute(
+                "INSERT INTO clip_stems
+                 (clip_id, kind, file_path, source_from_ms, bucket_count,
+                  left_min, left_max, left_rms, right_min, right_max, right_rms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 ON CONFLICT(clip_id, kind) DO UPDATE SET
+                     file_path = excluded.file_path,
+                     source_from_ms = excluded.source_from_ms,
+                     bucket_count = excluded.bucket_count,
+                     left_min = excluded.left_min,
+                     left_max = excluded.left_max,
+                     left_rms = excluded.left_rms,
+                     right_min = excluded.right_min,
+                     right_max = excluded.right_max,
+                     right_rms = excluded.right_rms",
+                rusqlite::params![
+                    clip_id,
+                    kind,
+                    path.to_string_lossy(),
+                    files.source_from_ms.round() as i64,
+                    peaks.left_min.len() as i64,
+                    library::encode_waveform_values(&peaks.left_min),
+                    library::encode_waveform_values(&peaks.left_max),
+                    library::encode_waveform_values(&peaks.left_rms),
+                    library::encode_waveform_values(&peaks.right_min),
+                    library::encode_waveform_values(&peaks.right_max),
+                    library::encode_waveform_values(&peaks.right_rms),
+                ],
+            )
+            .map_err(|error| format!("Could not record the stem: {error}"))?;
+    }
+    timeline::snapshot(&library.connection)
+}
+
+#[tauri::command]
+fn save_project(path: String, library_state: State<'_, LibraryState>) -> Result<(), String> {
+    let library = library_state
+        .lock()
+        .map_err(|_| "The library is in an invalid state.".to_owned())?;
+    project::write_to(&library.connection, std::path::Path::new(&path))
+}
+
+/// Remplace la session courante par celle d'un fichier de projet.
+///
+/// Le moteur audio est arrêté avant l'écriture : reconstruire la timeline sous
+/// une lecture en cours reviendrait à changer le plan pendant qu'il est joué.
+#[tauri::command]
+fn load_project(
+    path: String,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let file = project::read_from(std::path::Path::new(&path))?;
+    suspend_timeline_audio(&library_state, &playback_state, &transport_state)?;
+    with_timeline(&library_state, |connection| {
+        project::apply(connection, &file)?;
+        timeline::snapshot(connection)
+    })
+}
+
+#[tauri::command]
+fn timeline_snapshot(state: State<'_, LibraryState>) -> Result<TimelineSnapshot, String> {
+    with_timeline(&state, |connection| timeline::snapshot(connection))
+}
+
+#[tauri::command]
+fn add_timeline_clip(
+    library_track_id: i64,
+    anchor_beat: Option<f64>,
+    lane: Option<i64>,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::add_clip(connection, library_track_id, anchor_beat, lane)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn move_timeline_clip(
+    clip_id: i64,
+    anchor_beat: f64,
+    lane: i64,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::move_clip(connection, clip_id, anchor_beat, lane)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn trim_timeline_clip(
+    clip_id: i64,
+    trim_start_beats: f64,
+    trim_end_beats: f64,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::set_clip_trim(connection, clip_id, trim_start_beats, trim_end_beats)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn move_timeline_tempo_point(
+    clip_id: i64,
+    tempo_anchor_beat: f64,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::move_tempo_point(connection, clip_id, tempo_anchor_beat)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn remove_timeline_clip(
+    clip_id: i64,
+    state: State<'_, LibraryState>,
+) -> Result<TimelineSnapshot, String> {
+    with_timeline(&state, |connection| {
+        timeline::remove_clip(connection, clip_id)
+    })
+}
+
+fn synchronize_lane_mix(
+    snapshot: &TimelineSnapshot,
+    playback_state: &State<'_, TimelinePlaybackState>,
+) -> Result<(), String> {
+    playback_state
+        .lock()
+        .map_err(|_| "The timeline audio engine is in an invalid state.".to_owned())?
+        .set_audible_lane_mask(timeline::audible_lane_mask(snapshot));
+    Ok(())
+}
+
+#[tauri::command]
+fn set_timeline_lane_muted(
+    lane: i64,
+    is_muted: bool,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+) -> Result<TimelineSnapshot, String> {
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::set_lane_muted(connection, lane, is_muted)
+    })?;
+    synchronize_lane_mix(&snapshot, &playback_state)?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn set_timeline_limiter_enabled(
+    limiter_enabled: bool,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+) -> Result<TimelineSnapshot, String> {
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::set_limiter_enabled(connection, limiter_enabled)
+    })?;
+    // Shared atomically with the queued source, like Mute and Solo: the change
+    // is audible immediately, without rebuilding the plan.
+    playback_state
+        .lock()
+        .map_err(|_| "The timeline audio engine is in an invalid state.".to_owned())?
+        .set_limiter_enabled(snapshot.limiter_enabled);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn set_timeline_compressor_enabled(
+    compressor_enabled: bool,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+) -> Result<TimelineSnapshot, String> {
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::set_compressor_enabled(connection, compressor_enabled)
+    })?;
+    playback_state
+        .lock()
+        .map_err(|_| "The timeline audio engine is in an invalid state.".to_owned())?
+        .set_compressor_enabled(snapshot.compressor_enabled);
+    Ok(snapshot)
+}
+
+/// Naming the key changes which clip is heard, so unlike the master switches
+/// it rebuilds the playback plan rather than flipping an atomic.
+#[tauri::command]
+fn set_timeline_sidechain_key(
+    clip_id: i64,
+    is_key: bool,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::set_sidechain_key(connection, clip_id, is_key)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn set_timeline_lane_solo(
+    lane: i64,
+    is_solo: bool,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+) -> Result<TimelineSnapshot, String> {
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::set_lane_solo(connection, lane, is_solo)
+    })?;
+    synchronize_lane_mix(&snapshot, &playback_state)?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn add_timeline_volume_node(
+    lane: i64,
+    beat: f64,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::add_volume_node(connection, lane, beat)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn move_timeline_volume_node(
+    node_id: i64,
+    beat: f64,
+    gain_db: Option<f64>,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::move_volume_node(connection, node_id, beat, gain_db)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn delete_timeline_volume_node(
+    node_id: i64,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::delete_volume_node(connection, node_id)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+/// Écrit une forme d'automation d'un seul trait.
+///
+/// Les nœuds arrivent calculés par l'interface : la géométrie d'une forme est
+/// la même des deux côtés, et la dupliquer en Rust ferait diverger ce qu'on
+/// voit de ce qu'on entend. Le serveur borne et valide, il ne redessine pas.
+#[tauri::command]
+fn draw_timeline_volume_shape(
+    lane: i64,
+    start_beat: f64,
+    end_beat: f64,
+    nodes: Vec<(f64, f64)>,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::draw_volume_shape(connection, lane, start_beat, end_beat, &nodes)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn draw_timeline_pan_shape(
+    lane: i64,
+    start_beat: f64,
+    end_beat: f64,
+    nodes: Vec<(f64, f64)>,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::draw_pan_shape(connection, lane, start_beat, end_beat, &nodes)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn draw_timeline_filter_stroke(
+    lane: i64,
+    nodes: Vec<(f64, f64)>,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::draw_filter_stroke(connection, lane, &nodes)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn set_timeline_clip_stem(
+    clip_id: i64,
+    stem: String,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::set_clip_stem(connection, clip_id, &stem)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn add_timeline_pan_node(
+    lane: i64,
+    beat: f64,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::add_pan_node(connection, lane, beat)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn move_timeline_pan_node(
+    node_id: i64,
+    beat: f64,
+    value: f64,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::move_pan_node(connection, node_id, beat, value)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn delete_timeline_pan_node(
+    node_id: i64,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::delete_pan_node(connection, node_id)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+// A Tauri command receives its parameters flat, alongside the three pieces of
+// managed state it needs; grouping them would only hide the IPC signature.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+fn draw_timeline_filter_bubble(
+    lane: i64,
+    start_beat: f64,
+    width_beats: f64,
+    value: f64,
+    shape: Option<String>,
+    replaced_start_beat: Option<f64>,
+    replaced_end_beat: Option<f64>,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let replaced_range = replaced_start_beat.zip(replaced_end_beat);
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::draw_filter_bubble(
+            connection,
+            lane,
+            start_beat,
+            width_beats,
+            value,
+            shape,
+            replaced_range,
+        )
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn clear_timeline_filter_range(
+    lane: i64,
+    start_beat: f64,
+    end_beat: f64,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::clear_filter_range(connection, lane, start_beat, end_beat)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn restore_timeline_snapshot(
+    snapshot: TimelineSnapshot,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let restored = with_timeline(&library_state, |connection| {
+        timeline::restore_snapshot(connection, &snapshot)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(restored)
+}
+
+#[tauri::command]
+fn save_clip_eq(
+    clip_id: i64,
+    eq_settings: timeline::ClipEqSettings,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::save_clip_eq(connection, clip_id, &eq_settings)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn split_timeline_clip(
+    clip_id: i64,
+    split_beat: f64,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::split_timeline_clip(connection, clip_id, split_beat)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn clear_timeline(
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::clear_timeline(connection)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+/// Efface la bibliothèque et la timeline d'un coup.
+///
+/// Le moteur est arrêté avant, comme au chargement d'un projet : vider la base
+/// sous une lecture en cours reviendrait à retirer le plan des mains de ce qui
+/// le joue. Les fichiers audio ne sont pas touchés — la bibliothèque les
+/// désigne, elle ne les contient pas.
+#[tauri::command]
+fn clear_library_and_timeline(
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    suspend_timeline_audio(&library_state, &playback_state, &transport_state)?;
+    let library = library_state
+        .lock()
+        .map_err(|_| "The library is in an invalid state.".to_owned())?;
+    library.clear_everything()?;
+    timeline::snapshot(&library.connection)
+}
+
+fn timeline_timing(state: &State<'_, LibraryState>) -> Result<(tempo::TempoMap, f64), String> {
+    let library = state
+        .lock()
+        .map_err(|_| "The library is in an invalid state.".to_owned())?;
+    timeline::project_timing(&library.connection)
+}
+
+fn refresh_live_timeline_after_edit(
+    library_state: &State<'_, LibraryState>,
+    playback_state: &State<'_, TimelinePlaybackState>,
+    transport_state: &State<'_, TimelineTransportState>,
+    previous_timing: (tempo::TempoMap, f64),
+) -> Result<(), String> {
+    let was_playing = playback_state
+        .lock()
+        .map_err(|_| "The timeline audio engine is in an invalid state.".to_owned())?
+        .transport_position(&previous_timing.0, previous_timing.1)
+        .is_some_and(|(_, playing)| playing);
+    if !was_playing {
+        return Ok(());
+    }
+
+    let plan = {
+        let library = library_state
+            .lock()
+            .map_err(|_| "The library is in an invalid state.".to_owned())?;
+        match timeline::render_plan(&library.connection) {
+            Ok(plan) => plan,
+            Err(error) => {
+                // Clearing the timeline, or undoing back to an empty one, leaves
+                // nothing to render. The edit itself already succeeded, so stop
+                // the transport instead of reporting a failure the user cannot act on.
+                let is_empty = timeline::snapshot(&library.connection)
+                    .is_ok_and(|timeline| timeline.clips.is_empty());
+                drop(library);
+                if !is_empty {
+                    return Err(error);
+                }
+                return stop_live_timeline(library_state, playback_state, transport_state);
+            }
+        }
+    };
+    let audio_position = playback_state
+        .lock()
+        .map_err(|_| "The timeline audio engine is in an invalid state.".to_owned())?
+        .refresh_while_playing(&plan, &previous_timing.0, previous_timing.1)?;
+
+    if let Some(position) = audio_position {
+        with_timeline_transport(transport_state, |transport| {
+            transport.synchronize_audio(
+                plan.tempo_map.beat_at_seconds(position.as_secs_f64()),
+                true,
+                plan.end_beat,
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Releases the timeline output and parks the transport at the start.
+/// Used when an edit leaves no clip left to play.
+fn stop_live_timeline(
+    library_state: &State<'_, LibraryState>,
+    playback_state: &State<'_, TimelinePlaybackState>,
+    transport_state: &State<'_, TimelineTransportState>,
+) -> Result<(), String> {
+    let (tempo_map, end_beat) = timeline_timing(library_state)?;
+    {
+        let mut playback = playback_state
+            .lock()
+            .map_err(|_| "The timeline audio engine is in an invalid state.".to_owned())?;
+        playback.pause_if_playing();
+        playback.release_output();
+    }
+    with_timeline_transport(transport_state, |transport| {
+        transport.pause(&tempo_map, end_beat)
+    })?;
+    Ok(())
+}
+
+fn with_timeline_transport(
+    state: &State<'_, TimelineTransportState>,
+    operation: impl FnOnce(&mut TimelineTransport) -> Result<TimelineTransportSnapshot, String>,
+) -> Result<TimelineTransportSnapshot, String> {
+    let mut transport = state
+        .lock()
+        .map_err(|_| "The timeline transport is in an invalid state.".to_owned())?;
+    operation(&mut transport)
+}
+
+#[tauri::command]
+fn timeline_transport_snapshot(
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineTransportSnapshot, String> {
+    let (tempo_map, end_beat) = timeline_timing(&library_state)?;
+    let meter_levels = {
+        let playback = playback_state
+            .lock()
+            .map_err(|_| "The timeline audio engine is in an invalid state.".to_owned())?;
+        playback.meter_levels()
+    };
+    let snapshot = with_timeline_transport(&transport_state, |transport| {
+        transport.snapshot(&tempo_map, end_beat)
+    })?;
+    Ok(snapshot.with_meter(meter_levels.0, meter_levels.1, meter_levels.2))
+}
+
+#[tauri::command]
+async fn play_timeline(
+    library_state: State<'_, LibraryState>,
+    audio_state: State<'_, AudioState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineTransportSnapshot, String> {
+    let plan = {
+        let library = library_state
+            .lock()
+            .map_err(|_| "The library is in an invalid state.".to_owned())?;
+        timeline::render_plan(&library.connection)?
+    };
+    let mut position_beat = {
+        let mut transport = transport_state
+            .lock()
+            .map_err(|_| "The timeline transport is in an invalid state.".to_owned())?;
+        transport.position_beat(&plan.tempo_map, plan.end_beat)?
+    };
+    if position_beat >= plan.end_beat {
+        position_beat = 0.0;
+    }
+    audio_state
+        .lock()
+        .map_err(|_| "The audio engine is in an invalid state.".to_owned())?
+        .release_output();
+
+    let playback = Arc::clone(playback_state.inner());
+    let transport = Arc::clone(transport_state.inner());
+    tauri::async_runtime::spawn_blocking(move || {
+        let target = playback
+            .lock()
+            .map_err(|_| "The timeline audio engine is in an invalid state.".to_owned())?
+            .prepare_and_play(&plan, position_beat)?;
+        transport
+            .lock()
+            .map_err(|_| "The timeline transport is in an invalid state.".to_owned())?
+            .synchronize_audio(
+                plan.tempo_map.beat_at_seconds(target.as_secs_f64()),
+                true,
+                plan.end_beat,
+            )
+    })
+    .await
+    .map_err(|error| format!("Preparing the timeline audio was interrupted: {error}"))?
+}
+
+#[tauri::command]
+fn pause_timeline(
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineTransportSnapshot, String> {
+    let (tempo_map, end_beat) = timeline_timing(&library_state)?;
+    playback_state
+        .lock()
+        .map_err(|_| "The timeline audio engine is in an invalid state.".to_owned())?
+        .pause();
+    with_timeline_transport(&transport_state, |transport| {
+        transport.pause(&tempo_map, end_beat)
+    })
+}
+
+#[tauri::command]
+fn seek_timeline(
+    position_beat: f64,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineTransportSnapshot, String> {
+    let (tempo_map, end_beat) = timeline_timing(&library_state)?;
+    playback_state
+        .lock()
+        .map_err(|_| "The timeline audio engine is in an invalid state.".to_owned())?
+        .seek_if_current(position_beat, &tempo_map, end_beat)?;
+    with_timeline_transport(&transport_state, |transport| {
+        transport.seek(position_beat, end_beat)
+    })
+}
+
+/// Ce qu'un tap corrigé propose. L'utilisateur reste maître de l'appliquer :
+/// la commande ne persiste rien, elle répond.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TempoSuggestion {
+    bpm: f64,
+    first_beat_ms: u64,
+    confidence: f64,
+}
+
+/// Recale un tempo tapé sur celui que portent réellement les kicks.
+///
+/// Le verrou de la bibliothèque n'est tenu que le temps de lire le chemin :
+/// décoder le MP3 prend des secondes, et l'interface doit rester vivante.
+#[tauri::command]
+async fn refine_tapped_tempo(
+    id: i64,
+    tapped_bpm: f64,
+    app: tauri::AppHandle,
+    library_state: State<'_, LibraryState>,
+) -> Result<TempoSuggestion, String> {
+    if !tapped_bpm.is_finite() || tapped_bpm <= 0.0 {
+        return Err("Tap a few more times before snapping to the beat.".to_owned());
+    }
+
+    let path = {
+        let library = library_state
+            .lock()
+            .map_err(|_| "The library is in an invalid state.".to_owned())?;
+        library.track_path(id)?
+    };
+    let models = beat_analysis_resources(&app)?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let analysis = analyze_mp3_near(std::path::Path::new(&path), tapped_bpm, &models)?;
+        Ok(TempoSuggestion {
+            bpm: analysis.bpm,
+            first_beat_ms: analysis.first_beat_ms,
+            confidence: analysis.confidence,
+        })
+    })
+    .await
+    .map_err(|error| format!("Snapping to the kicks was interrupted: {error}"))?
+}
+
+#[tauri::command]
+async fn analyze_library_tracks(
+    ids: Vec<i64>,
+    app: tauri::AppHandle,
+    library_state: State<'_, LibraryState>,
+    analysis_state: State<'_, AnalysisState>,
+) -> Result<AnalysisBatchResult, String> {
+    let models = beat_analysis_resources(&app)?;
+    if analysis_state
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("A BPM analysis is already running.".to_owned());
+    }
+
+    let library = Arc::clone(library_state.inner());
+    let analysis_flag = Arc::clone(analysis_state.inner());
+    let result =
+        tauri::async_runtime::spawn_blocking(move || run_analysis_batch(&library, &ids, &models))
+            .await
+            .map_err(|error| format!("The BPM analysis was interrupted: {error}"));
+    analysis_flag.store(false, Ordering::SeqCst);
+
+    result?
+}
+
+#[tauri::command]
+async fn backfill_library_waveforms(
+    library_state: State<'_, LibraryState>,
+    analysis_state: State<'_, AnalysisState>,
+) -> Result<usize, String> {
+    if analysis_state
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(0);
+    }
+
+    let library = Arc::clone(library_state.inner());
+    let analysis_flag = Arc::clone(analysis_state.inner());
+    let result = tauri::async_runtime::spawn_blocking(move || run_waveform_backfill(&library))
+        .await
+        .map_err(|error| format!("Preparing the waveforms was interrupted: {error}"));
+    analysis_flag.store(false, Ordering::SeqCst);
+
+    result?
+}
+
+fn run_waveform_backfill(library_state: &LibraryState) -> Result<usize, String> {
+    let targets = library_state
+        .lock()
+        .map_err(|_| "The library is in an invalid state.".to_owned())?
+        .library_waveform_targets()?;
+    let mut saved_count = 0;
+
+    for target in targets {
+        let Ok(waveform) = analyze_waveform(&target.file_path) else {
+            continue;
+        };
+        library_state
+            .lock()
+            .map_err(|_| "The library is in an invalid state.".to_owned())?
+            .save_waveform(target.id, &waveform)?;
+        saved_count += 1;
+    }
+
+    Ok(saved_count)
+}
+
+fn run_analysis_batch(
+    library_state: &LibraryState,
+    ids: &[i64],
+    models: &BeatModelPaths,
+) -> Result<AnalysisBatchResult, String> {
+    let targets = {
+        let library = library_state
+            .lock()
+            .map_err(|_| "The library is in an invalid state.".to_owned())?;
+        library.analysis_targets(ids)?
+    };
+    let mut analyzed_count = 0;
+    let mut failed_count = 0;
+
+    for target in targets {
+        {
+            let mut library = library_state
+                .lock()
+                .map_err(|_| "The library is in an invalid state.".to_owned())?;
+            library.mark_analysis_running(target.id)?;
+        }
+
+        match analyze_mp3(&target.file_path, models) {
+            Ok(analysis) => {
+                let mut library = library_state
+                    .lock()
+                    .map_err(|_| "The library is in an invalid state.".to_owned())?;
+                library.save_analysis(target.id, &analysis)?;
+                analyzed_count += 1;
+            }
+            Err(error) => {
+                let library = library_state
+                    .lock()
+                    .map_err(|_| "The library is in an invalid state.".to_owned())?;
+                library.mark_analysis_error(target.id, &error)?;
+                failed_count += 1;
+            }
+        }
+    }
+
+    let tracks = library_state
+        .lock()
+        .map_err(|_| "The library is in an invalid state.".to_owned())?
+        .list_tracks()?;
+
+    Ok(AnalysisBatchResult {
+        tracks,
+        analyzed_count,
+        failed_count,
+    })
+}
+
+/// The bundle identifiers this application shipped under before it became
+/// MixCanvas, newest first.
+///
+/// Two renames, deux dossiers de données possibles. Chercher le plus récent
+/// d'abord : une installation passée par les trois porte les deux anciens
+/// dossiers, et c'est celui de MixCanvas qui contient le travail à jour.
+const LEGACY_IDENTIFIERS: [&str; 2] = ["ca.beatforge.app", "ca.ezdj.app"];
+
+/// The database, plus the write-ahead log and shared-memory index that belong
+/// to it. Carrying the database alone would silently drop every transaction the
+/// last session had not yet checkpointed — on a working library that is most of
+/// an evening's edits.
+const DATABASE_FILES: [&str; 3] = [
+    "library.sqlite3-wal",
+    "library.sqlite3-shm",
+    "library.sqlite3",
+];
+
+/// Brings a library left behind by the previous bundle identifier into the
+/// current data directory.
+///
+/// Tauri derives the data directory from the identifier, so renaming the
+/// application points it at an empty folder: an existing installation would
+/// start up looking as though the whole library had been lost.
+///
+/// The copy runs only when the current folder holds no database of its own, so
+/// it can never overwrite work, and the old folder is left untouched, so a
+/// failure costs nothing. The database itself is copied last: it is what the
+/// guard above tests, so an interrupted copy simply leaves the move to be
+/// retried on the next launch rather than exposing a database without its log.
+///
+/// This can go once no installation predates the rename.
+fn adopt_legacy_library(data_directory: &Path, database_path: &Path) -> io::Result<()> {
+    if database_path.exists() {
+        return Ok(());
+    }
+    let Some(parent) = data_directory.parent() else {
+        return Ok(());
+    };
+
+    for identifier in LEGACY_IDENTIFIERS {
+        let legacy_directory = parent.join(identifier);
+        if !legacy_directory.join("library.sqlite3").is_file() {
+            continue;
+        }
+        for name in DATABASE_FILES {
+            let source = legacy_directory.join(name);
+            if source.is_file() {
+                fs::copy(&source, data_directory.join(name))?;
+            }
+        }
+        // Le premier trouvé gagne : c'est le plus récent des deux.
+        return Ok(());
+    }
+    Ok(())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .manage(Arc::new(Mutex::new(PreviewEngine::default())))
+        .manage(Arc::new(Mutex::new(TimelineTransport::default())))
+        .manage(Arc::new(Mutex::new(TimelinePlaybackEngine::default())))
+        .manage(Arc::new(AtomicBool::new(false)))
+        .setup(|app| {
+            let data_directory = app.path().app_data_dir().map_err(|error| {
+                io::Error::other(format!("The data folder cannot be reached: {error}"))
+            })?;
+            fs::create_dir_all(&data_directory)?;
+
+            let database_path = data_directory.join("library.sqlite3");
+            adopt_legacy_library(&data_directory, &database_path)?;
+            let library = LibraryStore::open(&database_path).map_err(io::Error::other)?;
+            app.manage(Arc::new(Mutex::new(library)));
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            load_preview,
+            play_preview,
+            pause_preview,
+            stop_preview,
+            seek_preview,
+            preview_snapshot,
+            list_library_tracks,
+            import_library_paths,
+            remove_library_track,
+            update_track_beatgrid,
+            refine_tapped_tempo,
+            reset_track_beatgrid,
+            analyze_library_tracks,
+            backfill_library_waveforms,
+            bounce_mix,
+            save_project,
+            load_project,
+            timeline_snapshot,
+            add_timeline_clip,
+            move_timeline_clip,
+            trim_timeline_clip,
+            move_timeline_tempo_point,
+            remove_timeline_clip,
+            set_timeline_lane_muted,
+            set_timeline_lane_solo,
+            set_timeline_limiter_enabled,
+            set_timeline_compressor_enabled,
+            set_timeline_sidechain_key,
+            add_timeline_volume_node,
+            move_timeline_volume_node,
+            delete_timeline_volume_node,
+            draw_timeline_volume_shape,
+            draw_timeline_pan_shape,
+            add_timeline_pan_node,
+            move_timeline_pan_node,
+            delete_timeline_pan_node,
+            draw_timeline_filter_bubble,
+            draw_timeline_filter_stroke,
+            set_timeline_clip_stem,
+            separate_clip_stems,
+            clear_timeline_filter_range,
+            save_clip_eq,
+            split_timeline_clip,
+            clear_timeline,
+            clear_library_and_timeline,
+            restore_timeline_snapshot,
+            timeline_transport_snapshot,
+            play_timeline,
+            pause_timeline,
+            seek_timeline
+        ])
+        .run(tauri::generate_context!())
+        .expect("MixCanvas failed to start");
+}
+
+#[cfg(all(test, feature = "embed-resources"))]
+mod embedded_tests {
+    use super::unpack_embedded_resources;
+
+    /// Le portable d'un seul fichier doit savoir se déballer.
+    #[test]
+    fn the_embedded_resources_land_whole_and_are_written_once() {
+        let dossier = std::env::temp_dir().join(format!(
+            "mixcanvas-embed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("horloge")
+                .as_nanos()
+        ));
+        unpack_embedded_resources(&dossier).expect("le déballage devrait aboutir");
+
+        for (relatif, attendu) in [
+            ("onnxruntime.dll", super::embedded::RUNTIME.len()),
+            (
+                "onnxruntime_providers_shared.dll",
+                super::embedded::PROVIDERS.len(),
+            ),
+            (
+                "models/open-unmix-vocals-fp16.onnx",
+                super::embedded::MODEL.len(),
+            ),
+            (
+                "models/beat_this_small.onnx",
+                super::embedded::BEAT_MODEL.len(),
+            ),
+            (
+                "models/mel_spectrogram.onnx",
+                super::embedded::MEL_MODEL.len(),
+            ),
+        ] {
+            let taille = std::fs::metadata(dossier.join(relatif))
+                .unwrap_or_else(|_| panic!("{relatif} devrait exister"))
+                .len();
+            assert_eq!(taille, attendu as u64, "{relatif} est tronqué");
+        }
+
+        // Deuxième passage : rien n'est réécrit, la date de la copie ne bouge
+        // pas. Trente-cinq mégaoctets recopiés à chaque lancement seraient
+        // payés pour rien.
+        let temoin = dossier.join("onnxruntime.dll");
+        let avant = std::fs::metadata(&temoin).expect("témoin").modified().ok();
+        unpack_embedded_resources(&dossier).expect("le second déballage devrait aboutir");
+        let apres = std::fs::metadata(&temoin).expect("témoin").modified().ok();
+        assert_eq!(avant, apres, "le fichier a été réécrit sans raison");
+
+        // Et un fichier tronqué se refait, plutôt que de faire échouer la
+        // séparation sans explication.
+        std::fs::write(&temoin, b"tronque").expect("écriture");
+        unpack_embedded_resources(&dossier).expect("le rattrapage devrait aboutir");
+        assert_eq!(
+            std::fs::metadata(&temoin).expect("témoin").len(),
+            super::embedded::RUNTIME.len() as u64
+        );
+
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DATABASE_FILES, LEGACY_IDENTIFIERS, adopt_legacy_library};
+    use std::fs;
+
+    /// Two sibling folders under a scratch root, mirroring how the identifier
+    /// decides the data directory's name.
+    fn data_directories(suffix: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let root =
+            std::env::temp_dir().join(format!("mixcanvas-rename-{}-{suffix}", std::process::id()));
+        let current = root.join("ca.mixcanvas.app");
+        // Le plus ancien des deux : si l'adoption sait le trouver, elle sait
+        // aussi trouver l'autre, qui est cherché avant lui.
+        let legacy = root.join(LEGACY_IDENTIFIERS[1]);
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&current).expect("current directory should be created");
+        fs::create_dir_all(&legacy).expect("legacy directory should be created");
+        (current, legacy)
+    }
+
+    /// Deux renommages, deux dossiers possibles : c'est le plus récent qui
+    /// porte le travail à jour, et c'est donc lui qu'il faut reprendre.
+    #[test]
+    fn the_newest_of_two_abandoned_libraries_is_the_one_adopted() {
+        let root =
+            std::env::temp_dir().join(format!("mixcanvas-rename-{}-both", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let current = root.join("ca.mixcanvas.app");
+        fs::create_dir_all(&current).expect("current directory should be created");
+        // Aucun ancien identifiant ne doit être celui d'aujourd'hui : sans cette
+        // garde, un remplacement global mal ciblé rendait la liste inutile tout
+        // en laissant ce test passer, les deux dossiers n'en faisant qu'un.
+        assert!(
+            !LEGACY_IDENTIFIERS.contains(&"ca.mixcanvas.app"),
+            "un identifiant hérité ne peut pas être l'identifiant courant"
+        );
+        for (identifier, mark) in [
+            (LEGACY_IDENTIFIERS[0], b"mixcanvas"),
+            (LEGACY_IDENTIFIERS[1], b"ezdj----."),
+        ] {
+            let folder = root.join(identifier);
+            fs::create_dir_all(&folder).expect("legacy directory should be created");
+            fs::write(folder.join("library.sqlite3"), mark).expect("library should be written");
+        }
+
+        let database = current.join("library.sqlite3");
+        adopt_legacy_library(&current, &database).expect("adoption should succeed");
+
+        assert_eq!(
+            fs::read(&database).expect("database should read"),
+            b"mixcanvas",
+            "l'installation la plus récente doit gagner"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn seed_legacy(legacy: &std::path::Path) {
+        for name in DATABASE_FILES {
+            fs::write(legacy.join(name), name.as_bytes()).expect("legacy file should be written");
+        }
+    }
+
+    #[test]
+    fn a_library_left_by_the_old_name_is_adopted_with_its_write_ahead_log() {
+        let (current, legacy) = data_directories("adopt");
+        seed_legacy(&legacy);
+
+        let database = current.join("library.sqlite3");
+        adopt_legacy_library(&current, &database).expect("adoption should succeed");
+
+        for name in DATABASE_FILES {
+            let carried = fs::read(current.join(name)).expect("file should have been carried over");
+            assert_eq!(carried, name.as_bytes(), "{name} should arrive intact");
+        }
+        // Nothing is destroyed: a failed launch must not cost the only copy.
+        assert!(legacy.join("library.sqlite3").is_file());
+
+        let _ = fs::remove_dir_all(current.parent().expect("root should exist"));
+    }
+
+    #[test]
+    fn an_existing_library_is_never_overwritten() {
+        let (current, legacy) = data_directories("keep");
+        seed_legacy(&legacy);
+        let database = current.join("library.sqlite3");
+        fs::write(&database, b"the library already here").expect("database should be written");
+
+        adopt_legacy_library(&current, &database).expect("adoption should succeed");
+
+        assert_eq!(
+            fs::read(&database).expect("database should read"),
+            b"the library already here",
+            "an installation that already has a library must keep it"
+        );
+
+        let _ = fs::remove_dir_all(current.parent().expect("root should exist"));
+    }
+
+    #[test]
+    fn a_fresh_installation_finds_nothing_to_adopt_and_says_so_quietly() {
+        let (current, _legacy) = data_directories("fresh");
+        let database = current.join("library.sqlite3");
+
+        adopt_legacy_library(&current, &database).expect("adoption should succeed");
+
+        assert!(
+            !database.exists(),
+            "nothing should be invented out of thin air"
+        );
+
+        let _ = fs::remove_dir_all(current.parent().expect("root should exist"));
+    }
+
+    #[test]
+    fn the_database_is_carried_last_so_an_interrupted_copy_retries_cleanly() {
+        // The guard tests the database, so it has to arrive after the log it
+        // depends on. Were the order reversed, an interrupted copy would leave
+        // a database that the next launch would open without its log.
+        assert_eq!(
+            DATABASE_FILES.last(),
+            Some(&"library.sqlite3"),
+            "the database must be the last file copied"
+        );
+    }
+}

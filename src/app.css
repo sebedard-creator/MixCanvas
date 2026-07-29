@@ -1,0 +1,5167 @@
+:root{
+  color: #f4f5f7;
+  background: #090b10;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+*{
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root{
+  min-width: 320px;
+  min-height: 100%;
+  margin: 0;
+}
+
+body{
+  min-height: 100vh;
+  overflow-x: hidden;
+  background:
+    radial-gradient(circle at 82% 14%, rgba(116, 89, 255, 0.14), transparent 34%),
+    radial-gradient(circle at 12% 88%, rgba(25, 215, 163, 0.08), transparent 32%),
+    #090b10;
+}
+
+button{
+  color: inherit;
+  font: inherit;
+}
+
+button:focus-visible{
+  outline: 2px solid #8f78ff;
+  outline-offset: 3px;
+}
+
+.app-shell{
+  width: min(1180px, calc(100% - 64px));
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 28px 0 24px;
+}
+
+.transport{
+  display: flex;
+  align-items: center;
+}
+
+/* Every place that renders these overrides them. The default follows its
+   container rather than naming a colour: the panels are not all light, so any
+   fixed value would be unreadable on half of them — the retired purple was, and
+   so would a navy be. */
+.eyebrow{
+  margin: 0 0 10px;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+h1,
+h2,
+p{
+  margin-top: 0;
+}
+
+h1{
+  max-width: 660px;
+  margin-bottom: 14px;
+  font-size: clamp(36px, 5vw, 64px);
+  font-weight: 640;
+  letter-spacing: -0.055em;
+  line-height: 0.98;
+}
+
+.primary-button,
+.secondary-button,
+.bpm-value{
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+  transition:
+    transform 140ms ease,
+    border-color 140ms ease,
+    background 140ms ease;
+}
+
+.primary-button{
+  flex: 0 0 auto;
+  min-width: 164px;
+  padding: 13px 18px;
+  /* The app's primary treatment: night-blue with white text, which reads on a
+     light panel and on a dark one alike. */
+  color: #ffffff;
+  background: linear-gradient(180deg, #152c4e 0%, #0a192f 100%);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.primary-button:hover:not(:disabled),
+.secondary-button:hover:not(:disabled),
+.bpm-value:hover:not(:disabled){
+  transform: translateY(-1px);
+}
+
+button:disabled{
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.secondary-button{
+  padding: 12px 15px;
+  border: 1px solid #2a303d;
+  color: #b4b9c4;
+  background: #171b24;
+  font-size: 12px;
+}
+
+.library-panel{
+  margin-bottom: 24px;
+  overflow: hidden;
+  border: 1px solid #282c35;
+  border-top-color: #383e4a;
+  border-bottom-color: #161820;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #181b22 0%, #101217 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.07),
+    0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.library-header{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 14px 20px;
+  border-bottom: 1px solid #282c35;
+  background: linear-gradient(180deg, #1f232d 0%, #151821 100%);
+}
+
+.library-header .eyebrow{
+  margin-bottom: 4px;
+  color: #788192;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.library-title-row,
+.library-actions,
+.library-track-cell,
+.library-empty{
+  display: flex;
+  align-items: center;
+}
+
+.library-title-row{
+  gap: 9px;
+}
+
+.library-title-row h2{
+  margin: 0;
+  color: #f5f2eb;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 15px;
+  font-weight: 850;
+  letter-spacing: 0.14em;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.9);
+}
+
+.track-count{
+  display: grid;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 6px;
+  place-items: center;
+  border: 1px solid #222630;
+  border-radius: 4px;
+  color: #a2abbc;
+  background: #0d0f13;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.85);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.library-actions{
+  gap: 9px;
+}
+
+/* A confirmation strip on the panel's dark body. It keeps the turquoise the
+   design already uses for tempo targets as its accent, but carries its text in
+   the panel's cream so a long sentence stays readable. */
+.library-message{
+  margin: 0;
+  padding: 10px 26px;
+  border-top: 1px solid rgba(76, 215, 174, 0.22);
+  border-bottom: 1px solid rgba(76, 215, 174, 0.22);
+  color: #f5f2eb;
+  background: rgba(76, 215, 174, 0.07);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+}
+
+/* The Library panel body is dark, unlike the aluminium controls it holds, so
+   this block takes the panel's own cream-on-anthracite palette. */
+.library-empty{
+  justify-content: center;
+  gap: 14px;
+  min-height: 150px;
+  padding: 30px;
+  color: #a2abbc;
+}
+
+.library-empty-icon{
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid #2a2f3a;
+  border-top-color: #3a4150;
+  border-radius: 6px;
+  color: #f5f2eb;
+  background: #0d0f13;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5);
+  font-size: 19px;
+}
+
+.library-empty strong{
+  display: block;
+  margin-bottom: 4px;
+  color: #f5f2eb;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.library-empty p{
+  margin: 0;
+  color: #8b94a6;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  letter-spacing: 0.03em;
+}
+
+.library-table{
+  max-height: 370px;
+  overflow: auto;
+}
+
+.library-table-header,
+.library-row{
+  display: grid;
+  grid-template-columns: minmax(280px, 1.8fr) 72px minmax(140px, 0.8fr) 94px 176px;
+  align-items: center;
+  column-gap: 18px;
+}
+
+.library-table-header{
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  padding: 9px 20px;
+  border-bottom: 1px solid #242936;
+  color: #606673;
+  background: #11141b;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.library-row{
+  min-height: 66px;
+  padding: 10px 20px;
+  border-bottom: 1px solid rgba(37, 42, 54, 0.72);
+  transition: background 140ms ease;
+}
+
+.library-row:last-child{
+  border-bottom: 0;
+}
+
+.library-row:hover{
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.library-row--active{
+  background: #cbd3e0;
+  box-shadow: none;
+}
+
+.library-row--in-use{
+  background:
+    repeating-linear-gradient(
+      45deg,
+      rgba(15, 36, 66, 0.09) 0px,
+      rgba(15, 36, 66, 0.09) 3px,
+      transparent 3px,
+      transparent 8px
+    ),
+    #e6eaef !important;
+  box-shadow: none;
+}
+
+.library-row--active.library-row--in-use{
+  background:
+    repeating-linear-gradient(
+      45deg,
+      rgba(15, 36, 66, 0.15) 0px,
+      rgba(15, 36, 66, 0.15) 3px,
+      transparent 3px,
+      transparent 8px
+    ),
+    #b9c3d4 !important;
+  box-shadow: none;
+}
+
+.library-row--missing{
+  opacity: 0.62;
+}
+
+.library-track-cell{
+  min-width: 0;
+  gap: 11px;
+}
+
+.timeline-drag-handle{
+  display: grid;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
+  border: 1px dashed rgba(76, 215, 174, 0.3);
+  border-radius: 8px;
+  color: #77cbb2;
+  background: rgba(38, 131, 104, 0.08);
+  cursor: grab;
+  font-size: 14px;
+  touch-action: none;
+  user-select: none;
+}
+
+.timeline-drag-handle:hover:not(:disabled){
+  border-style: solid;
+  background: rgba(38, 131, 104, 0.15);
+}
+
+.timeline-drag-handle:active:not(:disabled){
+  cursor: grabbing;
+}
+
+.library-track-cell > div{
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 4px;
+}
+
+.library-track-cell strong,
+.library-track-cell > div > span{
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-track-cell strong{
+  color: #d3d6dc;
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.library-track-cell > div > span{
+  color: #626875;
+  font-size: 9px;
+}
+
+/* Le nom écoute le morceau. Il garde l'aspect d'un titre — c'en est un — et ne
+   se donne qu'au survol, par un soulignement. Le déguiser en bouton alourdirait
+   une liste dont chaque rangée en porte déjà trois.
+   Un soulignement plutôt qu'un changement de couleur : cette liste se dessine
+   sur deux fonds selon la disposition, clair dans l'application et sombre en
+   panneau seul, et une couleur juste sur l'un disparaît sur l'autre. */
+.library-track-name{
+  cursor: pointer;
+}
+
+.library-track-name:not([aria-disabled="true"]):hover,
+.library-track-name:not([aria-disabled="true"]):focus-visible{
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  outline: none;
+}
+
+.library-track-name[aria-disabled="true"]{
+  cursor: default;
+}
+
+.bpm-cell{
+  color: #898f9b;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+}
+
+.bpm-cell{
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.bpm-value{
+  min-width: 76px;
+  padding: 4px 7px;
+  border: 1px solid #222630;
+  border-radius: 4px;
+  color: #f5f2eb;
+  background: #0d0f13;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.85);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.bpm-value{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  text-align: center;
+}
+
+.bpm-value strong{
+  font-size: 11px;
+  font-weight: 800;
+  color: #f5f2eb;
+}
+
+.bpm-value span{
+  color: #788192;
+  font-size: 7px;
+}
+
+.bpm-value--uncertain{
+  border-color: #343a49;
+  color: #7b8495;
+  background: #151821;
+}
+
+.bpm-value--manual{
+  border-color: #4b6654;
+  color: #f5f2eb;
+  background: #18261e;
+}
+
+.bpm-value--manual span{
+  color: #a3c4ae;
+}
+
+.analysis-running{
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-radius: 4px;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  box-shadow: inset 0 1px 0 #ffffff;
+  color: #1e3a63;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.analysis-running > span{
+  width: 7px;
+  height: 7px;
+  border: 1px solid rgba(30, 58, 99, 0.25);
+  border-top-color: #152c4e;
+  border-radius: 50%;
+  animation: analysis-spin 700ms linear infinite;
+}
+
+@keyframes analysis-spin{
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.beatgrid-editor{
+  margin-bottom: 24px;
+  overflow: hidden;
+  border: 1px solid rgba(155, 135, 255, 0.3);
+  border-radius: 18px;
+  background:
+    linear-gradient(145deg, rgba(125, 101, 244, 0.08), transparent 40%),
+    rgba(15, 18, 25, 0.94);
+  box-shadow: 0 20px 64px rgba(0, 0, 0, 0.22);
+}
+
+.beatgrid-editor-header,
+.beatgrid-editor-footer,
+.beatgrid-header-actions,
+.bpm-edit-row,
+.first-beat-row{
+  display: flex;
+  align-items: center;
+}
+
+.beatgrid-editor-header{
+  justify-content: space-between;
+  gap: 24px;
+  padding: 22px 26px;
+  border-bottom: 1px solid #292e3a;
+}
+
+.beatgrid-editor-header .eyebrow{
+  margin-bottom: 6px;
+}
+
+.beatgrid-editor-header h2{
+  max-width: 720px;
+  margin-bottom: 5px;
+  overflow: hidden;
+  font-size: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.beatgrid-editor-header p:last-child{
+  max-width: 760px;
+  margin: 0;
+  overflow: hidden;
+  color: #686e7a;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.beatgrid-header-actions{
+  gap: 10px;
+}
+
+.manual-badge{
+  padding: 4px 7px;
+  border-radius: 999px;
+  color: #79cdb5;
+  background: rgba(38, 131, 104, 0.13);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.editor-close-button{
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid #303645;
+  border-radius: 9px;
+  color: #8a909c;
+  background: #171b24;
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.beatgrid-editor-body{
+  display: grid;
+  grid-template-columns: 1fr 1.25fr;
+  gap: 36px;
+  padding: 26px;
+}
+
+.beatgrid-field-group{
+  min-width: 0;
+}
+
+.beatgrid-field-group > label{
+  display: block;
+  margin-bottom: 9px;
+  color: #8d93a0;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.beatgrid-field-group > p{
+  margin: 9px 0 0;
+  color: #676d79;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.bpm-edit-row,
+.first-beat-row{
+  gap: 7px;
+}
+
+.bpm-edit-row input,
+.seconds-input input{
+  min-width: 0;
+  height: 38px;
+  border: 1px solid #333948;
+  border-radius: 9px;
+  color: #e0e2e7;
+  background: #11141b;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
+.bpm-edit-row input{
+  width: 112px;
+  padding: 0 10px;
+}
+
+.bpm-edit-row > button,
+.bpm-edit-row .tempo-assist > button,
+.first-beat-row > button,
+.text-button{
+  height: 38px;
+  padding: 0 11px;
+  border: 1px solid #303645;
+  border-radius: 9px;
+  color: #a7acb7;
+  background: #171b24;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.bpm-edit-row > button:hover:not(:disabled),
+.first-beat-row > button:hover:not(:disabled),
+.text-button:hover:not(:disabled){
+  border-color: #484f61;
+  background: #1c212c;
+}
+
+/* Le mauve de l'ancienne palette tenait encore ici, hors d'atteinte d'un
+   balayage de classes mortes puisque celle-ci est bien employée. */
+.tap-tempo-button{
+  display: grid;
+  min-width: 68px;
+  height: 42px;
+  place-content: center;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.tap-tempo-button span{
+  margin-top: 3px;
+  color: #5a6879;
+  font-size: 7px;
+  font-weight: 500;
+}
+
+/* Les deux boutons sont un seul geste en deux temps. Le cadre et la flèche le
+   disent avant que l'utilisateur ait à le deviner. */
+.tempo-assist{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #a0acbe;
+  border-radius: 8px;
+  /* Un aplat gris bleu pâle, de la même famille que les plaques du programme.
+     La trame diagonale essayée d'abord chargeait trop la zone : le bouton
+     rubis y suffit, et deux motifs qui se disputent l'œil n'en désignent
+     aucun. Le fond ne bouge pas quand le groupe s'arme — seuls le liseré, la
+     flèche et le bouton le font. */
+  background: #dce0e6;
+  transition: border-color 120ms ease;
+}
+
+
+.tempo-assist-arrow{
+  color: #8894a8;
+  font-size: 12px;
+  line-height: 1;
+  transition: color 120ms ease;
+}
+
+/* Le groupe ne change pas d'apparence après un tap : ni le cadre, ni la
+   flèche, ni le bouton. Le repère est la consigne dessous, qui change de
+   phrase. Une commande qui se repeint à chaque geste fatigue plus qu'elle
+   n'informe, et `Tap` porte déjà le rubis de l'interface.
+
+   Le sélecteur reste plus lourd que `.bpm-edit-row .tempo-assist > button`,
+   faute de quoi la règle générique de la rangée écraserait la mise en page. */
+.bpm-edit-row .tempo-assist > .snap-kicks-button{
+  display: grid;
+  place-content: center;
+  min-width: 96px;
+  line-height: 1;
+}
+
+.bpm-edit-row .tempo-assist > .snap-kicks-button:disabled{
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Des phrases, pas des étiquettes : la monospace du programme sert aux valeurs
+   et aux libellés courts. Le bleu marine est celui des autres paragraphes de
+   l'éditeur, sur le panneau `#dce0e6` de son corps — et non sur la coque
+   sombre qui l'entoure, que j'avais prise pour le fond. Le sélecteur nomme le
+   groupe pour passer devant `.beatgrid-field-group > p`. */
+.beatgrid-field-group > .snap-kicks-note,
+.beatgrid-field-group > .tempo-assist-hint{
+  margin: 7px 0 0;
+  max-width: 46ch;
+  color: #2c3e55;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.seconds-input{
+  position: relative;
+  width: 128px;
+}
+
+.seconds-input input{
+  width: 100%;
+  padding: 0 50px 0 10px;
+}
+
+.seconds-input span{
+  position: absolute;
+  top: 50%;
+  right: 9px;
+  color: #5f6572;
+  font-size: 8px;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.capture-beat-button{
+  flex: 1;
+  border-color: rgba(76, 215, 174, 0.25) !important;
+  color: #94d5c2 !important;
+  background: rgba(38, 131, 104, 0.08) !important;
+}
+
+.beatgrid-editor-footer{
+  justify-content: space-between;
+  gap: 24px;
+  padding: 17px 26px;
+  border-top: 1px solid #292e3a;
+  background: rgba(11, 13, 18, 0.45);
+}
+
+.beatgrid-editor-footer > div{
+  display: flex;
+  gap: 7px;
+}
+
+.text-button{
+  height: 34px;
+  border-color: transparent;
+  color: #777d89;
+  background: transparent;
+}
+
+.timeline-panel{
+  margin-bottom: 24px;
+  overflow: hidden;
+  border: 1px solid #252a36;
+  border-radius: 18px;
+  background: rgba(15, 18, 25, 0.92);
+  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.24);
+}
+
+.timeline-header,
+.timeline-controls,
+.project-bpm-control,
+.clip-heading{
+  display: flex;
+  align-items: center;
+}
+
+.timeline-header{
+  justify-content: space-between;
+  gap: 14px;
+  padding: 22px 16px 18px;
+}
+
+.timeline-header .eyebrow{
+  margin-bottom: 6px;
+}
+
+.timeline-controls{
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.project-bpm-control{
+  gap: 8px;
+  height: 38px;
+  padding: 0 9px;
+  border: 1px solid #303645;
+  border-radius: 9px;
+  color: #747b88;
+  background: #11141b;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.timeline-scroll{
+  /*
+   * WebView2 can commit a native horizontal scroll on the compositor thread
+   * before the non-passive wheel handler turns that gesture into zoom. The
+   * React commit then recentres the playhead, exposing the native scroll for
+   * one frame. Hidden overflow keeps programmatic scrollLeft available while
+   * removing that competing native wheel-scroll path.
+   */
+  overflow-x: hidden;
+  overflow-y: hidden;
+  overflow-anchor: none;
+  border-top: 1px solid #252a36;
+  scrollbar-color: #3c4352 #11141b;
+  scrollbar-width: thin;
+}
+
+.timeline-content{
+  position: relative;
+  min-height: 202px;
+}
+
+.timeline-ruler{
+  position: relative;
+  height: 34px;
+  border-bottom: 1px solid #282e3a;
+  color: #646b78;
+  background: #11141b;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+}
+
+.timeline-tempo-curve{
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.timeline-tempo-curve path{
+  fill: none;
+  stroke: rgba(76, 215, 174, 0.78);
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+}
+
+.timeline-tempo-curve circle{
+  fill: #4cd7ae;
+  stroke: #10231f;
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+}
+
+.timeline-tempo-curve .timeline-tempo-drag-surface{
+  pointer-events: all;
+  fill: transparent;
+  stroke: transparent;
+  cursor: grab;
+}
+
+.timeline-tempo-curve .timeline-tempo-drag-surface:active{
+  cursor: grabbing;
+}
+
+.timeline-tempo-curve text{
+  fill: #0f2442;
+  stroke: none;
+  stroke-width: 0;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8.5px;
+  font-weight: 500;
+}
+
+.measure-marker{
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  min-width: 24px;
+  padding: 8px 0 0 6px;
+  border-left: 1px solid #343b49;
+}
+
+.timeline-tracks{
+  position: relative;
+  height: 168px;
+  overflow: hidden;
+}
+
+.timeline-lane{
+  position: relative;
+  height: calc(100% / 3);
+  overflow: hidden;
+  border-bottom: 1px solid rgba(132, 140, 156, 0.16);
+  background-color: #0d1016;
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent calc(var(--beat-width) - 1px),
+      rgba(122, 130, 146, 0.11) calc(var(--beat-width) - 1px),
+      rgba(122, 130, 146, 0.11) var(--beat-width)
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent calc(var(--measure-width) - 1px),
+      rgba(155, 135, 255, 0.2) calc(var(--measure-width) - 1px),
+      rgba(155, 135, 255, 0.2) var(--measure-width)
+    );
+}
+
+.timeline-lane:last-of-type{
+  border-bottom: 0;
+}
+
+.timeline-lane::before{
+  position: absolute;
+  top: 50%;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: rgba(132, 140, 156, 0.13);
+  content: "";
+}
+
+.timeline-body{
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  grid-template-columns: 42px minmax(0, 1fr);
+  overflow: hidden;
+  border-top: 1px solid #252a36;
+}
+
+.timeline-lane--inaudible{
+  background-color: #0a0c11;
+}
+
+.timeline-lane--compressed{
+  background-image: none;
+}
+
+.timeline-lane--busy{
+  cursor: progress;
+}
+
+/* Ruby is what this interface uses for anything live — the playhead, the volume
+   nodes, the lit LEDs. An armed drop target belongs to that family, so it
+   borrows the same accent instead of the mint green left over from the previous
+   palette. The lane keeps its own background: the outline is what arms it, not a
+   tint that would fight the waveform underneath. */
+.timeline-lane--drop-target{
+  box-shadow:
+    inset 0 0 0 2px rgba(220, 38, 38, 0.78),
+    inset 0 0 34px rgba(220, 38, 38, 0.12);
+}
+
+.timeline-lane--drop-target::after{
+  position: absolute;
+  z-index: 2;
+  top: 7px;
+  right: 10px;
+  padding: 3px 7px;
+  border: 1px solid rgba(220, 38, 38, 0.5);
+  border-radius: 999px;
+  color: #fca5a5;
+  background: rgba(20, 10, 12, 0.92);
+  content: "Drop here";
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* The label that trails the cursor is an aluminium chip like the context
+   menus: while it hangs over nothing in particular it stays neutral. */
+.timeline-pointer-drag-ghost{
+  position: fixed;
+  z-index: 100;
+  padding: 6px 9px;
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #a0acbe;
+  border-radius: 6px;
+  color: #0f2442;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1.5px 0 #a0acbe,
+    0 8px 20px rgba(15, 36, 66, 0.28);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* Over a lane it lights up in the same ruby as the lane it is pointing at, so
+   the cursor and the target say the same thing. */
+.timeline-pointer-drag-ghost.is-over-timeline{
+  border-color: #7f1d1d;
+  border-top-color: #ef4444;
+  border-bottom-color: #7f1d1d;
+  color: #ffffff;
+  background: linear-gradient(180deg, #dc2626 0%, #991b1b 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    0 1.5px 0 #7f1d1d,
+    0 8px 20px rgba(120, 15, 15, 0.4);
+}
+
+.timeline-empty{
+  position: absolute;
+  z-index: 0;
+  top: 50%;
+  left: 28px;
+  display: grid;
+  gap: 6px;
+  color: #828996;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.timeline-empty strong{
+  color: #aab0bb;
+  font-size: 12px;
+}
+
+.timeline-empty span{
+  font-size: 9px;
+}
+
+.timeline-clip{
+  /* Height of the title strip. The waveform is laid out from it, so the two
+     stay in step instead of drifting apart as separate magic numbers. */
+  --clip-heading-height: 18px;
+  position: absolute;
+  z-index: 1;
+  height: calc(100% / 3 - 14px);
+  overflow: hidden;
+  border: 1px solid #383b42;
+  border-radius: 6px;
+  color: #fdfbf7;
+  background: #212328;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.timeline-clip:active{
+  z-index: 3;
+  cursor: grabbing;
+  border-color: var(--accent-amber, #d97706);
+}
+
+/* Trim tool. The bracket cursors are served as files rather than data URIs
+   because the application's CSP allows images from 'self' only, and a cursor
+   counts as an image. The hotspot sits on the bracket's upright, so the edge
+   lands where the cursor says it will. `ew-resize` is the fallback if the file
+   is ever missing. */
+.timeline-clip--trim-start,
+.timeline-clip--trim-start:active{
+  cursor: url("/cursors/trim-start.svg") 9 12, ew-resize;
+}
+
+.timeline-clip--trim-end,
+.timeline-clip--trim-end:active{
+  cursor: url("/cursors/trim-end.svg") 15 12, ew-resize;
+}
+
+/* The armed edge lights up, so it is clear which end the drag will take before
+   the button goes down. */
+.timeline-clip--trim-start{
+  box-shadow:
+    inset 3px 0 0 #dc2626,
+    0 4px 12px rgba(0, 0, 0, 0.16);
+}
+
+.timeline-clip--trim-end{
+  box-shadow:
+    inset -3px 0 0 #dc2626,
+    0 4px 12px rgba(0, 0, 0, 0.16);
+}
+
+.timeline-clip--missing,
+.timeline-clip--invalid{
+  border-color: #ef4444;
+  background: #451a1a;
+}
+
+.timeline-clip--inaudible{
+  opacity: 0.38;
+}
+
+.clip-heading{
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 34px;
+  padding: 0 9px;
+  border-bottom: 1px solid #2f3238;
+  background: #181a1f;
+}
+
+.clip-title{
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: #fdfbf7;
+  font-size: 10px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clip-heading-actions{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.clip-heading button:hover:not(:disabled){
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.clip-waveform{
+  position: absolute;
+  inset: var(--clip-heading-height, 18px) 8px 6px;
+  width: calc(100% - 16px);
+  height: calc(100% - var(--clip-heading-height, 18px) - 6px);
+  opacity: 1;
+  overflow: visible;
+}
+
+.clip-waveform-peak{
+  fill: rgba(156, 139, 226, 0.25);
+  stroke: rgba(195, 184, 245, 0.76);
+  stroke-width: 0.65px;
+  vector-effect: non-scaling-stroke;
+}
+
+.clip-waveform-rms{
+  fill: rgba(126, 106, 206, 0.7);
+  vector-effect: non-scaling-stroke;
+}
+
+.clip-waveform-zero{
+  stroke: rgba(212, 205, 241, 0.16);
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+}
+
+.clip-waveform--pending{
+  border-top: 1px solid rgba(145, 131, 214, 0.18);
+  border-bottom: 1px solid rgba(145, 131, 214, 0.18);
+  opacity: 0.45;
+}
+
+.clip-anchor{
+  position: absolute;
+  z-index: 2;
+  top: var(--clip-heading-height, 18px);
+  bottom: 0;
+  left: var(--anchor-offset);
+  width: 2px;
+  background: #dc2626;
+  box-shadow: 0 0 6px rgba(220, 38, 38, 0.4);
+}
+
+@keyframes idle-wave{
+  0%,
+  100% {
+    transform: scaleY(0.72);
+    opacity: 0.68;
+  }
+
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+.transport{
+  gap: 10px;
+}
+
+/* Opaque, and dark enough to carry white text. It used to be a 30% wash of red
+   with dusty pink type: whatever it landed on showed through, and over a light
+   panel that left red on red. A message worth interrupting the user for has to
+   be readable wherever it appears. */
+.error-banner{
+  position: relative;
+  display: grid;
+  gap: 4px;
+  margin-top: 16px;
+  padding: 14px 44px 14px 16px;
+  border: 1px solid #a52020;
+  border-top-color: #d13a2c;
+  border-radius: 8px;
+  color: #ffffff;
+  background: linear-gradient(180deg, #8f1d1d 0%, #7a1616 100%);
+  font-size: 12px;
+}
+
+.error-banner strong{
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.error-banner span{
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.error-banner button{
+  position: absolute;
+  top: 9px;
+  right: 10px;
+  border: 0;
+  color: rgba(255, 255, 255, 0.7);
+  background: transparent;
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.error-banner button:hover{
+  color: #ffffff;
+}
+
+@media (max-width: 850px) {
+  .app-shell{
+    width: min(100% - 32px, 720px);
+  }
+
+  .library-header{
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .timeline-header{
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .library-table-header,
+.library-row{
+    min-width: 900px;
+  }
+
+  .beatgrid-editor-body{
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+
+}
+
+@media (max-width: 520px) {
+  .app-shell{
+    width: min(100% - 24px, 480px);
+  }
+
+  .library-actions{
+    align-items: stretch;
+    flex-direction: column-reverse;
+    width: 100%;
+  }
+
+  .timeline-controls{
+    align-items: stretch;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .library-actions button{
+    width: 100%;
+  }
+
+  .beatgrid-editor-header,
+.beatgrid-editor-footer,
+.first-beat-row{
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .beatgrid-editor-footer > div,
+.beatgrid-editor-footer .primary-button,
+.seconds-input{
+    width: 100%;
+  }
+
+  .beatgrid-editor-footer > div{
+    flex-direction: column;
+  }
+
+  .transport{
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .transport-button{
+    justify-content: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+*::before,
+*::after{
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Poste de travail plein écran — la fenêtre elle-même ne défile jamais. */
+html,
+body,
+#root{
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.app-shell{
+  width: 100%;
+  height: 100vh;
+  min-height: 0;
+  margin: 0;
+  padding: 12px;
+  overflow: hidden;
+}
+
+/* The library takes only what it needs and the timeline gets the rest. 316px is
+   close to the floor: the header's title row — name, count, Add Folder, + MP3 —
+   measures 309px on its own, and squeezing it would start compressing the
+   buttons rather than the track names. Names already truncate with an ellipsis
+   and carry the full text as a tooltip, so the list itself narrows harmlessly;
+   the header is what sets the limit. */
+.workspace{
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 316px;
+  gap: 12px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.main-workspace{
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.timeline-panel{
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.timeline-header{
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 14px;
+}
+
+/* Le décompte des pistes est passé sous la plaque : elle peut donc partir du
+   haut de la ligne, avec le reste de l'en-tête. */
+.vu-meter-column{
+  display: flex;
+  flex-direction: column;
+  align-self: flex-start;
+  align-items: center;
+  gap: 3px;
+}
+
+.vu-meter-summary{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8.5px;
+  color: #788192;
+  white-space: nowrap;
+}
+
+.vu-meter-summary strong{
+  color: #788192;
+  font-weight: 700;
+}
+
+/* Étirée sur la hauteur de la ligne et calée par le bas : c'est ce qui fait
+   coïncider le bas de la plaque de transport avec celui du VU-mètre. Centrées
+   chacune de leur côté, les deux plaques ne pouvaient pas s'aligner, le
+   VU-mètre portant son libellé au-dessus. */
+.timeline-identity{
+  display: flex;
+  min-width: 0;
+  align-self: stretch;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.timeline-identity > div{
+  min-width: 0;
+}
+
+.timeline-identity .eyebrow{
+  margin-bottom: 3px;
+  font-size: 8px;
+}
+
+.timeline-controls{
+  gap: 6px;
+}
+
+.bpm-column{
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+
+.project-bpm-control{
+  height: 36px;
+  width: 100%;
+}
+
+.help-btn{
+  width: 100%;
+  height: 16px;
+  padding: 0;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #a0acbe;
+  border-radius: 4px;
+  color: #0f2442;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 100ms ease;
+  user-select: none;
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+/* Un rendu de plusieurs minutes sans retour visible passe pour un gel. La
+   fenêtre reprend le vocabulaire des autres modales : plaque sombre, filets
+   aluminium, typographie du programme. */
+.bounce-overlay{
+  position: fixed;
+  z-index: 1400;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(8, 10, 14, 0.72);
+}
+
+.bounce-dialog{
+  width: min(380px, calc(100% - 48px));
+  padding: 22px 24px 20px;
+  border: 1px solid #282c35;
+  border-top-color: #383e4a;
+  border-radius: 12px;
+  background: #181b22;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65), inset 0 1px 1px rgba(255, 255, 255, 0.08);
+}
+
+.bounce-eyebrow{
+  margin: 0 0 6px;
+  color: #8b98a9;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+}
+
+.bounce-dialog h2{
+  margin: 0 0 16px;
+  color: #f5f2eb;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+/* La barre est encastrée, comme les autres creux du programme. */
+.bounce-track{
+  height: 10px;
+  overflow: hidden;
+  border-radius: 5px;
+  background: #0c0e12;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.9), 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.bounce-fill{
+  height: 100%;
+  border-radius: 5px;
+  background: linear-gradient(180deg, #ff8b7d 0%, #e5342a 50%, #b81c14 100%);
+  box-shadow: 0 0 8px rgba(224, 47, 36, 0.55);
+  transition: width 120ms linear;
+}
+
+.bounce-percent{
+  margin: 8px 0 0;
+  color: #f5f2eb;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: right;
+}
+
+.bounce-note{
+  margin: 12px 0 0;
+  color: #8b98a9;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* Le rendu hors ligne se tient à gauche du groupe BPM, à sa hauteur. Aluminium
+   comme les autres commandes du bandeau, avec un pictogramme dessiné dans le
+   même système que les marques de transport : le mix descend vers un support.
+   Ni rubis ni trame — une commande qu'on n'utilise qu'une fois le mix terminé
+   n'a pas à réclamer l'attention en permanence. */
+.bounce-btn{
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  align-self: stretch;
+  width: 68px;
+  padding: 0 6px;
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #a0acbe;
+  border-radius: 6px;
+  color: #0f2442;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1.5px 0 #a0acbe,
+    0 2px 4px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  transition: background 60ms ease;
+}
+
+.bounce-btn .transport-glyph{
+  width: 15px;
+  height: 15px;
+  color: #1e3a63;
+}
+
+.bounce-btn span{
+  color: #5a6879;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  line-height: 1;
+}
+
+.bounce-btn:hover:not(:disabled){
+  background: linear-gradient(180deg, #ffffff 0%, #dbe3ee 100%);
+}
+
+.bounce-btn:disabled{
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Deux boutons de largeur egale au-dessus de HELP, dans la meme colonne. */
+.project-file-row{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+.help-btn:disabled{
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.help-btn:hover{
+  background: linear-gradient(180deg, #ffffff 0%, #dbe3ee 100%);
+  border-color: #0f2442;
+  color: #0f2442;
+}
+
+.help-btn:active{
+  transform: translateY(1px);
+  background: #dbe3ee;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.timeline-scroll{
+  min-height: 0;
+  height: 100%;
+  border-top: 0;
+  overscroll-behavior: contain;
+}
+
+.timeline-content{
+  height: 100%;
+  min-width: 100%;
+  min-height: 330px;
+}
+
+.timeline-content--following{
+  margin-inline: var(--timeline-follow-padding);
+  left: var(--timeline-follow-offset);
+}
+
+.timeline-tracks{
+  height: calc(100% - 34px);
+  min-height: 296px;
+}
+
+.timeline-lane{
+  height: calc(100% / 3);
+  min-height: 0;
+}
+
+.timeline-clip{
+  transform: none;
+}
+
+.library-panel{
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  margin: 0;
+  flex-direction: column;
+}
+
+.library-header{
+  align-items: stretch;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px;
+}
+
+.library-header .eyebrow{
+  margin-bottom: 4px;
+  font-size: 8px;
+}
+
+.library-title-row h2{
+  font-size: 16px;
+}
+
+.library-actions{
+  display: grid;
+  grid-template-columns: 1fr 0.78fr 0.78fr;
+  gap: 6px;
+  width: 100%;
+}
+
+.library-actions .primary-button,
+.library-actions .secondary-button{
+  min-width: 0;
+  padding: 9px 7px;
+  font-size: 9px;
+}
+
+.library-message{
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  font-size: 9px;
+}
+
+.library-empty{
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.library-table{
+  min-height: 0;
+  max-height: none;
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: #3c4352 #11141b;
+  scrollbar-width: thin;
+}
+
+.library-table-header{
+  display: none;
+}
+
+.library-row{
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "track bpm"
+    "actions actions";
+  min-width: 0;
+  min-height: 92px;
+  padding: 10px 12px;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 8px;
+}
+
+.library-track-cell{
+  grid-area: track;
+  gap: 7px;
+}
+
+.library-track-cell strong{
+  font-size: 10px;
+}
+
+.library-track-cell > div > span{
+  font-size: 7px;
+}
+
+.bpm-cell{
+  grid-area: bpm;
+}
+
+.bpm-value{
+  min-width: 68px;
+  padding: 5px 6px;
+}
+
+.beatgrid-overlay{
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: grid;
+  padding: 24px;
+  place-items: center;
+  background: rgba(5, 7, 11, 0.78);
+  backdrop-filter: blur(8px);
+}
+
+.beatgrid-overlay .beatgrid-editor{
+  width: min(900px, 100%);
+  max-height: calc(100vh - 48px);
+  margin: 0;
+  overflow-y: auto;
+}
+
+.error-banner{
+  position: fixed;
+  z-index: 80;
+  right: 20px;
+  bottom: 20px;
+  width: min(440px, calc(100% - 40px));
+  margin: 0;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+}
+
+@media (max-width: 1050px) {
+  /* The library used to narrow to 320px here, which is now wider than its normal
+     width — it would have grown on the screens with least room. The base width
+     is already at the header's floor, so there is nothing left to give back on a
+     narrow window. */
+
+  .timeline-header{
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .timeline-controls{
+    width: 100%;
+  }
+
+}
+
+/* v0.0.16 — compact vintage transport, Volume Nodes and embedded Preview. */
+/* Dernière à parler de l'alignement de ce bloc, donc la seule qui compte :
+   calé par le **haut**, comme le VU-mètre et comme `BOUNCE MIX`. Les quatre
+   ensembles de l'en-tête partent ainsi de la même ligne, et ce qui est plus
+   court — les plaques — laisse sa place en dessous plutôt qu'au-dessus. */
+.timeline-identity{
+  display: flex;
+  align-self: flex-start;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.analog-transport-group{
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+
+/* CLEAR TIMELINE au-dessus de la seule paire qu'il concerne. */
+.transport-stack{
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+
+/* L'en-tête prenait ses largeurs sur du vide : `.timeline-identity` avait
+   `flex: 1 1 0` et `min-width: 0`, donc elle se laissait écraser à 258 px là
+   où elle en demandait 480, et son contenu débordait par-dessous le VU-mètre.
+   Elle prend maintenant ce qu'il lui faut, et l'en-tête passe à la ligne quand
+   la fenêtre ne suffit plus — un retour à la ligne se lit, un chevauchement
+   ressemble à un défaut. */
+.timeline-header{
+  flex-wrap: wrap;
+  row-gap: 10px;
+}
+
+.timeline-header .timeline-identity{
+  flex: 0 0 auto;
+}
+
+/* Aligné par le bas : PLAY/PAUSE est descendu sous CLEAR TIMELINE, et les
+   autres rails doivent poser sur la même ligne plutôt que de flotter en haut
+   de la rangée. */
+.analog-transport-row{
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+/* Photorealistic Teenage Engineering Field Tactile Transport Keycaps */
+.analog-transport{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  background: #181b22;
+  border: 1px solid #282c35;
+  border-top-color: #383e4a;
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.8),
+    0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+/* A moulded keycap, lit from above by a single source: bright along the top
+   edge, falling away down the face, sitting on its own extruded body with a
+   contact shadow beneath. Dimensions are fixed by the rail it sits in. */
+/* La hauteur est celle qui met la plaque de transport au même gabarit que le
+   VU-mètre : 54 px de touche, plus les 8 px de marge de la plaque et ses deux
+   pixels de bordure, font les 64 px du bloc de diodes. Retirer `CLEAR TIMELINE` avait raccourci cette
+   colonne de dix pixels et déséquilibré l'en-tête — les deux blocs se
+   regardaient sans se répondre. */
+.analog-transport-button{
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 58px;
+  height: 54px;
+  padding: 5px 8px 6px;
+  border: 0;
+  border-radius: 6px;
+  color: #2b3a4d;
+  background: linear-gradient(180deg, #fdfefe 0%, #f4f6f9 42%, #e7ebf1 88%, #dde3ea 100%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    inset 0 -1px 0 rgba(255, 255, 255, 0.5),
+    inset 1px 0 0 rgba(255, 255, 255, 0.7),
+    inset -1px 0 0 rgba(0, 0, 0, 0.05),
+    0 0 0 1px #aab5c4,
+    0 2px 0 #97a3b3,
+    0 3px 0 #7f8a99,
+    0 5px 8px rgba(0, 0, 0, 0.45);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  cursor: pointer;
+  overflow: hidden;
+  transition:
+    transform 50ms cubic-bezier(0.2, 0, 0, 1),
+    box-shadow 50ms cubic-bezier(0.2, 0, 0, 1);
+  user-select: none;
+}
+
+/* The sheen of the moulding, sitting above everything printed on the cap. */
+.analog-transport-button::after{
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 15px;
+  border-radius: 6px 6px 40% 40%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0));
+  pointer-events: none;
+}
+
+.transport-glyph{
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 12px;
+  height: 12px;
+  color: #2b3a4d;
+}
+
+.transport-button-label{
+  position: relative;
+  z-index: 1;
+  color: #5a6879;
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.analog-transport-button:hover:not(:disabled){
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 42%, #ebeff4 88%, #e2e7ee 100%);
+}
+
+/* Pressed: the cap travels down and its extruded body collapses with it. */
+.analog-transport-button:active:not(:disabled){
+  transform: translateY(3px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset 0 2px 3px rgba(0, 0, 0, 0.12),
+    0 0 0 1px #aab5c4,
+    0 0 0 #97a3b3,
+    0 0 0 #7f8a99,
+    0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.analog-transport-button:disabled{
+  opacity: 0.42;
+  cursor: default;
+}
+
+/* Le crayon est un `div` et non un `button` : il ne peut pas porter `:disabled`,
+   mais il doit s'éteindre comme les autres touches quand rien n'est affiché à
+   dessiner. */
+.analog-transport-button.is-disabled{
+  opacity: 0.42;
+  cursor: default;
+}
+
+/* A lit lamp still reads as lit on a control that cannot be pressed again —
+   PLAY disables itself while it is the thing that is playing. */
+.analog-transport-button.is-active:disabled{
+  opacity: 1;
+}
+
+/* A lamp seated in a machined hole: dark garnet at rest, with the bright rim of
+   the bore above it. Small on purpose — it is the only thing that has to change
+   to say the control is engaged, so nothing else does. */
+.transport-led-socket{
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #1c0d0d;
+  box-shadow:
+    inset 0 0.5px 1px rgba(0, 0, 0, 0.9),
+    0 0.5px 0 rgba(255, 255, 255, 0.85);
+}
+
+.transport-led{
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #5e1717 0%, #2f0b0b 70%, #170303 100%);
+  transition:
+    background 60ms ease,
+    box-shadow 60ms ease;
+}
+
+/* Lit: a hot core, a halo, and the light it spills onto the cap around it. */
+.transport-led.is-active{
+  background: radial-gradient(circle at 35% 30%, #fffaf7 0%, #ff5a45 45%, #dc2626 100%);
+  box-shadow:
+    0 0 3px #ff6a5a,
+    0 0 7px rgba(255, 90, 70, 0.9),
+    0 0 13px rgba(220, 38, 38, 0.55);
+}
+
+.timeline-summary{
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.timeline-summary span{
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #cbd5e1;
+}
+
+.timeline-summary strong{
+  color: #38bdf8;
+  font-weight: 800;
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+/* Photorealistic Teenage Engineering Light Aluminum BPM Module Box */
+.project-bpm-control{
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  height: auto;
+  align-self: stretch;
+  min-height: 44px;
+  padding: 4px 10px;
+  flex: 0 0 auto;
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #a0acbe;
+  border-radius: 6px;
+  color: #0f2442;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1.5px 0 #a0acbe,
+    0 2px 6px rgba(0, 0, 0, 0.12);
+  align-items: center;
+  cursor: default;
+}
+
+.bpm-header-row{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+.bpm-label-text{
+  color: #0f2442;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 850;
+  letter-spacing: 0.16em;
+  text-align: center;
+}
+
+/* A readout rather than a field. As a number input it carried the browser's
+   spinner arrows, which both offered an edit the tempo map does not need and
+   pushed the value off centre by the width they reserved. */
+.bpm-value-display{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  height: 22px;
+  min-width: 68px;
+  padding: 1px 8px;
+  border: 1px solid #0f2442;
+  border-radius: 4px;
+  color: #ffffff;
+  background: linear-gradient(180deg, #152c4e 0%, #0a192f 100%);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.4),
+    0 1px 0 rgba(255, 255, 255, 0.8);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 13px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  text-align: center;
+}
+
+.vu-overload{
+  position: absolute;
+  z-index: 4;
+  top: 2px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: #8a6b55;
+  font: 700 6px/9px "Cascadia Code", Consolas, monospace;
+}
+.vu-overload i{
+  width: 6px;
+  height: 6px;
+  border: 1px solid #4d1d17;
+  border-radius: 50%;
+  background: #431c17;
+}
+.vu-overload.is-active{ color: #ff9c82; }
+.vu-overload.is-active i{
+  background: #ff3c27;
+  box-shadow: 0 0 8px #ff2c1a, inset 0 0 2px #ffd2c8;
+}
+
+.volume-automation-lines{
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+.volume-automation-lines path{
+  fill: none;
+  stroke: #0f2442;
+  stroke-width: 1.75px;
+  vector-effect: non-scaling-stroke;
+}
+/* Le crayon armé change de mode : le curseur le dit avant qu'on ait cliqué, et
+   les clips cessent de réclamer le geste. Un mode qu'on ne voit pas se
+   découvre en cassant quelque chose. */
+.timeline-body.is-drawing .timeline-lane,
+.timeline-body.is-drawing .timeline-clip,
+.timeline-body.is-drawing .timeline-clip:active{
+  cursor: url("/cursors/pencil.svg") 4 20, crosshair;
+}
+
+/* Le crayon est une touche coupée en deux : la forme à gauche, la période à
+   droite. Un `div` habillé en touche plutôt qu'un bouton, puisqu'un bouton ne
+   peut pas en contenir deux. Le trait qui les sépare dit qu'on peut cliquer de
+   part et d'autre. */
+.analog-draw{
+  cursor: default;
+}
+
+.draw-halves{
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+/* Deux surfaces distinctes, pas un bouton avec un trait dessus : chacune a son
+   creux et sa lumière propres, comme deux touches voisines. La forme prend les
+   deux tiers — c'est elle qu'on regarde et qu'on change le plus —, la période
+   le tiers restant. Découpé en parts égales, l'ensemble se lisait comme un
+   seul bouton portant deux marques. */
+.draw-half{
+  display: grid;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  place-items: center;
+  color: #2b3a4d;
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    inset 0 -1px 0 rgba(15, 36, 66, 0.1);
+  cursor: pointer;
+  transition: background 60ms ease;
+}
+
+.draw-half:first-child{
+  width: 30px;
+  border-radius: 4px 0 0 4px;
+}
+
+.draw-half--period{
+  width: 18px;
+  border-radius: 0 4px 4px 0;
+  /* Le sillon : une ombre puis une lumière, comme entre deux touches. */
+  box-shadow:
+    inset 1px 0 0 rgba(15, 36, 66, 0.28),
+    inset 2px 0 0 rgba(255, 255, 255, 0.85),
+    inset 0 1px 0 #ffffff,
+    inset 0 -1px 0 rgba(15, 36, 66, 0.1);
+  background: rgba(255, 255, 255, 0.32);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+/* Une fraction vulgaire est dessinée à mi-hauteur du corps : au corps des
+   chiffres, elle ressortirait deux fois plus petite qu'eux. Réglée sur le
+   bouton lui-même, là où vit la taille des chiffres, pour que ce soit la même
+   règle qui tranche. */
+.draw-half--period.is-fraction{
+  font-size: 13px;
+}
+
+.draw-half:hover:not(:disabled){
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.draw-half:active:not(:disabled){
+  box-shadow: inset 0 1px 2px rgba(15, 36, 66, 0.22);
+}
+
+.draw-half:disabled{
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.draw-half .transport-glyph{
+  width: 16px;
+  height: 16px;
+}
+
+/* Le VIEW s'allume dès qu'une ligne est affichée : la lampe dit qu'il y a
+   quelque chose à voir, le pictogramme dit quoi. */
+.analog-view .transport-glyph{
+  color: #2b3a4d;
+}
+
+/* Le panoramique a sa propre ligne, sous celle du volume et dans une teinte
+   qui ne s'y confond pas : ambre contre bleu marine. Les deux se croisent
+   forcément — c'est la couleur qui les sépare, pas la place. Sans nœud, la
+   ligne traverse la piste en son centre, donc un panoramique neutre se voit. */
+.pan-automation-lines{
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.pan-automation-lines path{
+  fill: none;
+  stroke: #c77f0a;
+  stroke-width: 1.4px;
+  stroke-dasharray: 5 3;
+  vector-effect: non-scaling-stroke;
+}
+
+/* Losange plutôt que disque : au croisement des deux lignes, la forme reste
+   lisible même à la taille d'un nœud. */
+.pan-node{
+  position: absolute;
+  z-index: 7;
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border: 2px solid #ffffff;
+  background: #f5a524;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  cursor: move;
+  transform: translate(-50%, -50%) rotate(45deg);
+  transition: transform 40ms ease, background 40ms ease;
+}
+
+.pan-node:hover{
+  transform: translate(-50%, -50%) rotate(45deg) scale(1.2);
+  background: #ffb733;
+}
+
+.pan-node span{
+  position: absolute;
+  top: -22px;
+  left: 50%;
+  display: none;
+  padding: 2px 6px;
+  border: 1px solid #0f2442;
+  border-radius: 4px;
+  color: #0f2442;
+  background: #ffffff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 700;
+  white-space: nowrap;
+  transform: translate(-50%, 0) rotate(-45deg);
+}
+
+.pan-node:hover span{
+  display: block;
+}
+
+.volume-node{
+  position: absolute;
+  z-index: 8;
+  width: 11px;
+  height: 11px;
+  padding: 0;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: #dc2626;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  cursor: move;
+  transform: translate(-50%, -50%);
+  transition: transform 40ms ease, background 40ms ease;
+}
+.volume-node:hover{
+  transform: translate(-50%, -50%) scale(1.2);
+  background: #ef4444;
+}
+.volume-node span{
+  position: absolute;
+  top: -20px;
+  left: 50%;
+  display: none;
+  padding: 2px 6px;
+  border: 1px solid #0f2442;
+  border-radius: 4px;
+  color: #0f2442;
+  background: #ffffff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+.volume-node:hover span,
+.volume-node:active span{ display: block; }
+
+/* One appearance for every right-click menu, matching the anodised aluminium
+   panels of the transport and the meters. The two menus used to carry a
+   different leftover palette each: olive-brown here, dark CNC in the Library. */
+.timeline-context-menu,
+.library-context-menu{
+  position: fixed;
+  z-index: 1200;
+  min-width: 164px;
+  padding: 4px;
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #a0acbe;
+  border-radius: 6px;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1.5px 0 #a0acbe,
+    0 8px 20px rgba(15, 36, 66, 0.22);
+}
+
+.timeline-context-menu button,
+.library-context-menu button{
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 4px;
+  color: #0f2442;
+  background: transparent;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-align: left;
+  cursor: pointer;
+  transition: background 60ms ease, color 60ms ease;
+}
+
+.timeline-context-menu button:hover:not(:disabled),
+.library-context-menu button:hover:not(:disabled){
+  color: #ffffff;
+  background: linear-gradient(180deg, #1e3a63 0%, #152c4e 100%);
+}
+
+/* An action that destroys work announces itself before it is clicked. */
+.timeline-context-menu button.is-destructive:hover:not(:disabled),
+.library-context-menu button.is-destructive:hover:not(:disabled){
+  background: linear-gradient(180deg, #dc2626 0%, #991b1b 100%);
+}
+
+.timeline-context-menu button:disabled,
+.library-context-menu button:disabled{
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+
+.mini-preview{
+  display: grid;
+  min-width: 0;
+  padding: 8px 12px;
+  align-items: center;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 10px;
+  border-bottom: 1px solid #c8cee0;
+  background: #dce0e6;
+}
+
+.mini-preview-toggle{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #061020;
+  border-top-color: #1f3a63;
+  border-bottom-color: #040914;
+  border-radius: 5px;
+  color: #ffffff;
+  background: linear-gradient(180deg, #152c4e 0%, #0a192f 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.2),
+    0 1.5px 0 #050d1a,
+    0 2px 4px rgba(0, 0, 0, 0.2);
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 40ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.mini-preview-toggle:hover:not(:disabled){
+  background: linear-gradient(180deg, #1a365d 0%, #0d1e38 100%);
+  transform: translateY(-0.5px);
+}
+
+.mini-preview-toggle:active:not(:disabled){
+  transform: translateY(1px);
+}
+
+.mini-preview-main{
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.mini-preview-main strong{
+  overflow: hidden;
+  color: #0f2442;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mini-preview-slider{
+  width: 100%;
+  height: 10px;
+  margin: 0;
+  accent-color: #0f2442;
+  cursor: pointer;
+}
+
+.mini-preview time{
+  color: #1e3a63;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.beatgrid-editor > .mini-preview{ border-top: 1px solid #282c31; }
+
+.library-header{
+  gap: 8px;
+  padding-bottom: 10px;
+}
+.library-actions{ grid-template-columns: .8fr 1.15fr .72fr; }
+.library-actions button{ padding-inline: 5px; }
+
+@media (max-width: 1100px) {
+  .analog-transport-button{ min-width: 52px; padding-inline: 6px; }
+  .timeline-summary{ display: none; }
+}
+
+/* Photorealistic Teenage Engineering x Braun CNC Hardware Library Module */
+.library-panel{
+  border: 1px solid #282c35;
+  border-top-color: #383e4a;
+  border-bottom-color: #161820;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #181b22 0%, #101217 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.07),
+    0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+/* Cette règle est la dernière à parler de la marge de l'en-tête : c'est donc
+   ici qu'elle se règle, et nulle part ailleurs. Deux rangées de commandes n'ont
+   pas besoin de vingt-huit pixels de marge verticale, et les vingt de côté
+   dépassaient de douze ceux de la liste juste en dessous — l'en-tête et les
+   rangées s'alignent maintenant sur le même bord. */
+.library-header{
+  border-bottom: 1px solid #282c35;
+  background: linear-gradient(180deg, #1f232d 0%, #151821 100%);
+  padding: 10px 12px;
+}
+
+.library-title-row h2{
+  color: #f5f2eb;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 15px;
+  font-weight: 850;
+  letter-spacing: 0.14em;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.9);
+}
+
+.track-count{
+  border: 1px solid #222630;
+  border-radius: 4px;
+  color: #a2abbc;
+  background: #0d0f13;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.85);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-weight: 800;
+}
+
+.library-header-controls{
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.library-actions{
+  display: flex;
+  gap: 8px;
+}
+
+.library-actions .secondary-button{
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #a0acbe;
+  border-radius: 5px;
+  color: #0f2442;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1.5px 0 #a0acbe,
+    0 2px 4px rgba(0, 0, 0, 0.15);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 40ms cubic-bezier(0.2, 0, 0, 1);
+  user-select: none;
+}
+
+.library-actions .secondary-button:hover:not(:disabled){
+  background: linear-gradient(180deg, #ffffff 0%, #dbe3ee 100%);
+  border-color: #0f2442;
+  color: #0f2442;
+}
+
+.library-actions .primary-button{
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  border: 1px solid #0f2442;
+  border-top-color: #234578;
+  border-bottom-color: #081426;
+  border-radius: 5px;
+  color: #ffffff;
+  background: linear-gradient(180deg, #152c4e 0%, #0a192f 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.2),
+    0 1.5px 0 #081426,
+    0 3px 6px rgba(0, 0, 0, 0.3);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 40ms cubic-bezier(0.2, 0, 0, 1);
+  user-select: none;
+}
+
+.library-actions .primary-button:hover:not(:disabled){
+  background: linear-gradient(180deg, #1a365d 0%, #0d1e38 100%);
+}
+
+.library-actions .primary-button:active:not(:disabled),
+.library-actions .secondary-button:active:not(:disabled){
+  transform: translateY(1.5px);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.library-sort{
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border: 1px solid #232733;
+  border-radius: 6px;
+  background: #0d0f13;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
+.library-sort > span{
+  margin: 0 4px;
+  color: #6a7282;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 7.5px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.library-sort button{
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border: 1px solid #343a49;
+  border-top-color: #4a5365;
+  border-bottom-color: #1a1d25;
+  border-radius: 4px;
+  color: #94a3b8;
+  background: linear-gradient(180deg, #252a37 0%, #171a23 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.1),
+    0 1.5px 0 #0c0e12;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 40ms ease;
+}
+
+.library-sort button:hover:not(:disabled){
+  background: linear-gradient(180deg, #303746 0%, #1f2430 100%);
+  color: #f1f5f9;
+}
+
+.library-sort button.is-selected{
+  border-color: #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #a0acbe;
+  color: #0f2442;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1.5px 0 #a0acbe;
+  transform: translateY(0.5px);
+  font-weight: 850;
+}
+
+.library-sort button i{
+  color: #dc2626;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.library-table{
+  background: #dce0e6;
+  scrollbar-color: #a2abbc #dce0e6;
+}
+
+.library-row{
+  background: #e6eaef;
+  border-bottom: 1px solid #c8cee0;
+  color: #0f2442;
+  transition: background 40ms ease;
+}
+
+.library-row:hover{
+  background: #d4d9e2;
+}
+
+.library-row--active{
+  background: #b9c3d4 !important;
+  border-left: none;
+  box-shadow: none;
+}
+
+.timeline-content{
+  position: relative;
+}
+
+.timeline-ruler,
+.timeline-lane{
+  cursor: crosshair;
+}
+
+.timeline-playhead{
+  position: absolute;
+  z-index: 12;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #dc2626;
+  box-shadow: 0 0 8px rgba(220, 38, 38, 0.5);
+  pointer-events: none;
+}
+
+.timeline-playhead span{
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-top: 8px solid #dc2626;
+  border-right: 5px solid transparent;
+  border-left: 5px solid transparent;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.3));
+  transform: translateX(-50%);
+}
+
+/* La colonne de bibliothèque n'a qu'une ressource, sa hauteur, et chaque pixel
+   qu'une rangée ne remplit pas est un morceau de moins à l'écran. Le contenu
+   d'une rangée mesure 24 px — la poignée, la seule chose plus haute que le
+   texte — plus ses 12 px de marge : 38 px suffisent donc, là où 54 en
+   réservaient dix-huit que rien n'occupait. Le chemin du fichier est masqué
+   dans cette disposition, et c'est lui qui justifiait la hauteur d'origine. */
+.library-row{
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "track bpm";
+  min-height: 38px;
+  padding: 6px 8px;
+  column-gap: 6px;
+  row-gap: 0;
+}
+
+.library-track-cell{
+  gap: 6px;
+}
+
+.library-track-details{
+  display: block !important;
+  min-width: 0;
+}
+
+.library-track-title-line{
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.library-track-title-line strong{
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #0f2442;
+  font-weight: 750;
+}
+
+.library-track-details > span{
+  display: none;
+}
+
+.library-inline-preview{
+  display: grid;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 9px;
+}
+
+.library-inline-preview{
+  border: 1px solid #061020;
+  border-top-color: #1f3a63;
+  border-bottom-color: #040914;
+  color: #ffffff;
+  background: linear-gradient(180deg, #152c4e 0%, #0a192f 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.2),
+    0 1.5px 0 #050d1a,
+    0 2px 4px rgba(0, 0, 0, 0.3);
+  font-weight: 800;
+}
+
+.library-inline-preview:hover:not(:disabled){
+  background: linear-gradient(180deg, #1a365d 0%, #0d1e38 100%);
+  transform: translateY(-0.5px);
+}
+
+.library-row .timeline-drag-handle{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #a0acbe;
+  border-radius: 5px;
+  color: #0f2442;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1.5px 0 #a0acbe,
+    0 2px 4px rgba(0, 0, 0, 0.08);
+  cursor: grab;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  user-select: none;
+  transition: all 40ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.library-row .timeline-drag-handle:hover:not(:disabled){
+  border-color: #0f2442;
+  color: #ffffff;
+  background: linear-gradient(180deg, #152c4e 0%, #0a192f 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.2),
+    0 1.5px 0 #040914,
+    0 3px 6px rgba(0, 0, 0, 0.25);
+  transform: translateY(-0.5px);
+}
+
+.library-row .timeline-drag-handle:active:not(:disabled){
+  cursor: grabbing;
+  transform: translateY(1px);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+/* Le tempo et sa mention d'édition dans la même boîte : rien ne disait que ce
+   chiffre s'ouvrait, et une infobulle ne se lit qu'après avoir cherché. Empilés
+   plutôt que côte à côte, pour ne pas voler à un titre déjà tronqué la largeur
+   qui lui reste. */
+.library-row .bpm-value{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  padding: 2px 6px;
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #a0acbe;
+  border-radius: 4px;
+  color: #0f2442;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1.5px 0 #a0acbe,
+    0 2px 4px rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  transition: all 40ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Assez petit pour rester une mention et non une seconde valeur, assez espacé
+   pour tenir à cette taille. */
+.library-row .bpm-edit-hint{
+  /* 5,0:1 sur la face du bouton. Le gris d'origine tombait à 3,4:1, ce qui
+     passe pour un libellé de douze pixels et disparaît à six. */
+  color: #5f6a7c;
+  font-size: 6px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  line-height: 1;
+}
+
+.library-row .bpm-value:hover:not(:disabled){
+  border-color: #0f2442;
+  color: #ffffff;
+  background: linear-gradient(180deg, #152c4e 0%, #0a192f 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.2),
+    0 1.5px 0 #040914,
+    0 3px 6px rgba(0, 0, 0, 0.25);
+  transform: translateY(-0.5px);
+}
+
+.library-row .bpm-value:hover:not(:disabled) strong,
+.library-row .bpm-value:hover:not(:disabled) span{
+  color: #ffffff !important;
+}
+
+.library-row .bpm-value:active:not(:disabled){
+  transform: translateY(1px);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.library-row .bpm-value strong{
+  color: #0f2442;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+/* Première direction vintage : VU-mètre analogique du bus master. */
+.timeline-header{
+  display: flex;
+  align-items: center;
+}
+
+/* Aucun des trois blocs ne se laisse écraser sous sa largeur utile : chacun
+   porte des commandes d'une taille donnée, et les rétrécir ne les rend pas
+   plus petites, seulement tronquées. Quand la fenêtre ne suffit plus, c'est
+   l'en-tête qui passe à la ligne. */
+.timeline-header .timeline-controls{
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.timeline-header .timeline-controls{
+  justify-content: flex-end;
+}
+
+.stereo-vu-meter{
+  position: relative;
+  display: grid;
+  width: 226px;
+  height: 64px;
+  padding: 5px 6px 4px;
+  flex: 0 0 auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  border: 1px solid #715436;
+  border-radius: 7px;
+  background:
+    linear-gradient(90deg, rgba(255, 226, 154, 0.04), transparent 28%, rgba(0, 0, 0, 0.22)),
+    linear-gradient(#4a3423, #261a13);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 225, 164, 0.16),
+    inset 0 -2px 5px rgba(0, 0, 0, 0.42),
+    0 5px 14px rgba(0, 0, 0, 0.25);
+}
+
+@media (max-width: 1180px) {
+  .stereo-vu-meter{
+    width: 196px;
+    height: 58px;
+  }
+
+  .timeline-header{
+    gap: 10px;
+  }
+}
+
+/* First Smart Filter milestone: one visible bipolar sub-lane per audio lane. */
+.timeline-content{
+  min-height: 454px;
+}
+
+.timeline-tracks{
+  min-height: 420px;
+}
+
+.timeline-lane-pair{
+  display: flex;
+  flex-direction: column;
+  height: calc(100% / 3);
+}
+
+.timeline-lane{
+  position: relative;
+  flex: 1;
+  height: auto;
+}
+
+/* The three lane pairs are laid out identically. The separator strip drawn by
+   ::before is an overlay and must never be compensated for by making a lane
+   taller: a percentage cannot track a fixed pixel band, so the three audio lanes
+   ended up different heights at every window size. */
+.timeline-filter-lane{
+  position: relative;
+  height: calc((100% / 3) * (43 / 50));
+  overflow: hidden;
+  border-bottom: 1px solid rgba(15, 36, 66, 0.12);
+  background:
+    linear-gradient(
+      180deg,
+      rgba(14, 120, 220, 0.16) 0%,
+      rgba(14, 120, 220, 0.03) 48%,
+      rgba(255, 255, 255, 0.3) 50%,
+      rgba(220, 38, 38, 0.03) 52%,
+      rgba(220, 38, 38, 0.16) 100%
+    ),
+    #c4cbd4;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+/* The separator between two lane pairs belongs to the bottom edge of the audio
+   lane above, not to the top of the filter band below. Drawn inside the filter
+   band it clipped the very curves it sits over — a full high-pass sweep on B or
+   C ran straight into it. The bottom strip of an audio lane is empty: a clip
+   stops 14px short of it, and the volume line never reaches it. */
+.timeline-lane::after{
+  position: absolute;
+  z-index: 1;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 6px;
+  background:
+    linear-gradient(
+      180deg,
+      #3a4556 0px,
+      #3a4556 1px,
+      transparent 1px,
+      transparent 5px,
+      #3a4556 5px,
+      #3a4556 6px
+    ),
+    repeating-linear-gradient(
+      45deg,
+      rgba(15, 36, 66, 0.25) 0px,
+      rgba(15, 36, 66, 0.25) 2px,
+      #dce0e6 2px,
+      #dce0e6 6px
+    );
+  content: "";
+  pointer-events: none;
+}
+
+/* Track C is the last lane: nothing follows it to be separated from. */
+.timeline-lane[data-lane="2"]::after{
+  display: none;
+}
+
+/* The bypass line is the exact middle of the band, which is also where
+   `filterNodeY` puts a value of zero in TimelinePanel. */
+/* `Ctrl` tenu au-dessus de la bande : le pinceau à bulle laisse la place au
+   tracé libre, et le curseur le dit avant qu'on ait cliqué. Le même crayon que
+   celui de l'outil de formes, puisque c'est le même geste — dessiner ce qu'on
+   veut entendre. */
+.timeline-filter-lane.is-freehand{
+  cursor: url("/cursors/pencil.svg") 4 20, crosshair;
+}
+
+.timeline-filter-lane::after{
+  position: absolute;
+  top: 50%;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: rgba(15, 36, 66, 0.35);
+  content: "";
+  pointer-events: none;
+}
+
+.filter-automation-lines{
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.volume-automation-lines{
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.filter-automation-lines .filter-automation-bubble{
+  stroke: #0f2442;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.2));
+}
+
+.filter-automation-lines .filter-automation-bubble--high{
+  fill: rgba(26, 60, 140, 0.32);
+}
+
+.filter-automation-lines .filter-automation-bubble--low{
+  fill: rgba(220, 38, 38, 0.34);
+}
+
+.filter-node{
+  position: absolute;
+  z-index: 9;
+  width: 11px;
+  height: 11px;
+  padding: 0;
+  border: 1.5px solid #0f2442;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1px 3px rgba(0, 0, 0, 0.25);
+  cursor: grab;
+  touch-action: none;
+  transform: translate(-50%, -50%);
+  transition: transform 40ms ease, border-color 40ms ease;
+}
+
+.filter-node:hover{
+  transform: translate(-50%, -50%) scale(1.25);
+  border-color: #dc2626;
+}
+
+.filter-node:active{
+  cursor: grabbing;
+}
+
+.timeline-clip{
+  height: calc((100% * 2 / 9) - 14px);
+}
+
+@media (max-width: 1050px) {
+  .timeline-header{
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "identity meter"
+      "controls controls";
+  }
+
+  .timeline-header .timeline-identity{
+    grid-area: identity;
+  }
+
+  .stereo-vu-meter{
+    grid-area: meter;
+  }
+
+  .timeline-header .timeline-controls{
+    width: 100%;
+    grid-area: controls;
+  }
+}
+
+/* Timeline: tactile console surface. */
+.timeline-panel{
+  display: flex;
+  flex-direction: column;
+  border-color: #b8c4d4;
+  border-radius: 7px;
+  background: #dce0e6;
+  box-shadow: 0 13px 30px rgba(0, 0, 0, 0.15), inset 0 1px rgba(255, 255, 255, 0.8);
+  overflow: hidden;
+}
+
+.timeline-header{
+  flex: 0 0 auto;
+  border-bottom: 1px solid #c8cee0;
+  background: #dce0e6;
+}
+
+.timeline-summary{
+  color: #1e3a63;
+}
+
+.timeline-body{
+  position: relative;
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  border-top: 0;
+}
+
+.timeline-scroll{
+  border-top: 0;
+  background:
+    repeating-linear-gradient(
+      45deg,
+      rgba(15, 36, 66, 0.08) 0px,
+      rgba(15, 36, 66, 0.08) 3px,
+      transparent 3px,
+      transparent 8px
+    ),
+    #dce0e6;
+  scrollbar-color: #434d5c #dce0e6;
+}
+
+.timeline-ruler{
+  border-bottom: 1px solid #4d5766;
+  color: #0f2442;
+  background:
+    repeating-linear-gradient(
+      45deg,
+      rgba(15, 36, 66, 0.08) 0px,
+      rgba(15, 36, 66, 0.08) 3px,
+      transparent 3px,
+      transparent 8px
+    ),
+    #dce0e6;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8.5px;
+  font-weight: 800;
+}
+
+.timeline-tempo-curve path{
+  stroke: #0f2442;
+  stroke-width: 2px;
+}
+
+.timeline-tempo-curve circle{
+  fill: #dc2626;
+  stroke: #ffffff;
+  stroke-width: 1.5px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.3));
+}
+
+.timeline-tempo-curve .tempo-text-badge rect{
+  fill: #ffffff;
+  stroke: #0f2442;
+  stroke-width: 1px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.15));
+}
+
+.timeline-tempo-curve text{
+  fill: #0f2442;
+  stroke: none;
+  stroke-width: 0;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.measure-marker{
+  border-left: 1px solid rgba(15, 36, 66, 0.25);
+}
+
+.timeline-lane{
+  border-bottom-color: #d0d7e3;
+  background-color: #f4f7fa;
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent calc(var(--beat-width) - 1px),
+      rgba(15, 36, 66, 0.06) calc(var(--beat-width) - 1px),
+      rgba(15, 36, 66, 0.06) var(--beat-width)
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent calc(var(--measure-width) - 1px),
+      rgba(15, 36, 66, 0.18) calc(var(--measure-width) - 1px),
+      rgba(15, 36, 66, 0.18) var(--measure-width)
+    );
+}
+
+.timeline-lane::before{
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.timeline-lane--inaudible{
+  background-color: #485260;
+  opacity: 0.65;
+}
+
+.timeline-lane-controls{
+  position: absolute;
+  z-index: 20;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  display: grid;
+  width: 31px;
+  grid-template-rows: 34px repeat(3, minmax(0, 1fr));
+  background: transparent;
+  border-right: none;
+  pointer-events: none;
+}
+
+/* La cellule d'une paire de voies. Elle ne sert qu'à donner un repère de
+   position à ce qu'elle contient : le repère de filtre se cale sur sa bande,
+   la pile M/S sur la voie audio. */
+.timeline-lane-cell{
+  position: relative;
+}
+
+/* Le ƒ, au centre de la bande de filtre.
+   14,3 % de la paire : la bande occupe 43 des 150 unités de hauteur, soit son
+   premier tiers moins des poussières, et son milieu tombe là. */
+.lane-filter-hint{
+  position: absolute;
+  z-index: 2;
+  top: 14.3%;
+  left: 50%;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  transform: translate(-50%, -50%);
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #a0acbe;
+  border-radius: 50%;
+  color: #0f2442;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1px 2px rgba(0, 0, 0, 0.3);
+  /* Exactement la police de `M` et `S`.
+     Le `ƒ` d'origine ressortait plus gros et décentré : il porte une hampe et
+     un jambage là où une capitale n'a ni l'un ni l'autre, et aucune taille ne
+     le recentre sans un calage propre à une police. `M` et `S` sont les
+     initiales de Mute et Solo; `F` pour Filter suit la même grammaire, et les
+     trois se centrent alors de la même façon, par construction. */
+  font: 800 8.5px/1 "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  cursor: help;
+  pointer-events: auto;
+}
+
+.lane-filter-hint:hover,
+.lane-filter-hint:focus-visible{
+  border-color: #0f2442;
+  color: #ffffff;
+  background: linear-gradient(180deg, #152c4e 0%, #0a192f 100%);
+  outline: none;
+}
+
+/* Le rappel, ouvert au survol. Il sort de la colonne par la droite, sur la
+   bande à laquelle il se rapporte : lu là, on voit en même temps ce dont il
+   parle.
+   Il s'ouvre **vers le bas** depuis le haut du repère, et non centré sur lui :
+   centré, celui de la première voie remontait de soixante-six pixels et passait
+   au-dessus du corps de la timeline, que `overflow: hidden` rogne. Vers le bas,
+   les trois tiennent — la troisième s'arrête à sept pixels du fond, mesuré. */
+.lane-hint-tip{
+  position: absolute;
+  z-index: 30;
+  top: 0;
+  left: calc(100% + 10px);
+  display: grid;
+  gap: 3px;
+  width: max-content;
+  max-width: 260px;
+  padding: 9px 11px;
+  border: 1px solid #2d3340;
+  border-top-color: #454d60;
+  border-radius: 7px;
+  background: #181b22;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
+  color: #cbd5e1;
+  font: 400 10.5px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  opacity: 0;
+  visibility: hidden;
+  /* Il survole ce qui est en dessous : sans cela il volerait le clic destiné à
+     la timeline dès qu'il est ouvert. */
+  pointer-events: none;
+  transition:
+    opacity 90ms ease,
+    visibility 0s linear 90ms;
+}
+
+/* L'ancre d'une touche du rail.
+   La touche elle-même rogne ce qui dépasse — c'est ce qui tient sa brillance —,
+   donc le rappel ne peut pas vivre dedans : il y était entièrement invisible.
+   Cette ancre lui donne un repère de position sans rien rogner, et ne change
+   rien à la mise en page puisqu'elle épouse la touche. */
+.transport-hint{
+  position: relative;
+  display: flex;
+}
+
+/* Sous la touche, et centré sur elle : le rail est horizontal, et ouvrir par le
+   côté ferait sortir le rappel de la fenêtre pour la dernière touche. */
+.transport-hint > .lane-hint-tip{
+  top: calc(100% + 8px);
+  bottom: auto;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* Un délai bien plus long qu'ailleurs.
+   `VIEW` et `DRAW` sont sous la main pendant toute une séance, et leur rail est
+   traversé cent fois pour atteindre PLAY. Un tiers de seconde y ferait clignoter
+   une plaque en permanence; à neuf dixièmes, elle ne se montre qu'à qui s'arrête
+   pour la lire. */
+.transport-hint:hover > .lane-hint-tip,
+.transport-hint:focus-within > .lane-hint-tip{
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity 120ms ease 900ms,
+    visibility 0s linear 900ms;
+}
+
+/* Chaque rappel s'ouvre vers l'espace libre de sa voie.
+   Le `F` est haut dans la paire — la bande de filtre en occupe le premier
+   tiers — et s'ouvre donc vers le bas. `M` et `S` sont au centre de la voie
+   audio, et vers le bas ceux de la dernière piste sortaient du corps de la
+   timeline, que `overflow: hidden` rogne : ils s'ouvrent vers le haut. */
+.timeline-lane-controls-row button > .lane-hint-tip{
+  top: auto;
+  bottom: 0;
+}
+
+/* Il s'ouvre après un tiers de seconde, et se ferme aussitôt.
+   Sans ce délai, `M` et `S` — qu'on presse cent fois par séance — feraient
+   surgir un panneau à chaque passage de souris. Là, il ne se montre qu'à celui
+   qui s'arrête pour chercher. */
+:is(.lane-filter-hint, .timeline-lane-controls-row button):hover > .lane-hint-tip,
+:is(.lane-filter-hint, .timeline-lane-controls-row button):focus-visible > .lane-hint-tip{
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity 120ms ease 320ms,
+    visibility 0s linear 320ms;
+}
+
+.lane-hint-tip strong{
+  margin-bottom: 2px;
+  color: #f5f2eb;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.lane-hint-tip kbd{
+  display: inline-block;
+  padding: 1px 5px;
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #94a3b8;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 100%);
+  color: #0f2442;
+  font: 700 9px/1.4 "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+}
+
+.timeline-lane-controls-row{
+  position: relative;
+  top: 66.666%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+/* Which track the keyboard is pointed at. A tick beside the M/S stalk rather
+   than a wash over the lane: it has to be readable at a glance without
+   competing with the waveform the user is actually looking at. */
+.timeline-lane-controls-row::before{
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -1px;
+  width: 2px;
+  height: 30px;
+  border-radius: 1px;
+  background: #dc2626;
+  box-shadow: 0 0 5px rgba(220, 38, 38, 0.7);
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: opacity 60ms ease;
+}
+
+.timeline-lane-controls-row.is-selected::before{
+  opacity: 1;
+}
+
+.timeline-lane-controls-row button{
+  position: relative;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #a0acbe;
+  border-radius: 50%;
+  color: #0f2442;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1px 2px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  font: 800 8.5px/1 "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  pointer-events: auto;
+  transition: all 40ms ease;
+}
+
+/* Le survol allume les trois de la même façon : plaque sombre, lettre claire.
+   `M` et `S` n'en avaient aucun — seul le `F` répondait, ce qui les faisait
+   passer pour des objets de natures différentes alors qu'ils forment une
+   colonne. */
+.timeline-lane-controls-row button:hover:not(:disabled),
+.timeline-lane-controls-row button:focus-visible{
+  border-color: #0f2442;
+  color: #ffffff;
+  background: linear-gradient(180deg, #152c4e 0%, #0a192f 100%);
+  outline: none;
+}
+
+/* Une piste déjà coupée ou solo garde sa couleur : elle dit un état, pas une
+   invitation. Le survol s'y contente d'un éclat, sans effacer ce qu'elle
+   annonce. */
+.timeline-lane-controls-row button.is-active:hover:not(:disabled){
+  filter: brightness(1.18);
+}
+
+.timeline-lane-controls-row .lane-mute-button.is-active{
+  border-color: #dc2626;
+  color: #ffffff;
+  background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%);
+  box-shadow: 0 0 8px rgba(220, 38, 38, 0.5);
+}
+
+.timeline-lane-controls-row .lane-solo-button.is-active{
+  border-color: #0f2442;
+  color: #ffffff;
+  background: linear-gradient(180deg, #152c4e 0%, #0a192f 100%);
+  box-shadow: 0 0 8px rgba(15, 36, 66, 0.5);
+}
+
+/* The body is half transparent so the beat and bar lines of the track carry on
+   through the waveform, which is what a beatmatch is read against. There is
+   deliberately no `backdrop-filter` here. The background was already letting
+   light through at 48%, but a 10 px blur smeared everything behind it: the grid
+   arrived as a wash rather than as lines, so the clip read as opaque whatever
+   its alpha said. Losing the blur also spares a compositing pass per clip on
+   every frame of playback. */
+.timeline-clip{
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-top-color: rgba(255, 255, 255, 0.85);
+  border-bottom-color: rgba(160, 172, 190, 0.4);
+  border-radius: 6px;
+  color: #0f2442;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.5) 0%, rgba(241, 245, 249, 0.5) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+/* The title strip stays solid. It used to rely on the blur behind it to look
+   that way; with the body now genuinely see-through it needs a background of its
+   own, or a bar line would run straight through the track name. Aluminium, like
+   every other small plate on this console. */
+.clip-heading{
+  height: var(--clip-heading-height, 18px);
+  padding: 0 6px;
+  gap: 6px;
+  border-bottom: 1px solid rgba(15, 36, 66, 0.12);
+  background: linear-gradient(180deg, #f2f5f9 0%, #e3e8ef 100%);
+}
+
+.clip-heading strong{
+  color: #0f2442;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.clip-heading span{
+  color: #1e3a63;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 600;
+}
+
+.clip-heading button{
+  color: #64748b;
+  border-radius: 4px;
+}
+
+.clip-heading button:hover:not(:disabled){
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.1);
+  border-color: rgba(220, 38, 38, 0.3);
+}
+
+.clip-waveform-peak{
+  fill: rgba(0, 0, 0, 0.18);
+  stroke: #000000;
+  stroke-width: 1px;
+}
+
+.clip-waveform-rms{
+  fill: #000000;
+}
+
+.clip-waveform-zero{
+  stroke: rgba(0, 0, 0, 0.4);
+}
+
+.clip-waveform{
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Beatgrid editor treatment */
+.beatgrid-overlay{
+  background: rgba(10, 14, 20, 0.75);
+  backdrop-filter: blur(8px);
+}
+
+.beatgrid-editor{
+  border: 1px solid #282c35;
+  border-top-color: #383e4a;
+  border-radius: 12px;
+  background: #181b22;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65), inset 0 1px 1px rgba(255, 255, 255, 0.08);
+}
+
+.beatgrid-editor-header{
+  padding: 16px 20px;
+  border-bottom: 1px solid #282c35;
+  background: #181b22;
+}
+
+.beatgrid-editor-header .eyebrow{
+  color: #ea580c;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.beatgrid-editor-header h2{
+  color: #f5f2eb;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.beatgrid-editor-header p:last-child{
+  color: #8a929e;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+}
+
+.manual-badge{
+  padding: 3px 8px;
+  border: 1px solid #dc2626;
+  border-radius: 4px;
+  color: #ffffff;
+  background: linear-gradient(180deg, #dc2626 0%, #991b1b 100%);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.editor-close-button{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #a0acbe;
+  border-radius: 5px;
+  color: #0f2442;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1.5px 0 #a0acbe,
+    0 2px 4px rgba(0, 0, 0, 0.2);
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 40ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.editor-close-button:hover:not(:disabled){
+  border-color: #dc2626;
+  color: #ffffff;
+  background: linear-gradient(180deg, #dc2626 0%, #991b1b 100%);
+  box-shadow: 0 1.5px 0 #7f1d1d, 0 3px 6px rgba(0, 0, 0, 0.3);
+}
+
+.beatgrid-editor > .mini-preview{
+  margin: 0;
+  border-top: 1px solid #c8cee0;
+  border-bottom: 1px solid #c8cee0;
+  border-radius: 0;
+  background: #dce0e6;
+}
+
+.beatgrid-editor .mini-preview-main strong{
+  color: #0f2442;
+}
+
+.beatgrid-editor .mini-preview time{
+  color: #1e3a63;
+}
+
+.beatgrid-editor .mini-preview-toggle{
+  border: 1px solid #061020;
+  border-top-color: #1f3a63;
+  border-bottom-color: #040914;
+  color: #ffffff;
+  background: linear-gradient(180deg, #152c4e 0%, #0a192f 100%);
+}
+
+.beatgrid-editor-body{
+  padding: 20px;
+  gap: 20px;
+  background: #dce0e6;
+}
+
+.beatgrid-field-group > label{
+  color: #0f2442;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.beatgrid-field-group > p{
+  color: #2c3e55;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.bpm-edit-row input,
+.seconds-input input{
+  padding: 5px 8px;
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #a0acbe;
+  border-radius: 5px;
+  color: #0f2442;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.bpm-edit-row > button,
+.bpm-edit-row .tempo-assist > button,
+.first-beat-row > button,
+.beatgrid-editor .text-button{
+  padding: 5px 10px;
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #a0acbe;
+  border-radius: 5px;
+  color: #0f2442;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1.5px 0 #a0acbe,
+    0 2px 4px rgba(0, 0, 0, 0.08);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 10.5px;
+  font-weight: 800;
+  text-shadow: none;
+  cursor: pointer;
+  transition: all 40ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.bpm-edit-row > button:hover:not(:disabled),
+.first-beat-row > button:hover:not(:disabled),
+.beatgrid-editor .text-button:hover:not(:disabled){
+  border-color: #0f2442;
+  color: #ffffff;
+  background: linear-gradient(180deg, #152c4e 0%, #0a192f 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.2),
+    0 1.5px 0 #040914,
+    0 3px 6px rgba(0, 0, 0, 0.25);
+  transform: translateY(-0.5px);
+}
+
+.tap-tempo-button{
+  border: 1px solid #dc2626 !important;
+  border-top-color: #f87171 !important;
+  border-bottom-color: #7f1d1d !important;
+  color: #ffffff !important;
+  background: linear-gradient(180deg, #dc2626 0%, #991b1b 100%) !important;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.3),
+    0 1.5px 0 #7f1d1d,
+    0 3px 6px rgba(0, 0, 0, 0.25) !important;
+  text-shadow: none !important;
+}
+
+.tap-tempo-button span,
+.seconds-input span{
+  color: #ffffff;
+  font-size: 8px;
+}
+
+.capture-beat-button{
+  border: 1px solid #061020 !important;
+  border-top-color: #1f3a63 !important;
+  border-bottom-color: #040914 !important;
+  color: #ffffff !important;
+  background: linear-gradient(180deg, #152c4e 0%, #0a192f 100%) !important;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.2),
+    0 1.5px 0 #050d1a,
+    0 2px 4px rgba(0, 0, 0, 0.2) !important;
+  text-shadow: none !important;
+}
+
+.beatgrid-editor-footer{
+  padding: 16px 20px;
+  border-top: 1px solid #282c35;
+  background: #181b22;
+}
+
+/* Le même rubis que `Tap`, avec qui il forme un seul geste : on tape, on
+   recale, on enregistre. Il était en bleu nuit, la teinte que le programme
+   emploie partout pour une commande ordinaire — or celle-ci conclut le
+   travail de l'éditeur et mérite de se distinguer. */
+.beatgrid-editor-footer .primary-button{
+  padding: 6px 14px;
+  border: 1px solid #dc2626;
+  border-top-color: #f87171;
+  border-bottom-color: #7f1d1d;
+  border-radius: 5px;
+  color: #ffffff;
+  background: linear-gradient(180deg, #dc2626 0%, #991b1b 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.3),
+    0 1.5px 0 #7f1d1d,
+    0 3px 6px rgba(0, 0, 0, 0.25);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  font-weight: 800;
+  text-shadow: none;
+}
+
+.beatgrid-editor-footer .primary-button:disabled{
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.beatgrid-editor-footer .primary-button:hover:not(:disabled){
+  background: linear-gradient(180deg, #1a365d 0%, #0d1e38 100%);
+  transform: translateY(-0.5px);
+}
+
+/* Compact stereo LED meter: floating lamps and overload lamp. */
+.timeline-header{
+  gap: 12px;
+  min-height: 48px;
+  padding: 5px 14px;
+  border-bottom: 1px solid #c8cee0;
+  background: #dce0e6;
+}
+
+.timeline-header .eyebrow{
+  color: #ea580c;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.timeline-summary{
+  color: #1e3a63;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+/* Photorealistic Teenage Engineering x Dieter Rams CNC Light Aluminum VU Module */
+.stereo-vu-meter{
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: auto;
+  align-self: stretch;
+  min-height: 44px;
+  padding: 4px 10px;
+  flex: 0 0 auto;
+  /* A dark window let into the console, the same kind of recess as the
+     transport rail beside it. Pale lenses on a pale panel had nothing to read
+     against, which is why the bar looked like grey mush whatever the level;
+     a lamp needs darkness behind it before it can look lit. The bright line
+     underneath is the panel edge below the cut-out catching the light. */
+  border: 1px solid #282c35;
+  border-top-color: #383e4a;
+  border-radius: 6px;
+  color: #cfd8e4;
+  background: linear-gradient(180deg, #14171d 0%, #191d25 100%);
+  box-shadow:
+    inset 0 1px 3px rgba(0, 0, 0, 0.85),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.05),
+    0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+/* The two LED rows fill the meter's height rather than sitting centred in it, so
+   the bar lines up with the OL box beside it and the lenses read as rectangles
+   instead of small squares. */
+.led-vu-channels{
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  align-self: stretch;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.led-vu-channel{
+  display: flex;
+  flex: 1 1 0;
+  min-height: 0;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.led-vu-channel-label{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  color: #8b98a9;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.led-vu-track{
+  display: flex;
+  align-items: stretch;
+  gap: 2.5px;
+}
+
+/* Each lens sits in its own milled slot, dark to the bottom of the bore. */
+.led-vu-socket{
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  width: 9.5px;
+  /* Height comes from the row, which fills the meter. */
+  padding: 1px;
+  border-radius: 2.5px;
+  background: #0c0e12;
+  box-shadow:
+    inset 0 1px 1px rgba(0, 0, 0, 0.9),
+    0 0.5px 0 rgba(255, 255, 255, 0.07);
+}
+
+/* Unlit, a lens is still a piece of moulded acrylic and not a hole: it keeps a
+   faint gradient so the bar reads as a row of lamps that happen to be off. */
+.led-vu-segment{
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #232833 0%, #171b22 100%);
+  transition:
+    background 30ms linear,
+    box-shadow 30ms linear;
+}
+
+/* Three states rather than a gradient: too quiet, where it should sit, and
+   clipping. The colour says which, so reading the meter needs no scale. */
+
+/* Cold blue: the mix is not using the headroom it has. */
+.led-vu-segment--low.is-active{
+  background: linear-gradient(180deg, #7fb6f0 0%, #3d7fd0 55%, #26599b 100%);
+  box-shadow: 0 0 4px rgba(61, 127, 208, 0.55);
+}
+
+/* Amber: the working range, and where the bar spends its time. */
+.led-vu-segment--safe.is-active{
+  background: linear-gradient(180deg, #ffd07a 0%, #f5a524 55%, #d4820a 100%);
+  box-shadow: 0 0 5px rgba(245, 165, 36, 0.6);
+}
+
+/* A single red lens at the very end. Red only ever means distortion here: a
+   meter whose top third is red teaches its user to ignore it. */
+.led-vu-segment--clip.is-active{
+  background: linear-gradient(180deg, #ff8b7d 0%, #e5342a 50%, #b81c14 100%);
+  box-shadow:
+    0 0 6px rgba(224, 47, 36, 0.85),
+    0 0 12px rgba(220, 38, 38, 0.5);
+}
+
+/* The overload lamp keeps its own small plate at the end of the window, raised
+   just enough to read as a separate part rather than a wider lens. */
+.vu-overload-container{
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 3px 6px;
+  align-self: stretch;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: linear-gradient(180deg, #1d222b 0%, #13171f 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.vu-overload-label{
+  color: #8b98a9;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 7.5px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  line-height: 1;
+}
+
+.vu-overload-socket{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  padding: 1px;
+  border-radius: 50%;
+  background: #0a0c10;
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.95),
+    0 0.5px 0 rgba(255, 255, 255, 0.1);
+}
+
+.vu-overload-led{
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #2a1616 0%, #16090b 70%, #0c0406 100%);
+  transition:
+    background 40ms ease,
+    box-shadow 40ms ease;
+}
+
+/* Lit like the lamps on the transport keys, so the console has one vocabulary
+   for "this is on" wherever it appears. */
+.vu-overload-led.is-active{
+  background: radial-gradient(circle at 35% 30%, #fffaf7 0%, #ff5a45 45%, #dc2626 100%);
+  box-shadow:
+    0 0 4px #ff6a5a,
+    0 0 9px rgba(255, 90, 70, 0.9),
+    0 0 16px rgba(220, 38, 38, 0.5);
+}
+
+/* ==========================================================================
+   CLIP EQ BUTTON & MODAL DIALOG STYLES
+   ========================================================================== */
+
+.clip-heading-actions{
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+}
+
+/* Sidechain key. Unavailable until the clip covers something, and unmistakably
+   lit once it holds the key, since a keyed clip goes silent where it overlaps
+   and that has to be visible at a glance. */
+.clip-key-btn{
+  display: grid;
+  width: 18px;
+  height: 14px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid #94a3b8;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 100%);
+  color: #0f172a;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  transition: all 120ms ease;
+}
+
+.clip-key-btn:hover:not(:disabled){
+  border-color: #0f2442;
+  background: linear-gradient(180deg, #ffffff 0%, #dbe3ee 100%);
+}
+
+.clip-key-btn:disabled{
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.clip-key-btn.is-active{
+  border-color: #a16207;
+  border-top-color: #fbbf24;
+  color: #ffffff;
+  background: linear-gradient(180deg, #f59e0b 0%, #b45309 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.4),
+    0 0 6px rgba(245, 158, 11, 0.55);
+}
+
+.timeline-clip--sidechain-key{
+  border-color: #b45309;
+}
+
+/* Les deux voix d'un morceau, à gauche de la chaîne. Même plaque que `EQ` —
+   c'est la même rangée et la même famille de commandes —, mais allumées en
+   turquoise plutôt qu'en ambre : l'ambre appartient au sidechain, et deux
+   fonctions de la même couleur sur une rangée de vingt pixels ne se
+   distingueraient plus. */
+.clip-stem-btn{
+  height: 14px;
+  padding: 0 4px;
+  border: 1px solid #94a3b8;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 100%);
+  color: #0f172a;
+  font-family: inherit;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  transition: all 120ms ease;
+}
+
+.clip-stem-btn:hover:not(:disabled){
+  border-color: #0f2442;
+  background: linear-gradient(180deg, #ffffff 0%, #dbe3ee 100%);
+}
+
+.clip-stem-btn:disabled{
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.clip-stem-btn.is-active{
+  border-color: #0f766e;
+  border-top-color: #5eead4;
+  color: #ffffff;
+  background: linear-gradient(180deg, #14b8a6 0%, #0f766e 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.4),
+    0 0 6px rgba(20, 184, 166, 0.5);
+}
+
+.clip-eq-btn-trigger{
+  height: 14px;
+  padding: 0 5px;
+  border: 1px solid #94a3b8;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 100%);
+  color: #0f172a;
+  font-family: inherit;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  transition: all 120ms ease;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.clip-eq-btn-trigger:hover{
+  border-color: #0284c7;
+  background: linear-gradient(180deg, #ffffff 0%, #bae6fd 100%);
+  color: #0369a1;
+  box-shadow: 0 1px 3px rgba(2, 132, 199, 0.25);
+}
+
+.clip-eq-btn-trigger:active{
+  transform: translateY(1px);
+}
+
+.clip-eq-btn-trigger.is-active{
+  background: linear-gradient(180deg, #152c4e 0%, #0a192f 100%);
+  border: 1px solid #0f2442;
+  border-top-color: #234578;
+  border-bottom-color: #081426;
+  color: #ffffff;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.2),
+    0 1px 2px rgba(0, 0, 0, 0.25);
+}
+
+.clip-eq-btn-trigger.is-active:hover{
+  background: linear-gradient(180deg, #1c3963 0%, #0f2442 100%);
+  border-color: #1e457a;
+  color: #ffffff;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.3),
+    0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.clip-remove-btn{
+  height: 14px;
+  width: 14px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #94a3b8;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 100%);
+  color: #0f172a;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  transition: all 120ms ease;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.clip-remove-btn:hover:not(:disabled){
+  border-color: #ef4444;
+  background: linear-gradient(180deg, #ffffff 0%, #fca5a5 100%);
+  color: #dc2626;
+  box-shadow: 0 1px 3px rgba(239, 68, 68, 0.25);
+}
+
+.clip-remove-btn:active:not(:disabled){
+  transform: translateY(1px);
+}
+
+/* Modal Backdrop & Dialog */
+
+.clip-eq-modal-backdrop{
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.65);
+  backdrop-filter: blur(4px);
+  animation: clipEqFadeIn 150ms ease-out;
+}
+
+@keyframes clipEqFadeIn{
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.clip-eq-modal-dialog{
+  width: 660px;
+  max-width: 95vw;
+  background: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%);
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  box-shadow:
+    0 20px 35px -10px rgba(15, 23, 42, 0.35),
+    0 0 0 1px rgba(255, 255, 255, 0.8) inset;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  color: #0f172a;
+  animation: clipEqSlideUp 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes clipEqSlideUp{
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Header */
+
+.clip-eq-modal-header{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 10px;
+}
+
+.clip-eq-title-group{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.clip-eq-badge{
+  background: #0f172a;
+  color: #38bdf8;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 3px 7px;
+  border-radius: 4px;
+  letter-spacing: 0.05em;
+}
+
+.clip-eq-filename{
+  font-size: 13px;
+  font-weight: 700;
+  color: #1e293b;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clip-eq-close-btn{
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #64748b;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 120ms ease;
+}
+
+.clip-eq-close-btn:hover{
+  background: #ef4444;
+  color: #ffffff;
+  border-color: #dc2626;
+}
+
+/* LCD Graph Area */
+
+.clip-eq-graph-container{
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid #1e293b;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.4);
+}
+
+.clip-eq-svg{
+  display: block;
+  width: 100%;
+  height: auto;
+  user-select: none;
+}
+
+/* Controls Section */
+
+.clip-eq-controls-row{
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.clip-eq-param-card{
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 150ms ease;
+}
+
+.clip-eq-param-card--hpf{
+  border-left: 4px solid #0284c7;
+}
+
+.clip-eq-param-card--peak{
+  border-left: 4px solid #f59e0b;
+}
+
+.clip-eq-param-card--lpf{
+  border-left: 4px solid #ef4444;
+}
+
+.clip-eq-param-card--disabled{
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.clip-eq-param-label{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  color: #334155;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+
+.clip-eq-indicator{
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.clip-eq-indicator--hpf{ background: #0284c7; }
+.clip-eq-indicator--peak{ background: #f59e0b; }
+.clip-eq-indicator--lpf{ background: #ef4444; }
+
+.clip-eq-field-row{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.clip-eq-field-title{
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+  width: 85px;
+  flex-shrink: 0;
+}
+
+.clip-eq-range{
+  flex: 1;
+  height: 6px;
+  appearance: none;
+  background: #e2e8f0;
+  border-radius: 3px;
+  outline: none;
+}
+
+.clip-eq-range::-webkit-slider-thumb{
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 2px solid #0284c7;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.clip-eq-range--peak::-webkit-slider-thumb{
+  border-color: #f59e0b;
+}
+
+.clip-eq-range--lpf::-webkit-slider-thumb{
+  border-color: #ef4444;
+}
+
+.clip-eq-value-display{
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.clip-eq-num-input,
+/* Rien ne disait que cette valeur s'écrit : elle n'était qu'un affichage. Le
+   creux n'apparaît qu'au survol et à la saisie — au repos la case reste une
+   lecture, comme les autres valeurs de la fenêtre. */
+.clip-eq-gain-input{
+  border-radius: 3px;
+  cursor: text;
+  transition: background 90ms ease, box-shadow 90ms ease;
+}
+
+.clip-eq-gain-input:hover:not(:disabled){
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.clip-eq-gain-input:focus{
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px #0284c7;
+}
+
+.clip-eq-gain-input:disabled{
+  cursor: default;
+}
+
+.clip-eq-gain-text{
+  width: 54px;
+  border: none;
+  background: transparent;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+  text-align: right;
+  outline: none;
+}
+
+.clip-eq-unit{
+  font-size: 10px;
+  font-weight: 600;
+  color: #64748b;
+}
+
+/* Footer Actions */
+
+.clip-eq-footer{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid #e2e8f0;
+  padding-top: 10px;
+}
+
+.clip-eq-presets{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.clip-eq-toggle-btn{
+  padding: 5px 10px;
+  border-radius: 4px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+
+.clip-eq-toggle-btn--active{
+  background: #0f172a;
+  color: #38bdf8;
+  border-color: #0f172a;
+}
+
+.clip-eq-preset-btn{
+  padding: 5px 10px;
+  border-radius: 4px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #475569;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.clip-eq-preset-btn:hover{
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.clip-eq-actions{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.clip-eq-btn{
+  padding: 6px 14px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+
+.clip-eq-btn--save{
+  border: 1px solid #0284c7;
+  background: linear-gradient(180deg, #0284c7 0%, #0369a1 100%);
+  color: #ffffff;
+  box-shadow: 0 1px 3px rgba(2, 132, 199, 0.3);
+}
+
+.clip-eq-btn--save:hover{
+  background: linear-gradient(180deg, #0369a1 0%, #075985 100%);
+}
+
+.undo-redo-btn{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 21px;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #a0acbe;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  color: #0f2442;
+  cursor: pointer;
+  transition: all 120ms ease;
+  user-select: none;
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.undo-redo-btn svg{
+  display: block;
+  margin: auto;
+}
+
+.undo-redo-btn:hover:not(:disabled){
+  border-color: #0f2442;
+  background: linear-gradient(180deg, #ffffff 0%, #dbe3ee 100%);
+  color: #0f2442;
+}
+
+.undo-redo-btn:active:not(:disabled){
+  transform: translateY(1px);
+  background: #dbe3ee;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.undo-redo-btn:disabled{
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: grayscale(0.5);
+}
+
+/* Photorealistic Teenage Engineering Help Modal Dialog */
+.help-modal-overlay{
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 12, 16, 0.78);
+  backdrop-filter: blur(8px);
+  animation: helpModalFadeIn 150ms ease-out;
+}
+
+@keyframes helpModalFadeIn{
+  from {
+    opacity: 0;
+    backdrop-filter: blur(0px);
+  }
+  to {
+    opacity: 1;
+    backdrop-filter: blur(8px);
+  }
+}
+
+.help-modal-content{
+  position: relative;
+  width: 90%;
+  /* Quarante entrées dans une colonne de 640 px faisaient un rouleau qu'il
+     fallait parcourir en entier pour trouver une touche. */
+  max-width: 840px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  background: #181b22;
+  border: 1px solid #2d3340;
+  border-top-color: #454d60;
+  border-radius: 12px;
+  box-shadow:
+    0 24px 48px rgba(0, 0, 0, 0.6),
+    inset 0 1px 1px rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+  animation: helpModalSlideUp 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes helpModalSlideUp{
+  from {
+    transform: translateY(12px) scale(0.98);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+.help-modal-header{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  background: linear-gradient(180deg, #20242e 0%, #171a22 100%);
+  border-bottom: 1px solid #282d38;
+}
+
+.help-modal-title-group{
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.help-modal-badge{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: #38bdf8;
+}
+
+.help-modal-badge-dot{
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #38bdf8;
+  box-shadow: 0 0 6px #38bdf8;
+}
+
+.help-modal-header h2{
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #f8fafc;
+  letter-spacing: -0.01em;
+}
+
+.help-modal-close-btn{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid #363c4a;
+  background: linear-gradient(180deg, #2a2f3b 0%, #1e222b 100%);
+  color: #94a3b8;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+
+.help-modal-close-btn:hover{
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  border-color: #ffffff;
+  color: #0f2442;
+}
+
+.help-modal-body{
+  padding: 20px 22px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+
+/* Le bouton qui mène aux licences : présent, mais pas en concurrence avec
+   « CLOSE GUIDE ». Il est à l'autre bout de la barre, en retrait. */
+/* Les deux commandes secondaires du pied de page, groupées à gauche pour ne
+   pas concurrencer « CLOSE GUIDE » qui ferme la fenêtre. */
+.help-footer-secondary{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.help-about-btn{
+  padding: 7px 14px;
+  border: 1px solid #3c4352;
+  border-radius: 5px;
+  background: transparent;
+  color: #a2abbc;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+
+.help-about-btn:hover{
+  border-color: #5b6478;
+  color: #f5f2eb;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* Même gabarit que `ABOUT` — hauteur, corps, interlettrage —, mais en rouge :
+   il partage sa place, pas sa nature. La bordure suffit à le distinguer au
+   repos; le fond ne s'allume qu'au survol, une fois l'intention manifeste. */
+.help-danger-btn{
+  padding: 7px 14px;
+  border: 1px solid #5a3030;
+  border-radius: 5px;
+  background: transparent;
+  color: #d98a8a;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+
+.help-danger-btn:hover:not(:disabled){
+  border-color: #a04a4a;
+  color: #ffcccc;
+  background: linear-gradient(180deg, #3a2222 0%, #221212 100%);
+}
+
+/* Le second cran : il emporte aussi la bibliothèque, donc il se montre plus
+   franchement. Un rouge plein plutôt qu'une bordure — deux boutons rouges côte
+   à côte doivent se distinguer d'un coup d'œil, sans quoi le plus grave se
+   presse à la place de l'autre. */
+.help-danger-btn--severe{
+  border-color: #7a2f2f;
+  background: linear-gradient(180deg, #3a1c1c 0%, #241010 100%);
+  color: #ffb3b3;
+}
+
+.help-danger-btn--severe:hover:not(:disabled){
+  border-color: #c05252;
+  background: linear-gradient(180deg, #5c2626 0%, #3a1616 100%);
+  color: #ffffff;
+}
+
+.help-danger-btn:disabled{
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.about-modal-content{
+  max-width: 620px;
+}
+
+.about-modal-body{
+  gap: 22px;
+}
+
+.about-block h3{
+  margin: 0 0 8px;
+  color: #f5f2eb;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.about-block p{
+  margin: 0 0 8px;
+  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.about-author{
+  color: #f5f2eb !important;
+  font-weight: 700;
+}
+
+.about-contact{
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  color: #a2abbc !important;
+  font-size: 11px !important;
+}
+
+.about-fineprint{
+  color: #7b869a !important;
+  font-size: 11px !important;
+}
+
+.about-credits{
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Trois colonnes : ce que c'est, ce que ça fait, sous quelles conditions. La
+   dernière est alignée à droite pour qu'on puisse la balayer seule — c'est la
+   seule qui engage juridiquement. */
+.about-credits li{
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: baseline;
+  padding: 5px 8px;
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+.about-credits li:nth-child(odd){
+  background: rgba(255, 255, 255, 0.022);
+}
+
+.about-credit-name{
+  color: #f5f2eb;
+  font-weight: 700;
+}
+
+.about-credit-role{
+  color: #a2abbc;
+}
+
+.about-credit-licence{
+  color: #7b869a;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  white-space: nowrap;
+}
+
+/* Une famille de gestes : clavier, souris, boutons. Le titre porte la
+   distinction, la ligne dessous porte la règle qui la gouverne. */
+.help-surface{
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.help-surface-head{
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #2d3340;
+}
+
+.help-surface-head h3{
+  margin: 0;
+  color: #f5f2eb;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 13px;
+  font-weight: 850;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.help-surface-head p{
+  margin: 0;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.help-group{
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.help-group-title{
+  margin: 0 0 4px;
+  color: #7b869a;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.help-shortcut-list{
+  display: flex;
+  flex-direction: column;
+}
+
+/* Deux colonnes, la première de largeur fixe.
+   Chaque rangée portait autrefois sa propre boîte, sa touche à gauche et son
+   texte poussé à droite : quarante boîtes empilées, et pas deux descriptions
+   qui commençaient au même endroit. L'œil ne pouvait pas balayer la colonne.
+   La grille aligne tout, et les rangées se contentent d'un filet. */
+.help-shortcut-row{
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 14px;
+  padding: 5px 8px;
+  border-radius: 5px;
+}
+
+.help-shortcut-row:nth-child(odd){
+  background: rgba(255, 255, 255, 0.022);
+}
+
+.help-keys-group{
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.help-key-plus{
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.help-keycap{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 4px;
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #94a3b8;
+  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 100%);
+  color: #0f2442;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  user-select: none;
+}
+
+.help-keycap-sm{
+  min-width: 18px;
+  height: 16px;
+  font-size: 9px;
+  padding: 0 4px;
+}
+
+.help-shortcut-desc{
+  font-size: 12px;
+  font-weight: 500;
+  color: #cbd5e1;
+  line-height: 1.45;
+}
+
+.help-modal-footer{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  background: #13151b;
+  border-top: 1px solid #232732;
+}
+
+.help-modal-tip{
+  font-size: 11px;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.help-modal-done-btn{
+  padding: 8px 18px;
+  border-radius: 6px;
+  border: 1px solid #0284c7;
+  background: linear-gradient(180deg, #0284c7 0%, #0369a1 100%);
+  color: #ffffff;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: all 120ms ease;
+  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.4);
+}
+
+.help-modal-done-btn:hover{
+  background: linear-gradient(180deg, #0ea5e9 0%, #0284c7 100%);
+  border-color: #38bdf8;
+  box-shadow: 0 2px 10px rgba(56, 189, 248, 0.5);
+}
+
+/* Photorealistic Teenage Engineering Horizontal Timeline Scrollbar */
+.timeline-horizontal-scrollbar{
+  flex: 0 0 auto;
+  width: 100%;
+  height: 24px;
+  padding: 4px 12px;
+  background: #13161c;
+  border-top: 1px solid #232733;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  user-select: none;
+  cursor: pointer;
+  z-index: 20;
+}
+
+.timeline-scrollbar-track{
+  position: relative;
+  width: 100%;
+  height: 14px;
+  border-radius: 6px;
+  background: #0b0d12;
+  border: 1px solid #1c202a;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.8);
+  overflow: hidden;
+}
+
+.timeline-scrollbar-thumb{
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 36px;
+  border-radius: 4px;
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #94a3b8;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 1px 3px rgba(0, 0, 0, 0.4);
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 100ms ease, border-color 100ms ease;
+}
+
+.timeline-scrollbar-thumb:hover{
+  background: linear-gradient(180deg, #ffffff 0%, #dbe3ee 100%);
+  border-color: #0f2442;
+}
+
+.timeline-scrollbar-thumb:active{
+  cursor: grabbing;
+  background: linear-gradient(180deg, #152c4e 0%, #0a192f 100%);
+  border-color: #0f2442;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.scrollbar-thumb-ridges{
+  display: flex;
+  align-items: center;
+  gap: 2.5px;
+  pointer-events: none;
+}
+
+.scrollbar-thumb-ridges span{
+  width: 1.5px;
+  height: 8px;
+  border-radius: 1px;
+  background: #94a3b8;
+}
+
+.timeline-scrollbar-thumb:active .scrollbar-thumb-ridges span{
+  background: #38bdf8;
+}
+

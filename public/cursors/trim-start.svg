@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <!-- A dark casing under a light stroke, so the bracket stays visible over a
+       pale waveform and over the dark lane behind it alike. -->
+  <path d="M16 4H9v16h7" fill="none" stroke="#0b0e13" stroke-width="4.5"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M16 4H9v16h7" fill="none" stroke="#ffffff" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

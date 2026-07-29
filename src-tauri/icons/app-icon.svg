@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">MixCanvas icon</title>
+  <defs>
+    <linearGradient id="background" x1="52" y1="36" x2="460" y2="476" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#171B25"/>
+      <stop offset="1" stop-color="#090B10"/>
+    </linearGradient>
+    <!-- Le trait peint : c'est ce que le programme fait faire, et ce que le nom
+         promet. La couleur est celle des touches VOX/MUS et des nœuds de pan —
+         l'icône appartient à la même palette que l'interface. -->
+    <linearGradient id="stroke" x1="120" y1="330" x2="400" y2="190" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2DD4BF"/>
+      <stop offset="1" stop-color="#0E9488"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#background)"/>
+  <rect x="18" y="18" width="476" height="476" rx="96" fill="none" stroke="#292F3D" stroke-width="12"/>
+
+  <!-- La toile : un cadre clair, à peine posé, qui donne son sens au geste. -->
+  <rect x="104" y="120" width="304" height="240" rx="18" fill="none" stroke="#2E3646" stroke-width="10"/>
+
+  <!-- La grille de mesures, en retrait : c'est un canevas de musique, pas de
+       dessin. Quatre traits, comme quatre temps. -->
+  <g fill="#232A38">
+    <rect x="164" y="140" width="6" height="200" rx="3"/>
+    <rect x="224" y="140" width="6" height="200" rx="3"/>
+    <rect x="284" y="140" width="6" height="200" rx="3"/>
+    <rect x="344" y="140" width="6" height="200" rx="3"/>
+  </g>
+
+  <!-- La courbe d'automation, tracée à la main : une montée, un creux, une
+       remontée. Elle déborde du cadre à droite, parce qu'un mix ne s'arrête pas
+       au bord de ce qu'on voit. -->
+  <path fill="none" stroke="url(#stroke)" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"
+        d="M132 320C176 320 190 176 244 176C298 176 300 300 348 300C376 300 392 252 412 236"/>
+
+  <!-- Les deux nœuds qui la tiennent, comme sur la ligne de volume. -->
+  <circle cx="244" cy="176" r="21" fill="#0B0E13"/>
+  <circle cx="244" cy="176" r="13" fill="#5EEAD4"/>
+  <circle cx="348" cy="300" r="21" fill="#0B0E13"/>
+  <circle cx="348" cy="300" r="13" fill="#5EEAD4"/>
+
+  <!-- Les formes d'onde sous la toile : ce qu'on mixe, sous ce qu'on dessine.
+       Froides contre le trait chaud, pour que la marque tienne à 32 px. -->
+  <g fill="#7D8CA3">
+    <rect x="154" y="402" width="12" height="34" rx="6"/>
+    <rect x="180" y="388" width="12" height="62" rx="6"/>
+    <rect x="206" y="396" width="12" height="46" rx="6"/>
+    <rect x="232" y="378" width="12" height="82" rx="6"/>
+    <rect x="258" y="392" width="12" height="54" rx="6"/>
+    <rect x="284" y="382" width="12" height="74" rx="6"/>
+    <rect x="310" y="398" width="12" height="42" rx="6"/>
+    <rect x="336" y="390" width="12" height="58" rx="6"/>
+  </g>
+</svg>

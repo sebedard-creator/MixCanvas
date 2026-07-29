@@ -1,0 +1,32 @@
+{
+  "name": "mixcanvas",
+  "version": "0.0.17",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "desktop:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1",
+    "check": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-dialog": "2.7.2",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "typescript": "7.0.2",
+    "vite": "8.1.5",
+    "vitest": "4.1.10"
+  }
+}

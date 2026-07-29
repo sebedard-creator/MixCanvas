@@ -1,0 +1,6 @@
+storeDir: .pnpm-store
+preferFrozenLockfile: true
+enableGlobalVirtualStore: false
+
+minimumReleaseAgeExclude:
+  - '@tauri-apps/plugin-dialog@2.7.2'

@@ -1,0 +1,70 @@
+[package]
+name = "mixcanvas"
+version = "0.0.17"
+description = "A focused, timeline-based DJ mix editor"
+authors = ["MixCanvas contributors"]
+edition = "2024"
+license = "AGPL-3.0-only"
+rust-version = "1.97.1"
+
+[lib]
+name = "mixcanvas_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+# Le thread audio est la raison de ces réglages. Un échantillon traverse
+# plusieurs petites fonctions par image — biquads, suiveurs d'enveloppe,
+# recherche WSOLA — et les 16 unités de codegen par défaut empêchent l'inlining
+# entre elles. La compilation devient nettement plus longue; l'exécution en
+# temps réel est ce qui compte ici.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+# RTen exécute le modèle de beats. Sans optimisation, une piste de quelques
+# minutes peut demander des dizaines de minutes dans `desktop:dev`. Seule cette
+# petite chaîne est optimisée : Tauri, Rodio et les autres dépendances gardent
+# leurs artefacts debug ordinaires et ne rallongent pas la première compilation.
+[profile.dev.package.beat-this]
+opt-level = 3
+[profile.dev.package.rten]
+opt-level = 3
+[profile.dev.package.rten-base]
+opt-level = 3
+[profile.dev.package.rten-gemm]
+opt-level = 3
+[profile.dev.package.rten-model-file]
+opt-level = 3
+[profile.dev.package.rten-onnx]
+opt-level = 3
+[profile.dev.package.rten-shape-inference]
+opt-level = 3
+[profile.dev.package.rten-simd]
+opt-level = 3
+[profile.dev.package.rten-tensor]
+opt-level = 3
+[profile.dev.package.rten-vecmath]
+opt-level = 3
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[features]
+# Embarque la bibliothèque ONNX et le modèle **dans** l'exécutable, pour un
+# portable d'un seul fichier. Éteinte par défaut : les deux fichiers ne sont pas
+# versionnés — ils pèsent trente-cinq mégaoctets — et un dépôt fraîchement
+# cloné doit rester constructible sans eux.
+embed-resources = []
+
+[dependencies]
+# `wav` sert aux stems : ils sortent de la séparation en PCM, et doivent
+# pouvoir rentrer par la même porte que les MP3 de la bibliothèque.
+rodio = { version = "0.22.2", default-features = false, features = ["playback", "mp3", "wav"] }
+rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"] }
+base64 = "0.22"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "2.11.5", features = [] }
+tauri-plugin-dialog = "2.7.2"
+rustfft = "6.4.1"
+beat-this = { version = "=1.0.0", default-features = false }
+ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-17", "api-18", "api-19", "api-20", "api-21", "api-22", "api-23", "api-24"] }
