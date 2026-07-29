@@ -467,6 +467,14 @@ button:disabled{
   color: #a3c4ae;
 }
 
+/* Un chiffre penché : la valeur ne vient pas de l'analyse, on l'a posée à la
+   main. La teinte verte le disait déjà, mais elle ne se voit qu'en comparant
+   deux rangées — l'italique se lit sur une seule, et annonce que « Restore
+   Automatic » a quelque chose à restaurer. */
+.bpm-value--manual strong{
+  font-style: italic;
+}
+
 .analysis-running{
   display: inline-flex;
   align-items: center;
@@ -4139,6 +4147,13 @@ body,
     0 0 6px rgba(245, 158, 11, 0.55);
 }
 
+/* `.transport-glyph` impose sa propre encre — celle de la barre de transport.
+   Ici la plaque passe au blanc quand elle s'allume, et la chaîne doit suivre :
+   sans ça elle restait sombre sur l'ambre. */
+.clip-key-btn .transport-glyph{
+  color: inherit;
+}
+
 .timeline-clip--sidechain-key{
   border-color: #b45309;
 }
@@ -5034,6 +5049,18 @@ body,
   font-weight: 800;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   user-select: none;
+}
+
+/* Une plaque qui porte un dessin plutôt qu'un mot. Le rembourrage horizontal
+   de 7 px est calculé pour des lettres; sur une marque carrée il décentre.
+   L'encre est reprise à la plaque, sinon le glyphe garde celle de la barre de
+   transport. */
+.help-keycap--glyph{
+  padding: 0;
+}
+
+.help-keycap--glyph .transport-glyph{
+  color: inherit;
 }
 
 .help-keycap-sm{

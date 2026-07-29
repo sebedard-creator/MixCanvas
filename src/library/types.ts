@@ -37,6 +37,19 @@ export interface LibraryImportResult {
   failedCount: number;
 }
 
+/**
+ * Une piste qui vient d'être analysée, envoyée pendant le lot.
+ *
+ * Miroir de `AnalysisProgress` dans `src-tauri/src/lib.rs`. La rangée entière
+ * voyage, et non le seul tempo : l'interface remplace la sienne par celle-ci
+ * sans avoir à savoir lesquels de ses champs viennent de changer.
+ */
+export interface AnalysisProgress {
+  track: LibraryTrack;
+  done: number;
+  total: number;
+}
+
 export interface AnalysisBatchResult {
   tracks: LibraryTrack[];
   analyzedCount: number;

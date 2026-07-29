@@ -4,6 +4,25 @@ Ce document consigne quotidiennement les changements matériels apportés au pro
 
 Les entrées sont classées de la plus récente à la plus ancienne. Une journée peut distinguer les éléments ajoutés, modifiés, corrigés et les décisions prises. Une décision discutée mais non retenue ne doit pas être présentée comme une fonction terminée.
 
+## 2026-07-29
+
+- **Les pistes s'affichent au fur et à mesure de l'analyse.** Le tracker appris prend plusieurs secondes par morceau; sur un dossier entier, attendre la fin du lot laissait l'interface immobile assez longtemps pour qu'on la croie plantée. Chaque piste part maintenant dès qu'elle est passée, avec un compte qui avance — `Analyzing 12 of 87...`.
+  - **Une rangée entière voyage**, pas seulement le tempo : l'interface remplace la sienne sans avoir à savoir lesquels de ses champs viennent de changer. Un échec compte autant qu'une réussite — une piste qui n'a pas pu être analysée doit cesser d'afficher « Analyzing... », et c'est justement celle qu'on attendrait le plus longtemps.
+  - Le lot renvoie toujours la liste complète en terminant, qui **fait autorité** : une émission perdue ne casse rien, ce qui permet de l'ignorer plutôt que d'interrompre une analyse en cours pour un événement qui n'est pas arrivé.
+  - Lire **une** piste passe par la même requête que les lire toutes. Une rangée ne devient une piste qu'au prix d'une dizaine de règles — le BPM manuel qui masque l'analysé, le compte de temps recalculé quand on a corrigé, le fichier disparu — et une seconde copie de ce raisonnement aurait fini par contredire la première. Un test compare les deux lectures sur une piste corrigée à la main, là où le travail est le plus lourd.
+
+- **Nouveau bouton `AUTO`**, à droite de `DRAW`. Allumé — le défaut —, un clic dans la timeline lance la lecture, ce qu'on veut la plupart du temps. Éteint, il pose seulement la tête de lecture : quand on place des clips à l'oreille, le même clic relançait la musique vingt fois de suite.
+  - Éteint, l'écoute en cours **s'arrête quand même**. Retenir le départ de la timeline sans taire le miniplayer aurait laissé deux sources jouer ensemble — pire que le démarrage qu'on voulait éviter.
+
+- **L'icône de la chaîne du sidechain vit désormais à un seul endroit.** La fenêtre d'aide en montrait une autre : un caractère du système, `⛓`, que le bouton du clip n'avait jamais utilisé. Les deux dessins ont divergé parce qu'il y en avait deux — le second rejoint la famille des marques de transport, et la fenêtre d'aide y puise.
+  - Ce qui a demandé que l'aide sache afficher un **dessin** et non seulement un mot. La plaque prend alors son encre à elle, sinon le glyphe gardait celle de la barre de transport et restait sombre sur le bouton allumé.
+
+- **Un BPM posé à la main s'affiche en italique.** La teinte verte le disait déjà, mais elle ne se voit qu'en comparant deux rangées; l'italique se lit sur une seule, et annonce que « Restore Automatic » a quelque chose à restaurer. L'infobulle donne alors le tempo détecté — mais seulement s'il diffère : sur une piste dont seul le premier temps a bougé, le répéter à l'identique ne dit rien.
+
+- **La fenêtre `ABOUT` décrit la détection de tempo.** C'est ce qu'on interroge en premier quand une grille tombe à côté : d'où vient le tempo, ce qui se passe quand le modèle ne peut pas tourner, et où corriger à la main. RTen et beat-this-rs rejoignent les crédits, avec l'attribution à l'Institute of Computational Perception de JKU Linz.
+
+- **L'icône du programme passe au bleu de l'interface.** Le trait était turquoise — la couleur des touches `VOX`/`MUS`. L'icône est la marque du programme entier, pas d'une de ses fonctions; elle prend donc le bleu de la pastille du menu et des chiffres du résumé. Tout le jeu d'icônes a été régénéré, sans quoi seule la source vectorielle aurait changé.
+
 ## 2026-07-28
 
 - **Portable quotidien autonome construit.**

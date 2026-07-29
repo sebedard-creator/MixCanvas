@@ -39,6 +39,8 @@ const CREDITS: Credit[] = [
   { name: "ort", licence: "MIT / Apache-2.0", role: "ONNX Runtime bindings" },
   { name: "ONNX Runtime", licence: "MIT", role: "Neural network inference" },
   { name: "Open-Unmix (UMX-HQ)", licence: "MIT", role: "Vocal separation model" },
+  { name: "RTen", licence: "MIT / Apache-2.0", role: "Runs the beat-tracking model" },
+  { name: "beat-this-rs", licence: "MIT", role: "Beat and downbeat tracker" },
   { name: "Serde", licence: "MIT / Apache-2.0", role: "Serialisation" },
 ];
 
@@ -126,6 +128,32 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
             <p className="about-fineprint">
               Symphonia is covered by the Mozilla Public License 2.0: its source, and any
               change made to it, must remain available. MixCanvas uses it unmodified.
+            </p>
+          </section>
+
+          {/* La détection de tempo est ce qu'on interroge en premier quand une
+              grille tombe à côté. Dire par quoi elle passe évite d'avoir à lire
+              le code pour savoir si le résultat vient d'un modèle ou d'un
+              repli, et où corriger à la main quand il se trompe. */}
+          <section className="about-block">
+            <h3>How the beat grid is found</h3>
+            <p>
+              Tempo and downbeats come from <strong>Beat-This</strong>, a neural beat
+              tracker, run locally through RTen. Its beat events are then fitted to a
+              single rigid grid — a DJ needs a constant clock, not a list of musical
+              events — and the first downbeat is placed where the kick actually enters,
+              so an ambient intro does not push the grid off.
+            </p>
+            <p>
+              When the model cannot run or the fitted tempo falls outside the supported
+              range, the older correlation-based analyser takes over. Either way the
+              result is only a starting point: the <strong>Beatgrid Editor</strong> lets
+              you tap, nudge and correct it, and can restore the detected values.
+            </p>
+            <p className="about-fineprint">
+              Beat This! is the work of the Institute of Computational Perception at JKU
+              Linz, with the Rust port by danigb. The models ship unmodified under the
+              MIT licence; the full notice is in THIRD_PARTY_NOTICES.
             </p>
           </section>
 

@@ -20,6 +20,22 @@ export function formatImportSummary(counts: ImportCounts): string {
   return details.length > 0 ? details.join(" · ") : "No new MP3 files found.";
 }
 
+/**
+ * Où en est le lot, pendant qu'il tourne.
+ *
+ * Sur un dossier entier l'analyse dure des minutes; sans compte qui avance,
+ * une interface immobile se lit comme une panne. Le numéro est celui de la
+ * piste **en cours**, pas de la dernière finie : c'est ce qu'on cherche des
+ * yeux quand on attend, et l'affichage doit arriver à `n / n`.
+ */
+export function formatAnalysisProgress(done: number, total: number): string {
+  if (total <= 0) {
+    return "";
+  }
+  const current = Math.min(done + 1, total);
+  return `Analyzing ${current} of ${total}...`;
+}
+
 type AnalysisCounts = Pick<AnalysisBatchResult, "analyzedCount" | "failedCount">;
 
 export function formatAnalysisSummary(counts: AnalysisCounts): string {

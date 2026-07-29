@@ -176,6 +176,9 @@ interface TimelinePanelProps {
   onSetLaneSolo: (lane: number, isSolo: boolean) => Promise<void>;
   onSetLimiterEnabled: (limiterEnabled: boolean) => Promise<void>;
   onSetCompressorEnabled: (compressorEnabled: boolean) => Promise<void>;
+  /** Vrai quand un clic dans la timeline doit aussi lancer la lecture. */
+  autoplay: boolean;
+  onSetAutoplay: (autoplay: boolean) => void;
   onSetSidechainKey: (clipId: number, isKey: boolean) => Promise<void>;
   onSetClipStem: (clipId: number, stem: "full" | "vocals" | "instrumental") => Promise<void>;
   onSeparateStems: (clipId: number, stem: "vocals" | "instrumental") => Promise<void>;
@@ -326,6 +329,8 @@ export function TimelinePanel({
   onSetLaneSolo,
   onSetLimiterEnabled,
   onSetCompressorEnabled,
+  autoplay,
+  onSetAutoplay,
   onSetSidechainKey,
   onSetClipStem,
   onSeparateStems,
@@ -1829,6 +1834,41 @@ export function TimelinePanel({
                 </span>
                 </span>
               </div>
+
+              {/* Ce que fait un clic dans la timeline. Ce n'est ni un réglage
+                  d'affichage ni un traitement du son, d'où son propre bloc :
+                  c'est une règle de conduite du transport.
+                  Non persisté, comme les réglages de vue — allumé est l'état
+                  qu'on veut retrouver au lancement, et c'est le défaut. */}
+              <div className="analog-transport">
+                <span className="transport-hint">
+                <button
+                  className={`analog-transport-button analog-autoplay${autoplay ? " is-active" : ""}`}
+                  type="button"
+                  aria-pressed={autoplay}
+                  onClick={() => onSetAutoplay(!autoplay)}
+                  aria-label={
+                    autoplay
+                      ? "Autoplay on: clicking the timeline starts playback"
+                      : "Autoplay off: clicking the timeline only moves the playhead"
+                  }
+                >
+                  <div className="transport-led-socket">
+                    <i
+                      className={`transport-led autoplay-led${autoplay ? " is-active" : ""}`}
+                      aria-hidden="true"
+                    />
+                  </div>
+                  <TransportGlyph name="autoplay" />
+                  <span className="transport-button-label">AUTO</span>
+                </button>
+                <span className="lane-hint-tip" aria-hidden="true">
+                  <strong>Autoplay</strong>
+                  <span>{autoplay ? "On — a click starts playback" : "Off — a click only moves the playhead"}</span>
+                  <span>Applies when a track is previewing</span>
+                </span>
+                </span>
+              </div>
             </div>
           </div>
         </div>
@@ -2454,13 +2494,11 @@ export function TimelinePanel({
                         }}
                         title={keyTitle}
                       >
-                        {/* Deux maillons pris l'un dans l'autre : c'est une
-                            chaîne latérale, et une clé de serrurier demandait
-                            de connaître le mot avant de lire le dessin. */}
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                          <path d="M10.2 13.8a4.6 4.6 0 0 0 6.9.5l2.7-2.7a4.6 4.6 0 0 0-6.5-6.5l-1.6 1.5" />
-                          <path d="M13.8 10.2a4.6 4.6 0 0 0-6.9-.5l-2.7 2.7a4.6 4.6 0 0 0 6.5 6.5l1.5-1.5" />
-                        </svg>
+                        {/* Le dessin vit dans `TransportGlyph`, pas ici : la
+                            fenêtre d'aide montre le même bouton, et deux copies
+                            du même trait finissent par diverger — c'est
+                            précisément ce qui était arrivé. */}
+                        <TransportGlyph name="sidechain" />
                       </button>
                       <button
                         type="button"

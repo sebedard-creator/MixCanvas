@@ -1,5 +1,7 @@
 import React, { useEffect } from "react";
 
+import { TransportGlyph } from "./TransportGlyph";
+
 interface HelpModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -33,7 +35,14 @@ interface HelpModalProps {
 type Surface = "key" | "pointer" | "control";
 
 interface ShortcutItem {
-  keys: string[];
+  /**
+   * Le texte d'une touche, ou le dessin d'un bouton qui n'en porte pas.
+   *
+   * La chaîne du sidechain était ici un caractère — `⛓` — que le système
+   * dessinait à sa façon, sans rapport avec le bouton du clip. Un bouton sans
+   * texte doit montrer **sa** marque, prise à la source commune.
+   */
+  keys: (string | React.ReactNode)[];
   description: string;
   surface: Surface;
   /** Sous-titre d'un petit paquet, à l'intérieur d'une famille. */
@@ -83,13 +92,14 @@ const SHORTCUTS: ShortcutItem[] = [
 
   // ── Les boutons ───────────────────────────────────────────────────────────
   { surface: "control", group: "On a clip", keys: ["VOX", "MUS"], description: "Play the vocals or the instrumental alone — the first click separates this clip" },
-  { surface: "control", group: "On a clip", keys: ["⛓"], description: "Make it the sidechain key: it goes silent where it overlaps, and pumps what it covers" },
+  { surface: "control", group: "On a clip", keys: [<TransportGlyph name="sidechain" />], description: "Make it the sidechain key: it goes silent where it overlaps, and pumps what it covers" },
   { surface: "control", group: "On a clip", keys: ["EQ"], description: "Open its three-band equaliser and gain trim" },
 
   { surface: "control", group: "Transport rail", keys: ["COMP"], description: "Master glue compressor and its console colour" },
   { surface: "control", group: "Transport rail", keys: ["LIMIT"], description: "Master limiter on the output bus" },
   { surface: "control", group: "Transport rail", keys: ["VIEW"], description: "Cycle the automation lines shown" },
   { surface: "control", group: "Transport rail", keys: ["DRAW"], description: "Pencil — shape on the left, period on the right" },
+  { surface: "control", group: "Transport rail", keys: ["AUTO"], description: "Autoplay — off, a click in the timeline only moves the playhead" },
 
   { surface: "control", group: "Project", keys: ["BOUNCE MIX"], description: "Render the whole timeline offline to a 16-bit 44.1 kHz stereo WAV" },
   { surface: "control", group: "Project", keys: ["SAVE", "LOAD"], description: "Write or reopen a .mixcanvas file — library, beatgrids and timeline together" },
@@ -182,7 +192,11 @@ export const HelpModal: React.FC<HelpModalProps> = ({
                                       {item.surface === "control" ? "·" : "+"}
                                     </span>
                                   )}
-                                  <kbd className="help-keycap">{key}</kbd>
+                                  <kbd
+                                    className={`help-keycap${typeof key === "string" ? "" : " help-keycap--glyph"}`}
+                                  >
+                                    {key}
+                                  </kbd>
                                 </React.Fragment>
                               ))}
                             </div>

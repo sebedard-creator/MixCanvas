@@ -27,7 +27,9 @@ export type TransportGlyphName =
   | "draw-off"
   | "draw-step"
   | "draw-sine"
-  | "draw-triangle";
+  | "draw-triangle"
+  | "sidechain"
+  | "autoplay";
 
 const STROKE = {
   fill: "none",
@@ -103,6 +105,34 @@ export function TransportGlyph({ name }: { name: TransportGlyphName }) {
           <path {...STROKE} d="M1.6 10.4 5 4.2H10.4" />
           {/* The ceiling the curve flattens against. */}
           <path {...STROKE} strokeWidth={1} opacity={0.45} d="M1.4 2.2H10.6" />
+        </>
+      )}
+      {name === "autoplay" && (
+        <>
+          {/* La tête de lecture qu'on vient de poser, et ce qui s'ensuit : le
+              trait d'abord, la lecture juste après. La marque raconte le geste
+              — un clic dans la timeline — plutôt que le mot « auto ». */}
+          <path {...STROKE} d="M2.6 2.2V9.8" />
+          <path d="M5.2 3.4 9.6 6 5.2 8.6Z" fill="currentColor" />
+        </>
+      )}
+      {name === "sidechain" && (
+        <>
+          {/* Deux maillons pris l'un dans l'autre : c'est une chaîne latérale,
+              et une clé de serrurier demandait de connaître le mot avant de
+              lire le dessin. Trait plus fin que les autres marques — 1,1 au
+              lieu de 1,4 : les courbes sont serrées, et à pleine épaisseur les
+              deux boucles se referment sur elles-mêmes. */}
+          <path
+            {...STROKE}
+            strokeWidth={1.1}
+            d="M5.1 6.9a2.3 2.3 0 0 0 3.45.25l1.35-1.35a2.3 2.3 0 0 0-3.25-3.25l-.8.75"
+          />
+          <path
+            {...STROKE}
+            strokeWidth={1.1}
+            d="M6.9 5.1a2.3 2.3 0 0 0-3.45-.25L2.1 6.2a2.3 2.3 0 0 0 3.25 3.25l.75-.75"
+          />
         </>
       )}
       {name === "busy" && (

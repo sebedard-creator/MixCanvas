@@ -8,14 +8,23 @@ import { ClipEqModal } from "./components/ClipEqModal";
 import { LibraryPanel } from "./components/LibraryPanel";
 import { TimelinePanel } from "./components/TimelinePanel";
 import { formatDuration } from "./lib/formatDuration";
-import { formatAnalysisSummary, formatImportSummary } from "./lib/formatImportSummary";
+import {
+  formatAnalysisProgress,
+  formatAnalysisSummary,
+  formatImportSummary,
+} from "./lib/formatImportSummary";
 import { UndoRedoHistory } from "./lib/undoRedo";
 import type { LibraryPointerDrag } from "./lib/timelinePointerDrag";
 import { snapTimelineBeat } from "./lib/timelineSnap";
 import { resolveLaneShortcut, resolveSpaceTarget, shouldCaptureTimelineSpace } from "./lib/timelineShortcut";
 import { clipToSplit } from "./lib/laneTarget";
 import { ANALYSIS_ALGORITHM_VERSION } from "./library/types";
-import type { AnalysisBatchResult, LibraryImportResult, LibraryTrack } from "./library/types";
+import type {
+  AnalysisBatchResult,
+  AnalysisProgress,
+  LibraryImportResult,
+  LibraryTrack,
+} from "./library/types";
 import type { ClipEqSettings, TimelineClip, TimelineSnapshot, TimelineTransportSnapshot } from "./timeline/types";
 
 type PreviewStatus = "empty" | "paused" | "playing" | "ended";
@@ -83,6 +92,15 @@ function App() {
   const [libraryBusy, setLibraryBusy] = useState(false);
   const [timelineBusy, setTimelineBusy] = useState(false);
   const [timelinePreparing, setTimelinePreparing] = useState(false);
+  /**
+   * Un clic dans la timeline lance-t-il la lecture ?
+   *
+   * Allumé par défaut, parce que c'est le geste qu'on fait le plus souvent —
+   * on clique pour écouter là. Mais quand on place des clips à l'oreille, le
+   * même clic relance la musique vingt fois de suite, et il faut pouvoir le
+   * retenir. Non persisté : l'état allumé est celui qu'on veut au lancement.
+   */
+  const [autoplay, setAutoplay] = useState(true);
   /* The lane the keyboard acts on. Pointing anywhere inside a track arms it;
      it starts on A so a shortcut always has a defined target, and the track
      controls show which one it is. */
@@ -197,6 +215,31 @@ function App() {
   useEffect(() => {
     const unlisten = listen<number>("stems-progress", (event) => {
       setStemProgress(event.payload);
+    });
+    return () => {
+      void unlisten.then((stop) => stop());
+    };
+  }, []);
+
+  /**
+   * Chaque piste s'affiche dès qu'elle est analysée.
+   *
+   * Le tracker appris prend plusieurs secondes par morceau : sur un dossier
+   * entier, attendre la fin du lot laissait l'interface immobile assez
+   * longtemps pour qu'on la croie plantée. On remplace la rangée concernée et
+   * on la laisse là — le lot renvoie la liste complète en terminant, qui
+   * corrige tout ce qui aurait pu se perdre en route.
+   *
+   * Une piste absente de la liste n'est pas insérée : elle a pu être retirée
+   * pendant le lot, et la faire réapparaître serait pire que de l'ignorer.
+   */
+  useEffect(() => {
+    const unlisten = listen<AnalysisProgress>("analysis-track", (event) => {
+      const { track, done, total } = event.payload;
+      setLibrary((current) =>
+        current.map((existing) => (existing.id === track.id ? track : existing)),
+      );
+      setLibraryMessage(formatAnalysisProgress(done, total));
     });
     return () => {
       void unlisten.then((stop) => stop());
@@ -821,7 +864,11 @@ function App() {
   const seekTimeline = useCallback(async (positionBeat: number) => {
     setError(null);
     const shouldSwitchFromPreview = preview.status !== "empty" && timeline.clips.length > 0;
-    if (shouldSwitchFromPreview) {
+    // Éteint, l'autoplay retient la lecture — mais pas l'écoute en cours : deux
+    // sources jouant ensemble serait pire que le démarrage qu'on voulait
+    // éviter. Le miniplayer se tait, la tête se pose, rien ne part.
+    const shouldStartTimeline = shouldSwitchFromPreview && autoplay;
+    if (shouldStartTimeline) {
       setTimelinePreparing(true);
     }
     try {
@@ -829,17 +876,21 @@ function App() {
         await invoke<TimelineTransportSnapshot>("seek_timeline", { positionBeat }),
       );
       if (shouldSwitchFromPreview) {
-        setTimelineTransport(await invoke<TimelineTransportSnapshot>("play_timeline"));
+        if (autoplay) {
+          setTimelineTransport(await invoke<TimelineTransportSnapshot>("play_timeline"));
+        } else {
+          await invoke<PreviewSnapshot>("stop_preview");
+        }
         setPreview(await invoke<PreviewSnapshot>("preview_snapshot"));
       }
     } catch (transportError) {
       setError(errorMessage(transportError));
     } finally {
-      if (shouldSwitchFromPreview) {
+      if (shouldStartTimeline) {
         setTimelinePreparing(false);
       }
     }
-  }, [preview.status, timeline.clips.length]);
+  }, [autoplay, preview.status, timeline.clips.length]);
 
   const seekPreview = useCallback(async (positionMs: number) => {
     setError(null);
@@ -1231,6 +1282,8 @@ function App() {
             onSetLaneSolo={setTimelineLaneSolo}
             onSetLimiterEnabled={setTimelineLimiterEnabled}
             onSetCompressorEnabled={setTimelineCompressorEnabled}
+            autoplay={autoplay}
+            onSetAutoplay={setAutoplay}
             onSetSidechainKey={setTimelineSidechainKey}
             onSetClipStem={setTimelineClipStem}
             onSeparateStems={separateAndSelectStem}

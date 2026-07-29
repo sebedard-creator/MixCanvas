@@ -479,6 +479,21 @@ impl LibraryStore {
     }
 
     pub fn list_tracks(&self) -> Result<Vec<LibraryTrack>, String> {
+        self.query_tracks(None)
+    }
+
+    /// Une piste seule, telle que la bibliothèque la présente.
+    ///
+    /// Passe par la même lecture que `list_tracks` : la rangée brute ne devient
+    /// une `LibraryTrack` qu'au prix d'une dizaine de règles — le BPM manuel qui
+    /// masque l'analysé, le compte de temps recalculé quand on a corrigé, le
+    /// fichier disparu — et une seconde copie de ce raisonnement finirait par
+    /// s'écarter de la première sans que rien ne le signale.
+    pub fn track(&self, id: i64) -> Result<Option<LibraryTrack>, String> {
+        Ok(self.query_tracks(Some(id))?.into_iter().next())
+    }
+
+    fn query_tracks(&self, only: Option<i64>) -> Result<Vec<LibraryTrack>, String> {
         let mut statement = self
             .connection
             .prepare(
@@ -487,13 +502,14 @@ impl LibraryStore {
                         first_beat_ms, manual_first_beat_ms, beat_count,
                         analysis_status, analysis_error, analysis_version
                  FROM library_tracks
+                 WHERE ?1 IS NULL OR id = ?1
                  ORDER BY COALESCE(NULLIF(artist, ''), file_name) COLLATE NOCASE,
                           COALESCE(NULLIF(title, ''), file_name) COLLATE NOCASE, id",
             )
             .map_err(database_read_error)?;
 
         let rows = statement
-            .query_map([], |row| {
+            .query_map([only], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
@@ -1991,6 +2007,95 @@ mod tests {
         let tracks = store.list_tracks().expect("tracks should be listed");
         assert_eq!(tracks[0].analysis_version, ANALYSIS_ALGORITHM_VERSION);
         assert_eq!(tracks[0].bpm, Some(128.0));
+
+        drop(store);
+        remove_database_files(&database_path);
+    }
+
+    /// Ce que `track` renvoie doit être exactement ce que `list_tracks`
+    /// aurait mis dans la liste, sans quoi une rangée publiée en cours de lot
+    /// contredirait celle qui arrive à la fin.
+    #[test]
+    fn one_track_reads_exactly_as_it_does_in_the_full_list() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-single-track-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+        let mut store = LibraryStore::open(&database_path).expect("database should open");
+        for name in ["alpha.mp3", "beta.mp3"] {
+            store
+                .connection
+                .execute(
+                    "INSERT INTO library_tracks
+                     (file_path, path_key, file_name, duration_ms, sample_rate, channels)
+                     VALUES (?1, ?1, ?1, 60000, 44100, 2)",
+                    params![name],
+                )
+                .expect("track should be inserted");
+        }
+        let wanted = store.connection.last_insert_rowid();
+        // Une piste corrigée à la main : c'est là que la lecture fait le plus
+        // de travail — le BPM manuel masque l'analysé et le compte de temps se
+        // recalcule — donc c'est là qu'une seconde copie divergerait.
+        store
+            .save_analysis(
+                wanted,
+                &BeatAnalysis {
+                    bpm: 128.0,
+                    confidence: 0.9,
+                    first_beat_ms: 250,
+                    beats_ms: vec![250, 719],
+                    waveform: WaveformPeaks {
+                        left_min: vec![-1.0],
+                        left_max: vec![1.0],
+                        left_rms: vec![0.5],
+                        right_min: vec![-1.0],
+                        right_max: vec![1.0],
+                        right_rms: vec![0.5],
+                    },
+                },
+            )
+            .expect("analysis should be saved");
+        store
+            .connection
+            .execute(
+                "UPDATE library_tracks SET manual_bpm = 174.0 WHERE id = ?1",
+                params![wanted],
+            )
+            .expect("manual bpm should be stored");
+
+        let from_list = store
+            .list_tracks()
+            .expect("tracks should be listed")
+            .into_iter()
+            .find(|track| track.id == wanted)
+            .expect("the track should be in the list");
+        let alone = store
+            .track(wanted)
+            .expect("the track should be readable")
+            .expect("the track should exist");
+
+        assert_eq!(alone.bpm, Some(174.0));
+        assert!(alone.is_corrected);
+        assert_eq!(alone.beat_count, from_list.beat_count);
+        assert_eq!(alone.bpm, from_list.bpm);
+        assert_eq!(alone.analyzed_bpm, from_list.analyzed_bpm);
+        assert_eq!(alone.first_beat_ms, from_list.first_beat_ms);
+        assert_eq!(alone.analysis_status, from_list.analysis_status);
+        assert_eq!(alone.analysis_version, from_list.analysis_version);
+        assert_eq!(alone.is_missing, from_list.is_missing);
+
+        assert!(
+            store
+                .track(wanted + 1_000)
+                .expect("a missing id should not be an error")
+                .is_none(),
+            "un identifiant inconnu doit répondre « rien », pas une erreur"
+        );
 
         drop(store);
         remove_database_files(&database_path);

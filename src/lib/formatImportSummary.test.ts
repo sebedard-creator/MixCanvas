@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { formatAnalysisSummary, formatImportSummary } from "./formatImportSummary";
+import {
+  formatAnalysisProgress,
+  formatAnalysisSummary,
+  formatImportSummary,
+} from "./formatImportSummary";
 
 describe("formatImportSummary", () => {
   it("describes a mixed import", () => {
@@ -13,6 +17,23 @@ describe("formatImportSummary", () => {
     expect(formatImportSummary({ addedCount: 0, duplicateCount: 0, failedCount: 0 })).toBe(
       "No new MP3 files found.",
     );
+  });
+});
+
+describe("formatAnalysisProgress", () => {
+  it("names the track being worked on, not the one just finished", () => {
+    expect(formatAnalysisProgress(0, 87)).toBe("Analyzing 1 of 87...");
+    expect(formatAnalysisProgress(11, 87)).toBe("Analyzing 12 of 87...");
+  });
+
+  it("stops at the total on the last track", () => {
+    // Le dernier événement annonce 87 sur 87 finies; sans borne l'affichage
+    // aurait dit « 88 sur 87 » juste avant que le résumé le remplace.
+    expect(formatAnalysisProgress(87, 87)).toBe("Analyzing 87 of 87...");
+  });
+
+  it("says nothing when there is nothing to analyse", () => {
+    expect(formatAnalysisProgress(0, 0)).toBe("");
   });
 });
 

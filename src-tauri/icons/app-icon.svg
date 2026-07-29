@@ -6,11 +6,13 @@
       <stop offset="1" stop-color="#090B10"/>
     </linearGradient>
     <!-- Le trait peint : c'est ce que le programme fait faire, et ce que le nom
-         promet. La couleur est celle des touches VOX/MUS et des nœuds de pan —
-         l'icône appartient à la même palette que l'interface. -->
+         promet. Le bleu est celui de l'interface — la pastille du menu, les
+         chiffres du résumé, les touches allumées — et non plus le turquoise des
+         VOX/MUS : l'icône est la marque du programme entier, pas d'une de ses
+         fonctions. Même dégradé, une teinte plus loin sur la roue. -->
     <linearGradient id="stroke" x1="120" y1="330" x2="400" y2="190" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#2DD4BF"/>
-      <stop offset="1" stop-color="#0E9488"/>
+      <stop stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#0284C7"/>
     </linearGradient>
   </defs>
 
@@ -37,9 +39,9 @@
 
   <!-- Les deux nœuds qui la tiennent, comme sur la ligne de volume. -->
   <circle cx="244" cy="176" r="21" fill="#0B0E13"/>
-  <circle cx="244" cy="176" r="13" fill="#5EEAD4"/>
+  <circle cx="244" cy="176" r="13" fill="#7DD3FC"/>
   <circle cx="348" cy="300" r="21" fill="#0B0E13"/>
-  <circle cx="348" cy="300" r="13" fill="#5EEAD4"/>
+  <circle cx="348" cy="300" r="13" fill="#7DD3FC"/>
 
   <!-- Les formes d'onde sous la toile : ce qu'on mixe, sous ce qu'on dessine.
        Froides contre le trait chaud, pour que la marque tienne à 32 px. -->

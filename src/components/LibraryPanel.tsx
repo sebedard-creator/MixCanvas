@@ -278,7 +278,22 @@ export function LibraryPanel({
                 type="button"
                 disabled={libraryBusy || analysisBusy || track.isMissing}
                 onClick={() => onEditGrid(track)}
-                title={`Beatgrid - ${track.beatCount} beats - First downbeat ${formatDuration(track.firstBeatMs ?? 0)} - Click to edit`}
+                title={
+                  /* L'italique signale une valeur posée à la main; l'infobulle
+                     dit alors ce qu'elle a remplacé et où revenir en arrière.
+                     Sans le chiffre d'origine, « Restore Automatic » demande
+                     de cliquer pour savoir ce qu'on restaure. */
+                  track.isCorrected
+                    ? `Beatgrid - ${track.beatCount} beats - First downbeat ${formatDuration(track.firstBeatMs ?? 0)} - Set by hand${
+                        /* Le tempo détecté n'a d'intérêt que s'il diffère : sur
+                           une piste dont seul le premier temps a bougé, le
+                           répéter à l'identique ne dit rien. */
+                        track.analyzedBpm && Math.abs(track.analyzedBpm - track.bpm) >= 0.005
+                          ? `, detected ${track.analyzedBpm.toFixed(2)}`
+                          : ""
+                      } - Click to edit or restore`
+                    : `Beatgrid - ${track.beatCount} beats - First downbeat ${formatDuration(track.firstBeatMs ?? 0)} - Click to edit`
+                }
               >
                 <strong>{track.bpm.toFixed(2)}</strong>
                 <span className="bpm-edit-hint" aria-hidden="true">EDIT</span>

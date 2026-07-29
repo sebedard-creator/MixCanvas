@@ -1338,10 +1338,12 @@ async fn analyze_library_tracks(
 
     let library = Arc::clone(library_state.inner());
     let analysis_flag = Arc::clone(analysis_state.inner());
-    let result =
-        tauri::async_runtime::spawn_blocking(move || run_analysis_batch(&library, &ids, &models))
-            .await
-            .map_err(|error| format!("The BPM analysis was interrupted: {error}"));
+    let reporter = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        run_analysis_batch(&library, &ids, &models, &reporter)
+    })
+    .await
+    .map_err(|error| format!("The BPM analysis was interrupted: {error}"));
     analysis_flag.store(false, Ordering::SeqCst);
 
     result?
@@ -1390,10 +1392,25 @@ fn run_waveform_backfill(library_state: &LibraryState) -> Result<usize, String> 
     Ok(saved_count)
 }
 
+/// Ce qui part vers l'interface dès qu'une piste est passée.
+///
+/// La rangée entière, pas seulement le tempo : l'interface remplace la sienne
+/// par celle-ci, et une mise à jour partielle l'obligerait à savoir lesquels de
+/// ses champs sont désormais périmés.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AnalysisProgress {
+    track: LibraryTrack,
+    /// Combien de pistes du lot sont passées, celle-ci comprise.
+    done: usize,
+    total: usize,
+}
+
 fn run_analysis_batch(
     library_state: &LibraryState,
     ids: &[i64],
     models: &BeatModelPaths,
+    reporter: &tauri::AppHandle,
 ) -> Result<AnalysisBatchResult, String> {
     let targets = {
         let library = library_state
@@ -1401,10 +1418,11 @@ fn run_analysis_batch(
             .map_err(|_| "The library is in an invalid state.".to_owned())?;
         library.analysis_targets(ids)?
     };
+    let total = targets.len();
     let mut analyzed_count = 0;
     let mut failed_count = 0;
 
-    for target in targets {
+    for (index, target) in targets.into_iter().enumerate() {
         {
             let mut library = library_state
                 .lock()
@@ -1428,6 +1446,17 @@ fn run_analysis_batch(
                 failed_count += 1;
             }
         }
+
+        // La piste part maintenant, pas à la fin du lot. Le tracker appris met
+        // plusieurs secondes par morceau : sur un dossier entier, l'ancienne
+        // version laissait l'interface figée assez longtemps pour qu'on la
+        // croie plantée. L'échec compte autant que la réussite — une piste qui
+        // n'a pas pu être analysée doit cesser d'afficher « Analyzing... ».
+        //
+        // Une émission perdue ne casse rien : le lot renvoie la liste complète
+        // en terminant, qui fait autorité. C'est pourquoi l'erreur est ignorée
+        // plutôt que d'interrompre une analyse en cours.
+        emit_analysis_progress(library_state, reporter, target.id, index + 1, total);
     }
 
     let tracks = library_state
@@ -1440,6 +1469,23 @@ fn run_analysis_batch(
         analyzed_count,
         failed_count,
     })
+}
+
+fn emit_analysis_progress(
+    library_state: &LibraryState,
+    reporter: &tauri::AppHandle,
+    id: i64,
+    done: usize,
+    total: usize,
+) {
+    let Ok(library) = library_state.lock() else {
+        return;
+    };
+    let Ok(Some(track)) = library.track(id) else {
+        return;
+    };
+    drop(library);
+    let _ = reporter.emit("analysis-track", AnalysisProgress { track, done, total });
 }
 
 /// The bundle identifiers this application shipped under before it became
