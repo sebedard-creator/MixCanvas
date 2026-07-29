@@ -108,6 +108,52 @@ struct ProjectClip {
     trim_end_beats: f64,
     is_sidechain_key: bool,
     eq_settings: Option<String>,
+    /// `full`, `vocals` ou `instrumental` : laquelle des voix le clip joue.
+    ///
+    /// `default` pour que les projets écrits avant ce champ se relisent : ils
+    /// jouaient forcément le morceau entier, ce que `Default` donne.
+    #[serde(default = "full_stem")]
+    stem: String,
+    /// Les voix déjà séparées de ce clip, et le fichier de chacune.
+    #[serde(default)]
+    stems: Vec<ProjectClipStem>,
+    /// La cuisson de ce clip, s'il en a une.
+    #[serde(default)]
+    bake: Option<ProjectClipBake>,
+}
+
+fn full_stem() -> String {
+    "full".to_owned()
+}
+
+/// Une voix séparée, telle que le projet la retient.
+///
+/// Le **chemin** voyage, pas le son. Un WAV de séparation pèse trente-cinq
+/// mégaoctets; deux par clip, sur vingt clips, feraient un projet d'un
+/// gigaoctet et demi qu'on n'enverrait à personne. Un fichier absent au
+/// rechargement n'est pas une erreur : le clip retombe sur sa source, ce qui
+/// s'entend et se répare d'un clic.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectClipStem {
+    kind: String,
+    file_path: String,
+    source_from_ms: i64,
+}
+
+/// Une cuisson, telle que le projet la retient.
+///
+/// **`removed` est la seule copie de l'automation que la cuisson a emportée.**
+/// Sans elle dans le projet, enregistrer puis rouvrir perdait à la fois le
+/// fichier cuit et l'automation qu'il contenait : le clip revenait sec, sur une
+/// voie plate, et il n'y avait plus rien à restaurer. Elle voyage donc même si
+/// le fichier, lui, ne se retrouve pas.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectClipBake {
+    file_path: String,
+    source_from_ms: i64,
+    removed: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -238,7 +284,8 @@ pub fn collect(connection: &Connection) -> Result<ProjectFile, String> {
     let mut clip_statement = connection
         .prepare(
             "SELECT library_track_id, lane, anchor_beat, tempo_anchor_beat,
-                    trim_start_beats, trim_end_beats, is_sidechain_key, eq_settings
+                    trim_start_beats, trim_end_beats, is_sidechain_key, eq_settings,
+                    stem, id
              FROM timeline_clips ORDER BY lane, anchor_beat",
         )
         .map_err(database_read_error)?;
@@ -246,6 +293,7 @@ pub fn collect(connection: &Connection) -> Result<ProjectFile, String> {
         .query_map([], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
+                row.get::<_, i64>(9)?,
                 ProjectClip {
                     track_index: 0,
                     lane: row.get(1)?,
@@ -255,6 +303,9 @@ pub fn collect(connection: &Connection) -> Result<ProjectFile, String> {
                     trim_end_beats: row.get(5)?,
                     is_sidechain_key: row.get::<_, i64>(6)? != 0,
                     eq_settings: row.get(7)?,
+                    stem: row.get(8)?,
+                    stems: Vec::new(),
+                    bake: None,
                 },
             ))
         })
@@ -264,9 +315,11 @@ pub fn collect(connection: &Connection) -> Result<ProjectFile, String> {
     drop(clip_statement);
 
     let mut clips = Vec::with_capacity(clip_rows.len());
-    for (track_id, mut clip) in clip_rows {
+    for (track_id, clip_id, mut clip) in clip_rows {
         clip.track_index = index_of(track_id)
             .ok_or_else(|| "A clip refers to a track that is not in the library.".to_owned())?;
+        clip.stems = read_clip_stems(connection, clip_id)?;
+        clip.bake = read_clip_bake(connection, clip_id)?;
         clips.push(clip);
     }
 
@@ -332,6 +385,52 @@ pub fn collect(connection: &Connection) -> Result<ProjectFile, String> {
         pan_nodes,
         filter_nodes,
     })
+}
+
+/// Les voix déjà séparées d'un clip.
+///
+/// La forme d'onde n'est pas emportée : elle se relit du fichier en une passe,
+/// et la recopier dans le projet doublerait sa taille pour une donnée qu'on
+/// sait reconstruire.
+fn read_clip_stems(connection: &Connection, clip_id: i64) -> Result<Vec<ProjectClipStem>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT kind, file_path, source_from_ms
+             FROM clip_stems WHERE clip_id = ?1 ORDER BY kind",
+        )
+        .map_err(database_read_error)?;
+    let rows = statement
+        .query_map([clip_id], |row| {
+            Ok(ProjectClipStem {
+                kind: row.get(0)?,
+                file_path: row.get(1)?,
+                source_from_ms: row.get(2)?,
+            })
+        })
+        .map_err(database_read_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(database_read_error)?;
+    Ok(rows)
+}
+
+fn read_clip_bake(
+    connection: &Connection,
+    clip_id: i64,
+) -> Result<Option<ProjectClipBake>, String> {
+    connection
+        .query_row(
+            "SELECT file_path, source_from_ms, removed FROM clip_bakes WHERE clip_id = ?1",
+            [clip_id],
+            |row| {
+                Ok(ProjectClipBake {
+                    file_path: row.get(0)?,
+                    source_from_ms: row.get(1)?,
+                    removed: row.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(database_read_error)
 }
 
 fn read_waveform(
@@ -522,8 +621,8 @@ pub fn apply(connection: &mut Connection, project: &ProjectFile) -> Result<(), S
             .execute(
                 "INSERT INTO timeline_clips
                  (library_track_id, lane, anchor_beat, created_at, tempo_anchor_beat,
-                  eq_settings, trim_start_beats, trim_end_beats, is_sidechain_key)
-                 VALUES (?1, ?2, ?3, strftime('%s','now'), ?4, ?5, ?6, ?7, ?8)",
+                  eq_settings, trim_start_beats, trim_end_beats, is_sidechain_key, stem)
+                 VALUES (?1, ?2, ?3, strftime('%s','now'), ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     track_id,
                     clip.lane,
@@ -533,9 +632,33 @@ pub fn apply(connection: &mut Connection, project: &ProjectFile) -> Result<(), S
                     clip.trim_start_beats,
                     clip.trim_end_beats,
                     i64::from(clip.is_sidechain_key),
+                    clip.stem,
                 ],
             )
             .map_err(database_write_error)?;
+
+        // Les médias du clip suivent le clip qu'on vient d'insérer : c'est son
+        // identifiant tout neuf qu'ils doivent porter, pas celui de la session
+        // qui a écrit le projet.
+        let clip_id = transaction.last_insert_rowid();
+        for stem in &clip.stems {
+            transaction
+                .execute(
+                    "INSERT INTO clip_stems (clip_id, kind, file_path, source_from_ms)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![clip_id, stem.kind, stem.file_path, stem.source_from_ms],
+                )
+                .map_err(database_write_error)?;
+        }
+        if let Some(bake) = &clip.bake {
+            transaction
+                .execute(
+                    "INSERT INTO clip_bakes (clip_id, file_path, source_from_ms, removed)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![clip_id, bake.file_path, bake.source_from_ms, bake.removed],
+                )
+                .map_err(database_write_error)?;
+        }
     }
 
     for node in &project.volume_nodes {
@@ -641,6 +764,129 @@ mod tests {
                     std::path::PathBuf::from(format!("{}{}", path.to_string_lossy(), suffix));
                 let _ = std::fs::remove_file(candidate);
             }
+        }
+    }
+
+    /// Un clip cuit doit traverser un enregistrement sans rien perdre.
+    ///
+    /// C'est là qu'il y avait perte sèche : le format ne portait ni le stem
+    /// choisi, ni les fichiers séparés, ni la cuisson. Or `removed` est la
+    /// **seule** copie de l'automation qu'une cuisson a emportée — rouvrir un
+    /// projet rendait donc le clip sec, sur une voie plate, sans rien à
+    /// restaurer.
+    #[test]
+    fn a_baked_clip_keeps_its_media_and_its_buried_automation() {
+        let (mut origin, origin_path, fake_mp3) = scratch_store("bake-origin");
+        origin
+            .connection
+            .execute(
+                "INSERT INTO library_tracks
+                 (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                  bpm, first_beat_ms, beat_count, analysis_status)
+                 VALUES (?1, ?2, 'baked.mp3', 120000, 44100, 2, 120.0, 500, 240, 'analyzed')",
+                params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+            )
+            .expect("track should be inserted");
+        let track_id = origin.connection.last_insert_rowid();
+        let placed =
+            crate::timeline::add_clip(&mut origin.connection, track_id, Some(8.0), Some(1))
+                .expect("a clip should be added");
+        let clip_id = placed.clips[0].id;
+
+        // Un stem choisi, ses deux fichiers, et une cuisson par-dessus.
+        let mut media = Vec::new();
+        for kind in ["vocals", "instrumental"] {
+            // `set_clip_stem` refuse une voix dont le fichier n'est pas là :
+            // des chemins inventés ne passeraient pas cette porte.
+            let file = fake_mp3.with_extension(format!("{kind}.wav"));
+            std::fs::write(&file, []).expect("fake stem should be created");
+            origin
+                .connection
+                .execute(
+                    "INSERT INTO clip_stems (clip_id, kind, file_path, source_from_ms)
+                     VALUES (?1, ?2, ?3, 1500)",
+                    params![clip_id, kind, file.to_string_lossy()],
+                )
+                .expect("stem should be recorded");
+            media.push(file);
+        }
+        crate::timeline::set_clip_stem(&origin.connection, clip_id, "vocals")
+            .expect("the clip should play its vocals");
+        let buried = r#"{"lane":1,"fromBeat":8.0,"toBeat":40.0,"volume":[[12.0,-9.5]],"pan":[],"filter":[[16.0,0.6,0.25]]}"#;
+        origin
+            .connection
+            .execute(
+                "INSERT INTO clip_bakes (clip_id, file_path, source_from_ms, removed)
+                 VALUES (?1, ?2, 2500, ?3)",
+                params![
+                    clip_id,
+                    fake_mp3.with_extension("baked.wav").to_string_lossy(),
+                    buried
+                ],
+            )
+            .expect("bake should be recorded");
+
+        let text = serde_json::to_string(
+            &collect(&origin.connection).expect("the session should be collected"),
+        )
+        .expect("the project should serialize");
+
+        let (mut target, target_path, _) = scratch_store("bake-target");
+        let reread: ProjectFile = serde_json::from_str(&text).expect("it should read back");
+        apply(&mut target.connection, &reread).expect("the project should apply");
+
+        let restored =
+            crate::timeline::snapshot(&target.connection).expect("the timeline should read");
+        assert_eq!(restored.clips.len(), 1);
+        let clip = &restored.clips[0];
+        assert_eq!(
+            clip.stem, "vocals",
+            "la voix choisie traverse l'enregistrement"
+        );
+        assert!(clip.has_stems, "et les fichiers séparés avec elle");
+        assert!(clip.is_baked, "le clip est toujours cuit");
+
+        let baked_path = fake_mp3.with_extension("baked.wav");
+        let (path, offset, removed) = target
+            .connection
+            .query_row(
+                "SELECT file_path, source_from_ms, removed FROM clip_bakes WHERE clip_id = ?1",
+                [clip.id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .expect("the bake should be back");
+        assert_eq!(path, baked_path.to_string_lossy());
+        assert_eq!(offset, 2500);
+        assert_eq!(
+            removed, buried,
+            "l'automation enfouie revient au caractère près — c'est la seule copie"
+        );
+
+        // Le clip a un identifiant neuf dans la base cible : les médias doivent
+        // avoir suivi *ce* clip, pas celui de la session qui a écrit le projet.
+        let orphans: i64 = target
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM clip_stems WHERE clip_id <> ?1",
+                [clip.id],
+                |row| row.get(0),
+            )
+            .expect("stems should count");
+        assert_eq!(
+            orphans, 0,
+            "aucun média ne pointe vers un clip qui n'existe pas"
+        );
+
+        scrub(&[origin_path, target_path]);
+        let _ = std::fs::remove_file(&fake_mp3);
+        for file in media {
+            let _ = std::fs::remove_file(file);
         }
     }
 

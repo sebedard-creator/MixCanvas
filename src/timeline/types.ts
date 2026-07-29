@@ -38,6 +38,13 @@ export interface TimelineClip {
   stem: "full" | "vocals" | "instrumental";
   /** Si le morceau a déjà été séparé : un clic instantané, ou deux minutes. */
   hasStems: boolean;
+  /**
+   * Si ce clip joue un fichier cuit plutôt que sa source.
+   *
+   * Son égalisation et l'automation de sa voie sont alors **dans** le son. Les
+   * commandes qui les règlent n'ont plus rien à régler sous lui.
+   */
+  isBaked: boolean;
   isMissing: boolean;
   needsAnalysis: boolean;
   waveform: WaveformPeaks | null;

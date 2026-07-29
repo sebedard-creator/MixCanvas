@@ -279,10 +279,10 @@ export function LibraryPanel({
                 disabled={libraryBusy || analysisBusy || track.isMissing}
                 onClick={() => onEditGrid(track)}
                 title={
-                  /* L'italique signale une valeur posée à la main; l'infobulle
-                     dit alors ce qu'elle a remplacé et où revenir en arrière.
-                     Sans le chiffre d'origine, « Restore Automatic » demande
-                     de cliquer pour savoir ce qu'on restaure. */
+                  /* La teinte bleue signale une valeur posée à la main;
+                     l'infobulle dit alors ce qu'elle a remplacé et où revenir
+                     en arrière. Sans le chiffre d'origine, « Restore Automatic »
+                     demande de cliquer pour savoir ce qu'on restaure. */
                   track.isCorrected
                     ? `Beatgrid - ${track.beatCount} beats - First downbeat ${formatDuration(track.firstBeatMs ?? 0)} - Set by hand${
                         /* Le tempo détecté n'a d'intérêt que s'il diffère : sur
@@ -296,7 +296,13 @@ export function LibraryPanel({
                 }
               >
                 <strong>{track.bpm.toFixed(2)}</strong>
-                <span className="bpm-edit-hint" aria-hidden="true">EDIT</span>
+                {/* La mention dit aussi l'état : `EDIT` invite, `EDITED`
+                    constate. La teinte se repère le long de la colonne, le mot
+                    se lit sur une seule rangée — les deux signaux ne
+                    s'adressent pas au même coup d'œil. */}
+                <span className="bpm-edit-hint" aria-hidden="true">
+                  {track.isCorrected ? "EDITED" : "EDIT"}
+                </span>
               </button>
             ) : (
               <button

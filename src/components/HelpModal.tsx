@@ -64,7 +64,7 @@ const SHORTCUTS: ShortcutItem[] = [
 
   { surface: "key", group: "Automation lines", keys: ["E"], description: "Cycle what is shown: pan, volume, both, hidden" },
   { surface: "key", group: "Automation lines", keys: ["S"], description: "Cycle the pencil shape — needs a line on screen" },
-  { surface: "key", group: "Automation lines", keys: ["D"], description: "Cycle the pencil period — needs the pencil armed" },
+  { surface: "key", group: "Automation lines", keys: ["D"], description: "Cycle the pencil period — needs a line on screen" },
 
   { surface: "key", group: "History", keys: ["Ctrl", "Z"], description: "Undo" },
   { surface: "key", group: "History", keys: ["Ctrl", "Y"], description: "Redo" },
@@ -74,14 +74,16 @@ const SHORTCUTS: ShortcutItem[] = [
   { surface: "pointer", group: "Moving around", keys: ["Shift", "Scroll"], description: "Scroll sideways — the view follows the playhead again after a pause" },
   { surface: "pointer", group: "Moving around", keys: ["Click a track"], description: "Select it — anywhere inside counts" },
 
-  { surface: "pointer", group: "Clips", keys: ["Drag"], description: "Move along the timeline, or onto another track" },
-  { surface: "pointer", group: "Clips", keys: ["Drag an edge"], description: "Trim the head or tail where the cursor becomes a bracket; drag back out to restore" },
+  // Un seul outil, dont la position décide. L'ordre des lignes est celui des
+  // zones, de haut en bas du clip, pour qu'on lise la règle et pas trois cas.
+  { surface: "pointer", group: "Clips", keys: ["Drag an edge"], description: "Trim the head or tail — the audio under the rest stays put, and dragging back out restores it" },
+  { surface: "pointer", group: "Clips", keys: ["Drag the title bar"], description: "Move along the timeline, or onto another track" },
+  { surface: "pointer", group: "Clips", keys: ["Drag the body"], description: "Draw the pencil's shape across the drag, live, on both lines at once — nothing to arm" },
   { surface: "pointer", group: "Clips", keys: ["Drag from library"], description: "Drop a track straight onto the lane you want" },
 
   { surface: "pointer", group: "Automation", keys: ["Right click"], description: "Add a volume or pan node; right-click a node to delete it" },
   { surface: "pointer", group: "Automation", keys: ["Drag a volume node"], description: "Set its level and position — to the bottom of the travel for silence" },
   { surface: "pointer", group: "Automation", keys: ["Drag a pan node"], description: "Up sends the track left, down sends it right" },
-  { surface: "pointer", group: "Automation", keys: ["Drag a lane"], description: "With the pencil armed, draw the shape across the drag — over clips too, live, on both lines at once" },
   { surface: "pointer", group: "Automation", keys: ["Drag the tempo point"], description: "Ramp the project tempo from a clip's turquoise marker" },
 
   { surface: "pointer", group: "Filter band", keys: ["Drag"], description: "Draw a filter curve" },
@@ -94,11 +96,13 @@ const SHORTCUTS: ShortcutItem[] = [
   { surface: "control", group: "On a clip", keys: ["VOX", "MUS"], description: "Play the vocals or the instrumental alone — the first click separates this clip" },
   { surface: "control", group: "On a clip", keys: [<TransportGlyph name="sidechain" />], description: "Make it the sidechain key: it goes silent where it overlaps, and pumps what it covers" },
   { surface: "control", group: "On a clip", keys: ["EQ"], description: "Open its three-band equaliser and gain trim" },
+  { surface: "control", group: "On a clip", keys: ["BAKE"], description: "Render its EQ and this lane's automation into a file of its own, then flatten the lane under it — draw freely on top" },
+  { surface: "control", group: "On a clip", keys: ["BAKE"], description: "Click a baked clip again to undo it: the automation comes back, replacing anything drawn since" },
 
   { surface: "control", group: "Transport rail", keys: ["COMP"], description: "Master glue compressor and its console colour" },
   { surface: "control", group: "Transport rail", keys: ["LIMIT"], description: "Master limiter on the output bus" },
   { surface: "control", group: "Transport rail", keys: ["VIEW"], description: "Cycle the automation lines shown" },
-  { surface: "control", group: "Transport rail", keys: ["DRAW"], description: "Pencil — shape on the left, period on the right" },
+  { surface: "control", group: "Transport rail", keys: ["DRAW"], description: "What the pencil draws — shape on the left, period on the right" },
   { surface: "control", group: "Transport rail", keys: ["AUTO"], description: "Autoplay — off, a click in the timeline only moves the playhead" },
 
   { surface: "control", group: "Project", keys: ["BOUNCE MIX"], description: "Render the whole timeline offline to a 16-bit 44.1 kHz stereo WAV" },

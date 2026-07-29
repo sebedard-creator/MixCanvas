@@ -118,6 +118,16 @@ function App() {
      plusieurs minutes sans retour visible passe pour un gel. */
   const [bounceProgress, setBounceProgress] = useState<number | null>(null);
   const [stemProgress, setStemProgress] = useState<number | null>(null);
+  /**
+   * Ce que le rendu hors ligne en cours est en train de faire.
+   *
+   * Séparer et cuire empruntent la même fenêtre — les deux immobilisent un clip
+   * le temps d'un rendu, et deux fenêtres identiques n'apprendraient rien de
+   * plus. Mais elles ne font pas la même chose, et la barre doit le dire :
+   * annoncer une séparation pendant une cuisson envoie chercher un bug là où
+   * il n'y en a pas.
+   */
+  const [renderKind, setRenderKind] = useState<"stems" | "bake">("stems");
 
   // The history reads the timeline through a ref so that every edit callback
   // stays referentially stable. A callback rebuilt on each snapshot would make
@@ -129,6 +139,11 @@ function App() {
      window key listeners on every click inside the timeline. */
   const selectedLaneRef = useRef(selectedLane);
   selectedLaneRef.current = selectedLane;
+  /* Le transport se rafraîchit vingt fois par seconde. Lu par une référence,
+     il n'entraîne pas `seekTimeline` — et donc tout le panneau — dans son
+     rythme. */
+  const timelineTransportRef = useRef(timelineTransport);
+  timelineTransportRef.current = timelineTransport;
   const history = useRef(new UndoRedoHistory<TimelineSnapshot>());
   const historyBusy = useRef(false);
   const [canUndo, setCanUndo] = useState(false);
@@ -214,6 +229,17 @@ function App() {
 
   useEffect(() => {
     const unlisten = listen<number>("stems-progress", (event) => {
+      setStemProgress(event.payload);
+    });
+    return () => {
+      void unlisten.then((stop) => stop());
+    };
+  }, []);
+
+  // La cuisson a son propre événement. Sans cette écoute la barre restait à
+  // zéro du début à la fin — le rendu avançait, l'affichage disait le contraire.
+  useEffect(() => {
+    const unlisten = listen<number>("bake-progress", (event) => {
       setStemProgress(event.payload);
     });
     return () => {
@@ -863,34 +889,39 @@ function App() {
 
   const seekTimeline = useCallback(async (positionBeat: number) => {
     setError(null);
-    const shouldSwitchFromPreview = preview.status !== "empty" && timeline.clips.length > 0;
-    // Éteint, l'autoplay retient la lecture — mais pas l'écoute en cours : deux
-    // sources jouant ensemble serait pire que le démarrage qu'on voulait
-    // éviter. Le miniplayer se tait, la tête se pose, rien ne part.
-    const shouldStartTimeline = shouldSwitchFromPreview && autoplay;
-    if (shouldStartTimeline) {
+    // L'autoplay ne dépend de rien d'autre que de lui-même : allumé, un clic
+    // lance la lecture; éteint, il ne fait que poser la tête. Il ne s'appliquait
+    // avant qu'au passage depuis le miniplayer, ce qui rendait le même geste
+    // tantôt silencieux, tantôt sonore, selon un état qu'on n'avait pas en tête.
+    //
+    // Deux cas ne sont pas un démarrage et n'en demandent pas : une timeline
+    // vide, et une lecture déjà en cours — que `play_timeline` reconstruirait
+    // pour rien, avec le trou que ça s'entend.
+    const shouldStart =
+      autoplay
+      && timeline.clips.length > 0
+      && timelineTransportRef.current.status !== "playing";
+    if (shouldStart) {
       setTimelinePreparing(true);
     }
     try {
       setTimelineTransport(
         await invoke<TimelineTransportSnapshot>("seek_timeline", { positionBeat }),
       );
-      if (shouldSwitchFromPreview) {
-        if (autoplay) {
-          setTimelineTransport(await invoke<TimelineTransportSnapshot>("play_timeline"));
-        } else {
-          await invoke<PreviewSnapshot>("stop_preview");
-        }
+      if (shouldStart) {
+        // `play_timeline` libère la sortie, donc rend le miniplayer muet de
+        // lui-même. L'instantané qui suit remet l'interface d'accord avec ça.
+        setTimelineTransport(await invoke<TimelineTransportSnapshot>("play_timeline"));
         setPreview(await invoke<PreviewSnapshot>("preview_snapshot"));
       }
     } catch (transportError) {
       setError(errorMessage(transportError));
     } finally {
-      if (shouldStartTimeline) {
+      if (shouldStart) {
         setTimelinePreparing(false);
       }
     }
-  }, [autoplay, preview.status, timeline.clips.length]);
+  }, [autoplay, timeline.clips.length]);
 
   const seekPreview = useCallback(async (positionMs: number) => {
     setError(null);
@@ -975,6 +1006,7 @@ function App() {
     clipId: number,
     stem: "vocals" | "instrumental",
   ) => {
+    setRenderKind("stems");
     setStemProgress(0);
     try {
       // Le second appel n'a de sens que si le premier a réussi. Enchaîner sans
@@ -988,6 +1020,27 @@ function App() {
       await runTimelineEdit(
         () => invoke<TimelineSnapshot>("set_timeline_clip_stem", { clipId, stem }),
       );
+    } finally {
+      setStemProgress(null);
+    }
+  }, [runTimelineEdit]);
+
+  /**
+   * Cuit un clip, ou défait la cuisson.
+   *
+   * Le rendu passe par la même barre que la séparation : les deux immobilisent
+   * le clip pendant un moment, et les distinguer n'apprendrait rien à qui
+   * attend. Défaire est instantané et ne mérite pas de barre.
+   */
+  const setClipBaked = useCallback(async (clipId: number, baked: boolean) => {
+    if (!baked) {
+      await runTimelineEdit(() => invoke<TimelineSnapshot>("unbake_clip", { clipId }));
+      return;
+    }
+    setRenderKind("bake");
+    setStemProgress(0);
+    try {
+      await runTimelineEdit(() => invoke<TimelineSnapshot>("bake_clip", { clipId }));
     } finally {
       setStemProgress(null);
     }
@@ -1287,6 +1340,7 @@ function App() {
             onSetSidechainKey={setTimelineSidechainKey}
             onSetClipStem={setTimelineClipStem}
             onSeparateStems={separateAndSelectStem}
+            onSetClipBaked={setClipBaked}
             onAddVolumeNode={addTimelineVolumeNode}
             onAddPanNode={addTimelinePanNode}
             onMovePanNode={moveTimelinePanNode}
@@ -1372,7 +1426,9 @@ function App() {
         <div className="bounce-overlay" role="dialog" aria-modal="true" aria-labelledby="stems-title">
           <div className="bounce-dialog">
             <p className="bounce-eyebrow">OFFLINE RENDER</p>
-            <h2 id="stems-title">Separating stems</h2>
+            <h2 id="stems-title">
+              {renderKind === "bake" ? "Baking clip" : "Separating stems"}
+            </h2>
             <div
               className="bounce-track"
               role="progressbar"
@@ -1384,8 +1440,9 @@ function App() {
             </div>
             <p className="bounce-percent">{Math.round(stemProgress * 100)}%</p>
             <p className="bounce-note">
-              Only what this clip plays is separated, with a margin around it —
-              not the whole track.
+              {renderKind === "bake"
+                ? "Its EQ and this lane's automation are going into the sound. The lane goes flat under it, and BAKE undoes this."
+                : "Only what this clip plays is separated, with a margin around it — not the whole track."}
             </p>
           </div>
         </div>

@@ -457,22 +457,20 @@ button:disabled{
   background: #151821;
 }
 
+/* Le tempo posé à la main, dans le bleu de l'application — celui de la pastille
+   du menu, des chiffres du résumé et de l'icône. C'est la seule couleur encore
+   libre sur cette rangée : l'ambre appartient au sidechain, le turquoise aux
+   voix, le rouge à la tête de lecture, et un vert n'appartenait à rien du tout.
+   Une valeur corrigée est un état du programme, pas d'une de ses fonctions;
+   elle porte donc la couleur du programme. */
 .bpm-value--manual{
-  border-color: #4b6654;
+  border-color: #2b6c93;
   color: #f5f2eb;
-  background: #18261e;
+  background: #10222e;
 }
 
 .bpm-value--manual span{
-  color: #a3c4ae;
-}
-
-/* Un chiffre penché : la valeur ne vient pas de l'analyse, on l'a posée à la
-   main. La teinte verte le disait déjà, mais elle ne se voit qu'en comparant
-   deux rangées — l'italique se lit sur une seule, et annonce que « Restore
-   Automatic » a quelque chose à restaurer. */
-.bpm-value--manual strong{
-  font-style: italic;
+  color: #7dd3fc;
 }
 
 .analysis-running{
@@ -925,20 +923,47 @@ button:disabled{
   overflow: hidden;
   border-bottom: 1px solid rgba(132, 140, 156, 0.16);
   background-color: #0d1016;
-  background-image:
+  --grid-downbeat: rgba(155, 135, 255, 0.34);
+  --grid-beat: rgba(122, 130, 146, 0.11);
+  background-image: var(--timeline-grid);
+}
+
+/* La mesure en 4/4 : le premier temps marqué, les trois autres pâles.
+ *
+ * Une **seule** trame, dont la période est la mesure. Il y en avait deux
+ * auparavant — une par temps, une par mesure — et c'est ce qui donnait à la
+ * grille son air irrégulier. La largeur d'un temps est presque toujours
+ * fractionnaire (le zoom est exponentiel, et l'ajustement à la fenêtre divise
+ * une largeur par un nombre de temps), or le navigateur arrondit chaque
+ * répétition au pixel. Deux trames de périodes w et 4w arrondissent chacune
+ * pour son compte : la ligne de mesure tombait tantôt sur une ligne de temps,
+ * tantôt un pixel à côté — deux traits accolés ici, un trait épais là. La
+ * géométrie était juste, le rendu ne l'était pas.
+ *
+ * Les quatre traits sont donc placés en fractions **de la période elle-même**
+ * plutôt qu'en multiples de `--beat-width` : les deux valent le même nombre,
+ * mais seule la première façon garantit qu'ils tombent aux quarts exacts de ce
+ * qui est répété. */
+.timeline-lane{
+  --timeline-grid:
     repeating-linear-gradient(
       90deg,
-      transparent 0,
-      transparent calc(var(--beat-width) - 1px),
-      rgba(122, 130, 146, 0.11) calc(var(--beat-width) - 1px),
-      rgba(122, 130, 146, 0.11) var(--beat-width)
-    ),
-    repeating-linear-gradient(
-      90deg,
-      transparent 0,
-      transparent calc(var(--measure-width) - 1px),
-      rgba(155, 135, 255, 0.2) calc(var(--measure-width) - 1px),
-      rgba(155, 135, 255, 0.2) var(--measure-width)
+      var(--grid-downbeat) 0,
+      var(--grid-downbeat) 1px,
+      transparent 1px,
+      transparent calc(var(--measure-width) / 4),
+      var(--grid-beat) calc(var(--measure-width) / 4),
+      var(--grid-beat) calc(var(--measure-width) / 4 + 1px),
+      transparent calc(var(--measure-width) / 4 + 1px),
+      transparent calc(var(--measure-width) / 2),
+      var(--grid-beat) calc(var(--measure-width) / 2),
+      var(--grid-beat) calc(var(--measure-width) / 2 + 1px),
+      transparent calc(var(--measure-width) / 2 + 1px),
+      transparent calc(var(--measure-width) * 3 / 4),
+      var(--grid-beat) calc(var(--measure-width) * 3 / 4),
+      var(--grid-beat) calc(var(--measure-width) * 3 / 4 + 1px),
+      transparent calc(var(--measure-width) * 3 / 4 + 1px),
+      transparent var(--measure-width)
     );
 }
 
@@ -1424,6 +1449,13 @@ body,
   gap: 3px;
 }
 
+/* Le VU-mètre s'ancre en haut de la rangée; sans cet ancrage la plaque
+   d'AUTOPLAY se centrerait sur toute la hauteur et flotterait plus bas que les
+   touches de transport, avec lesquelles elle doit partir de la même ligne. */
+.autoplay-bay{
+  align-self: flex-start;
+}
+
 .vu-meter-summary{
   display: flex;
   align-items: center;
@@ -1662,9 +1694,22 @@ body,
   min-height: 330px;
 }
 
-.timeline-content--following{
-  margin-inline: var(--timeline-follow-padding);
-  left: var(--timeline-follow-offset);
+/* Le contenu se place par une transformation, écrite dans le composant.
+   `left` et `margin-inline` relançaient une mise en page à chacun de leurs
+   changements — vingt fois par seconde en lecture; une transformation se
+   compose sur le GPU sans rien mettre en page ni repeindre. */
+
+/* L'étireur du zoom : le geste écrit son échelle ici, et React n'y écrit
+   jamais. Sur un élément partagé, React ne réécrit une propriété que si sa
+   version à lui a changé — l'étirement de la main survivait donc au rendu
+   net, et le cran suivant sautait dans l'autre sens en le remplaçant. */
+.timeline-zoom-stretch{
+  height: 100%;
+  /* Un calque permanent : sans lui, chaque pose de zoom dépromouvait
+     l'élément et re-rastérisait tout l'écran — un soubresaut proportionnel à
+     la surface affichée. Chromium ne rastérise que les tuiles visibles, la
+     largeur du contenu n'est donc pas un coût. */
+  will-change: transform;
 }
 
 .timeline-tracks{
@@ -2166,12 +2211,13 @@ body,
   stroke-width: 1.75px;
   vector-effect: non-scaling-stroke;
 }
-/* Le crayon armé change de mode : le curseur le dit avant qu'on ait cliqué, et
-   les clips cessent de réclamer le geste. Un mode qu'on ne voit pas se
-   découvre en cassant quelque chose. */
-.timeline-body.is-drawing .timeline-lane,
-.timeline-body.is-drawing .timeline-clip,
-.timeline-body.is-drawing .timeline-clip:active{
+/* Le crayon ne s'arme plus : c'est l'endroit du pointeur qui l'appelle.
+   Il n'y a donc plus de mode à annoncer sur toute la timeline — seul le clip
+   survolé porte le curseur, et il le porte pour la zone exacte où le geste
+   partirait. `:active` compris : une fois le trait commencé, le crayon reste
+   même si le pointeur remonte sur la barre du clip. */
+.timeline-clip--draw,
+.timeline-clip--draw:active{
   cursor: url("/cursors/pencil.svg") 4 20, crosshair;
 }
 
@@ -2903,6 +2949,28 @@ body,
   transition: all 40ms cubic-bezier(0.2, 0, 0, 1);
 }
 
+/* La marque du tempo posé à la main, dans la bibliothèque.
+ *
+ * `.bpm-value--manual` la donnait déjà, mais pour le fond sombre du panneau
+ * seul — et dans la rangée `.library-row .bpm-value` la surclasse, deux classes
+ * contre une. La teinte n'arrivait donc jamais jusqu'ici, et on cherchait cette
+ * indication sans la trouver.
+ *
+ * Reprise ici pour la plaque claire : le bord et un lavis suffisent à
+ * distinguer la rangée, et le chiffre garde son encre — le bleu doit se lire
+ * d'un coup d'œil sur la colonne, pas repeindre la valeur. */
+.library-row .bpm-value--manual{
+  border-color: #4a9fd0;
+  border-top-color: #dbeefc;
+  border-bottom-color: #0369a1;
+  background: linear-gradient(180deg, #f4fbff 0%, #d6ebfa 100%);
+}
+
+.library-row .bpm-value--manual .bpm-edit-hint{
+  /* 5,0:1 sur le lavis bleu, comme le gris l'est sur la plaque blanche. */
+  color: #2f6183;
+}
+
 /* Assez petit pour rester une mention et non une seconde valeur, assez espacé
    pour tenir à cette taille. */
 .library-row .bpm-edit-hint{
@@ -3023,6 +3091,18 @@ body,
   overflow: hidden;
   border-bottom: 1px solid rgba(15, 36, 66, 0.12);
   background:
+    /* Le premier temps de chaque mesure, et lui seul. La bande porte déjà un
+       dégradé vertical qui dit le sens du filtre — y ajouter les quatre traits
+       la chargerait pour rien. Un repère par mesure suffit à savoir où l'on
+       dessine, et il tombe exactement sur celui des voies au-dessus : même
+       période, même origine. */
+    repeating-linear-gradient(
+      90deg,
+      rgba(15, 36, 66, 0.26) 0,
+      rgba(15, 36, 66, 0.26) 1px,
+      transparent 1px,
+      transparent var(--measure-width)
+    ),
     linear-gradient(
       180deg,
       rgba(14, 120, 220, 0.16) 0%,
@@ -3275,24 +3355,13 @@ body,
   border-left: 1px solid rgba(15, 36, 66, 0.25);
 }
 
+/* Même trame, deux encres : sur ce fond clair, seules les deux couleurs
+   changent. La trame elle-même n'est écrite qu'une fois. */
 .timeline-lane{
   border-bottom-color: #d0d7e3;
   background-color: #f4f7fa;
-  background-image:
-    repeating-linear-gradient(
-      90deg,
-      transparent 0,
-      transparent calc(var(--beat-width) - 1px),
-      rgba(15, 36, 66, 0.06) calc(var(--beat-width) - 1px),
-      rgba(15, 36, 66, 0.06) var(--beat-width)
-    ),
-    repeating-linear-gradient(
-      90deg,
-      transparent 0,
-      transparent calc(var(--measure-width) - 1px),
-      rgba(15, 36, 66, 0.18) calc(var(--measure-width) - 1px),
-      rgba(15, 36, 66, 0.18) var(--measure-width)
-    );
+  --grid-downbeat: rgba(15, 36, 66, 0.32);
+  --grid-beat: rgba(15, 36, 66, 0.07);
 }
 
 .timeline-lane::before{
@@ -4226,6 +4295,61 @@ body,
 
 .clip-eq-btn-trigger:active{
   transform: translateY(1px);
+}
+
+/* La cuisson, à côté de l'égalisation : même plaque, même rangée, même famille
+   de commandes. Allumée, elle prend le violet — l'ambre est au sidechain, le
+   turquoise aux voix, le bleu à l'égalisation, et un clip cuit doit se
+   reconnaître d'un coup d'œil sur toute la timeline : c'est le seul état qui
+   change ce qu'on entend sans qu'aucun réglage ne le montre. */
+.clip-bake-btn{
+  height: 14px;
+  padding: 0 5px;
+  border: 1px solid #94a3b8;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 100%);
+  color: #0f172a;
+  font-family: inherit;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  transition: all 120ms ease;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.clip-bake-btn:hover:not(:disabled){
+  border-color: #7c3aed;
+  background: linear-gradient(180deg, #ffffff 0%, #ddd6fe 100%);
+  color: #5b21b6;
+  box-shadow: 0 1px 3px rgba(124, 58, 237, 0.25);
+}
+
+.clip-bake-btn:disabled{
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.clip-bake-btn:active:not(:disabled){
+  transform: translateY(1px);
+}
+
+.clip-bake-btn.is-active{
+  border-color: #5b21b6;
+  border-top-color: #a78bfa;
+  border-bottom-color: #3b0f72;
+  color: #ffffff;
+  background: linear-gradient(180deg, #8b5cf6 0%, #6d28d9 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.35),
+    0 0 6px rgba(139, 92, 246, 0.5);
+}
+
+.clip-bake-btn.is-active:hover:not(:disabled){
+  background: linear-gradient(180deg, #9d75f8 0%, #7c3aed 100%);
+  color: #ffffff;
 }
 
 .clip-eq-btn-trigger.is-active{

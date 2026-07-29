@@ -162,14 +162,35 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
     CREATE INDEX IF NOT EXISTS timeline_filter_nodes_lane_beat_idx
         ON timeline_filter_nodes(lane, beat);
 
-    PRAGMA user_version = 24;
+    CREATE TABLE IF NOT EXISTS clip_bakes (
+        id             INTEGER PRIMARY KEY,
+        clip_id        INTEGER NOT NULL UNIQUE
+                       REFERENCES timeline_clips(id) ON DELETE CASCADE,
+        file_path      TEXT NOT NULL,
+        source_from_ms INTEGER NOT NULL DEFAULT 0 CHECK (source_from_ms >= 0),
+        -- L'automation retirée au moment du bake, telle quelle. C'est ce qui
+        -- rend l'opération réversible : sans elle, cuire un effet dans un
+        -- fichier serait un aller simple, et un bouton sans retour finit par ne
+        -- plus être cliqué.
+        removed        TEXT NOT NULL,
+        bucket_count   INTEGER,
+        left_min       BLOB,
+        left_max       BLOB,
+        left_rms       BLOB,
+        right_min      BLOB,
+        right_max      BLOB,
+        right_rms      BLOB,
+        created_at     INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    PRAGMA user_version = 25;
 "#;
 
 /// Schema version described by `CURRENT_DATABASE_SCHEMA`. The constant and the
 /// `PRAGMA user_version` above must move together: the schema is also replayed
 /// after a migration, so a stale value there would push the database back down
 /// and replay the last migrations on every start.
-const LATEST_SCHEMA_VERSION: i64 = 24;
+const LATEST_SCHEMA_VERSION: i64 = 25;
 
 const MIGRATE_VERSION_1_TO_2: &str = r#"
     BEGIN IMMEDIATE;
@@ -1443,6 +1464,36 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
                     .execute_batch("PRAGMA user_version = 24;")
                     .map_err(database_write_error)?;
                 version = 24;
+            }
+            24 => {
+                // Le bake : un clip rendu avec ses effets dans un fichier à
+                // lui. `removed` garde l'automation retirée, sans quoi
+                // l'opération serait sans retour.
+                connection
+                    .execute_batch(
+                        "BEGIN IMMEDIATE;
+                         CREATE TABLE IF NOT EXISTS clip_bakes (
+                             id             INTEGER PRIMARY KEY,
+                             clip_id        INTEGER NOT NULL UNIQUE
+                                            REFERENCES timeline_clips(id) ON DELETE CASCADE,
+                             file_path      TEXT NOT NULL,
+                             source_from_ms INTEGER NOT NULL DEFAULT 0
+                                            CHECK (source_from_ms >= 0),
+                             removed        TEXT NOT NULL,
+                             bucket_count   INTEGER,
+                             left_min       BLOB,
+                             left_max       BLOB,
+                             left_rms       BLOB,
+                             right_min      BLOB,
+                             right_max      BLOB,
+                             right_rms      BLOB,
+                             created_at     INTEGER NOT NULL DEFAULT (unixepoch())
+                         );
+                         PRAGMA user_version = 25;
+                         COMMIT;",
+                    )
+                    .map_err(database_write_error)?;
+                version = 25;
             }
             _ => {
                 let (target_version, migration) = match version {

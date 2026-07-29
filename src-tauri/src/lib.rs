@@ -1,6 +1,7 @@
 pub mod analysis;
 mod audio;
 mod library;
+mod media;
 mod project;
 mod tempo;
 mod timeline;
@@ -8,7 +9,7 @@ mod transport;
 
 use std::{
     fs, io,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -29,6 +30,18 @@ type LibraryState = Arc<Mutex<LibraryStore>>;
 type AnalysisState = Arc<AtomicBool>;
 type TimelineTransportState = Arc<Mutex<TimelineTransport>>;
 type TimelinePlaybackState = Arc<Mutex<TimelinePlaybackEngine>>;
+/// Où vont les médias, et à quel projet ils appartiennent en ce moment.
+///
+/// Le nom démarre à `Scratch` et suit le fichier dès qu'on enregistre ou qu'on
+/// ouvre. C'est lui qui décide du sous-dossier : sans état, chaque stem serait
+/// versé au même endroit que ceux de tous les autres projets, ce qui était le
+/// cas et ce qui empêchait de savoir à qui appartenait quoi.
+struct MediaLocation {
+    root: std::path::PathBuf,
+    project: String,
+}
+
+type MediaState = Arc<Mutex<MediaLocation>>;
 
 fn with_audio_engine(
     state: &State<'_, AudioState>,
@@ -389,6 +402,7 @@ async fn separate_clip_stems(
     clip_id: i64,
     app: tauri::AppHandle,
     library_state: State<'_, LibraryState>,
+    media_state: State<'_, MediaState>,
 ) -> Result<TimelineSnapshot, String> {
     // La fenêtre du clip, en millisecondes de la source : c'est tout ce qui sera
     // séparé. Elle est lue sous le verrou, puis relâchée — le rendu dure des
@@ -409,11 +423,7 @@ async fn separate_clip_stems(
     };
 
     let (runtime, model) = separation_resources(&app)?;
-    let output_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "This install has nowhere to write its stems.".to_owned())?
-        .join("stems");
+    let output_dir = media_folder(&media_state, "stems")?;
 
     let reporter = app.clone();
     let files = tauri::async_runtime::spawn_blocking(move || {
@@ -482,12 +492,135 @@ async fn separate_clip_stems(
     timeline::snapshot(&library.connection)
 }
 
+/// Cuit un clip : ses effets passent dans un fichier à lui.
+///
+/// Le verrou de la bibliothèque n'est tenu que pour préparer puis pour ranger.
+/// Entre les deux, le rendu tourne seul — il dure des secondes sur un clip
+/// court, mais l'interface doit rester vivante, et la lecture aussi.
 #[tauri::command]
-fn save_project(path: String, library_state: State<'_, LibraryState>) -> Result<(), String> {
-    let library = library_state
+async fn bake_clip(
+    clip_id: i64,
+    app: tauri::AppHandle,
+    library_state: State<'_, LibraryState>,
+    media_state: State<'_, MediaState>,
+) -> Result<TimelineSnapshot, String> {
+    let spec = {
+        let library = library_state
+            .lock()
+            .map_err(|_| "The library is in an invalid state.".to_owned())?;
+        timeline::prepare_bake(&library.connection, clip_id)?
+    };
+
+    let folder = media_folder(&media_state, "bakes")?;
+    // L'horodatage évite qu'une seconde cuisson du même clip écrase le fichier
+    // que le moteur est peut-être en train de lire.
+    let path = folder.join(format!(
+        "clip-{clip_id}-{}.wav",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_millis())
+            .unwrap_or_default()
+    ));
+
+    let reporter = app.clone();
+    let render_path = path.clone();
+    let plan = spec.plan;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut report = |fraction: f64| {
+            let _ = reporter.emit("bake-progress", fraction);
+        };
+        bounce_timeline(&plan, &render_path, &mut report)
+    })
+    .await
+    .map_err(|error| format!("The bake was interrupted: {error}"))??;
+
+    // La forme d'onde du fichier cuit : le clip doit montrer ce qu'il joue
+    // maintenant, filtre compris, et non l'onde d'avant la cuisson.
+    let waveform = analyze_waveform(&path).ok();
+
+    let mut library = library_state
         .lock()
         .map_err(|_| "The library is in an invalid state.".to_owned())?;
-    project::write_to(&library.connection, std::path::Path::new(&path))
+    timeline::commit_bake(
+        &mut library.connection,
+        clip_id,
+        &path.to_string_lossy(),
+        spec.source_from_ms,
+        &spec.removed,
+        waveform.as_ref(),
+    )
+}
+
+/// Défait une cuisson : l'automation revient, le fichier part.
+///
+/// Le fichier est effacé **après** que la base a validé. Dans l'autre ordre, un
+/// échec d'écriture laisserait un enregistrement pointant vers un fichier
+/// disparu — un clip qui joue sans ses effets sans qu'on sache pourquoi.
+#[tauri::command]
+fn unbake_clip(
+    clip_id: i64,
+    library_state: State<'_, LibraryState>,
+) -> Result<TimelineSnapshot, String> {
+    let mut library = library_state
+        .lock()
+        .map_err(|_| "The library is in an invalid state.".to_owned())?;
+    let (snapshot, file_path) = timeline::unbake_clip(&mut library.connection, clip_id)?;
+    if let Some(path) = file_path {
+        // Un fichier qu'on n'arrive pas à effacer — encore ouvert par le
+        // moteur, disque en lecture seule — ne doit pas faire échouer une
+        // opération que la base a déjà validée. Il ne coûte que sa place.
+        let _ = fs::remove_file(path);
+    }
+    Ok(snapshot)
+}
+
+/// Le dossier où écrire un média du projet courant.
+fn media_folder(media_state: &State<'_, MediaState>, kind: &str) -> Result<PathBuf, String> {
+    let location = media_state
+        .lock()
+        .map_err(|_| "The media folder is in an invalid state.".to_owned())?;
+    media::project_media_folder(&location.root, &location.project, kind)
+}
+
+#[tauri::command]
+fn save_project(
+    path: String,
+    library_state: State<'_, LibraryState>,
+    media_state: State<'_, MediaState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<(), String> {
+    let target = std::path::Path::new(&path);
+    let project = media::project_folder_name(target);
+    let (root, current) = {
+        let location = media_state
+            .lock()
+            .map_err(|_| "The media folder is in an invalid state.".to_owned())?;
+        (location.root.clone(), location.project.clone())
+    };
+
+    // Le moteur tient ses décodeurs ouverts pendant la lecture, et Windows
+    // refuse de déplacer un fichier ouvert. On le fait taire avant de toucher
+    // aux fichiers — comme pour l'ouverture d'un projet, et pour la même
+    // raison.
+    if media::relocation_for(&current, &project) != media::Relocation::None {
+        suspend_timeline_audio(&library_state, &playback_state, &transport_state)?;
+    }
+
+    let mut library = library_state
+        .lock()
+        .map_err(|_| "The library is in an invalid state.".to_owned())?;
+    media::relocate_project_media(&mut library.connection, &root, &current, &project)?;
+    // Le projet est écrit **après** le déménagement : c'est ainsi qu'il porte
+    // les chemins d'arrivée. Écrit avant, il désignerait des fichiers qui ne
+    // sont déjà plus là.
+    project::write_to(&library.connection, target)?;
+
+    let mut location = media_state
+        .lock()
+        .map_err(|_| "The media folder is in an invalid state.".to_owned())?;
+    location.project = project;
+    Ok(())
 }
 
 /// Remplace la session courante par celle d'un fichier de projet.
@@ -498,15 +631,25 @@ fn save_project(path: String, library_state: State<'_, LibraryState>) -> Result<
 fn load_project(
     path: String,
     library_state: State<'_, LibraryState>,
+    media_state: State<'_, MediaState>,
     playback_state: State<'_, TimelinePlaybackState>,
     transport_state: State<'_, TimelineTransportState>,
 ) -> Result<TimelineSnapshot, String> {
     let file = project::read_from(std::path::Path::new(&path))?;
     suspend_timeline_audio(&library_state, &playback_state, &transport_state)?;
-    with_timeline(&library_state, |connection| {
+    let snapshot = with_timeline(&library_state, |connection| {
         project::apply(connection, &file)?;
         timeline::snapshot(connection)
-    })
+    })?;
+
+    // Les médias qu'on écrira ensuite appartiennent désormais à ce projet-ci.
+    // Sans ça, un stem séparé après une ouverture serait écrit dans le dossier
+    // du projet précédent, et le déménagement suivant l'y oublierait.
+    let mut location = media_state
+        .lock()
+        .map_err(|_| "The media folder is in an invalid state.".to_owned())?;
+    location.project = media::project_folder_name(std::path::Path::new(&path));
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -1549,6 +1692,30 @@ fn adopt_legacy_library(data_directory: &Path, database_path: &Path) -> io::Resu
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Le ménage à la fermeture, et **seulement** celui-là : les fichiers
+        // vers lesquels plus aucune ligne ne pointe. « Inutilisé dans la
+        // séquence » se déciderait sur l'état courant, et une erreur de
+        // jugement au moment où l'on ferme — quand personne ne regarde et
+        // qu'aucune annulation n'est possible — coûterait des minutes de
+        // séparation. « Non référencé » est vrai par construction.
+        //
+        // Un échec ne retarde pas la fermeture : au pire il reste des fichiers,
+        // et le lancement suivant repassera.
+        .on_window_event(|window, event| {
+            if !matches!(event, tauri::WindowEvent::Destroyed) {
+                return;
+            }
+            let app = window.app_handle();
+            let (Some(library), Some(media)) = (
+                app.try_state::<LibraryState>(),
+                app.try_state::<MediaState>(),
+            ) else {
+                return;
+            };
+            let Ok(library) = library.lock() else { return };
+            let Ok(media) = media.lock() else { return };
+            let _ = media::sweep_orphans(&library.connection, &media.root);
+        })
         .manage(Arc::new(Mutex::new(PreviewEngine::default())))
         .manage(Arc::new(Mutex::new(TimelineTransport::default())))
         .manage(Arc::new(Mutex::new(TimelinePlaybackEngine::default())))
@@ -1563,6 +1730,18 @@ pub fn run() {
             adopt_legacy_library(&data_directory, &database_path)?;
             let library = LibraryStore::open(&database_path).map_err(io::Error::other)?;
             app.manage(Arc::new(Mutex::new(library)));
+
+            // À côté de l'exécutable si on a le droit d'y écrire, dans les
+            // données applicatives sinon. Le choix est fait une fois : le
+            // refaire à chaque écriture ferait un test disque par stem.
+            let beside = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
+            let root = media::media_root(beside.as_deref(), &data_directory);
+            app.manage(Arc::new(Mutex::new(MediaLocation {
+                root,
+                project: media::SCRATCH_PROJECT.to_owned(),
+            })));
 
             Ok(())
         })
@@ -1607,6 +1786,8 @@ pub fn run() {
             draw_timeline_filter_stroke,
             set_timeline_clip_stem,
             separate_clip_stems,
+            bake_clip,
+            unbake_clip,
             clear_timeline_filter_range,
             save_clip_eq,
             split_timeline_clip,

@@ -48,6 +48,7 @@ import {
   type TrimEdge,
 } from "../lib/clipTrim";
 import { TransportGlyph } from "./TransportGlyph";
+import { type SmartTool, smartToolAt, smartToolClass } from "../lib/smartTool";
 import {
   SHAPE_KINDS,
   SHAPE_PERIODS,
@@ -74,9 +75,15 @@ import {
 } from "../lib/volumeCurve";
 import type { LibraryTrack } from "../library/types";
 import {
+  ZOOM_SETTLE_MS,
   clampTimelineZoom,
+  isZoomGestureBurst,
   minimumTimelineZoom,
   timelineContentLayout,
+  timelineZoomAnchorPx,
+  visibleMeasures,
+  zoomPreviewNeedsCommit,
+  zoomPreviewScale,
 } from "../lib/timelineZoom";
 import type {
   TimelineClip,
@@ -84,6 +91,8 @@ import type {
   TimelineTransportSnapshot,
 } from "../timeline/types";
 
+/** Si la feuille de style ne répond pas, la valeur qu'elle porte aujourd'hui. */
+const CLIP_HEADING_FALLBACK_PX = 18;
 const MIN_VISIBLE_BEATS = 64;
 const TRAILING_BEATS = 16;
 const KEYBOARD_ZOOM_DELTA = 120;
@@ -113,10 +122,17 @@ const DRAW_GLYPHS = {
 } as const;
 
 /** Le cycle des formes passe par l'éteint, qui sert d'état désarmé. */
-function nextDrawShape(current: ShapeKind | null): ShapeKind | null {
-  if (current === null) return SHAPE_KINDS[0];
+/**
+ * La forme suivante, en boucle sur les trois.
+ *
+ * Il y avait un quatrième cran, « éteint », qui voulait dire « pas de crayon ».
+ * Il n'a plus de sens depuis que la position du pointeur décide de l'outil :
+ * pour ne pas dessiner, on remonte dans la barre du clip. `DRAW` ne répond plus
+ * qu'à une question — *quoi* — et n'en pose plus une seconde.
+ */
+function nextDrawShape(current: ShapeKind): ShapeKind {
   const index = SHAPE_KINDS.indexOf(current);
-  return index === SHAPE_KINDS.length - 1 ? null : SHAPE_KINDS[index + 1];
+  return SHAPE_KINDS[(index + 1) % SHAPE_KINDS.length];
 }
 
 /** Une demi-période se lit en fraction; les entières restent des chiffres. */
@@ -182,6 +198,8 @@ interface TimelinePanelProps {
   onSetSidechainKey: (clipId: number, isKey: boolean) => Promise<void>;
   onSetClipStem: (clipId: number, stem: "full" | "vocals" | "instrumental") => Promise<void>;
   onSeparateStems: (clipId: number, stem: "vocals" | "instrumental") => Promise<void>;
+  /** Cuire ce clip, ou défaire la cuisson. */
+  onSetClipBaked: (clipId: number, baked: boolean) => Promise<void>;
   onAddVolumeNode: (lane: number, beat: number) => Promise<void>;
   onAddPanNode: (lane: number, beat: number) => Promise<void>;
   onMovePanNode: (nodeId: number, beat: number, value: number) => Promise<void>;
@@ -334,6 +352,7 @@ export function TimelinePanel({
   onSetSidechainKey,
   onSetClipStem,
   onSeparateStems,
+  onSetClipBaked,
   onAddVolumeNode,
   onAddPanNode,
   onMovePanNode,
@@ -361,7 +380,7 @@ export function TimelinePanel({
   const [automationView, setAutomationView] = useState<AutomationView>("both");
   /* Le crayon. `null` désarme : c'est le premier cran du cycle des formes, ce
      qui évite un troisième bouton pour l'allumer. */
-  const [drawShape, setDrawShape] = useState<ShapeKind | null>(null);
+  const [drawShape, setDrawShape] = useState<ShapeKind>(SHAPE_KINDS[0]);
   const [drawPeriod, setDrawPeriod] = useState<ShapePeriod>(1);
   const drawStroke = useRef<{ lane: number; startBeat: number } | null>(null);
   /* Le trait en cours. Dans l'état et non dans une ref : la ligne doit se
@@ -400,6 +419,31 @@ export function TimelinePanel({
   /* The edge the pointer is hovering, which is what turns the cursor into a
      bracket, and the edge being dragged once one is grabbed. */
   const [hoveredTrim, setHoveredTrim] = useState<{ clipId: number; edge: TrimEdge } | null>(null);
+  /**
+   * L'outil que la position du pointeur propose, et le clip qu'il vise.
+   *
+   * Calculé au survol et non à l'appui : c'est ce qui permet au curseur
+   * d'annoncer le geste **avant** qu'on s'engage. Le rognage se contentait de
+   * l'appui parce qu'il avait ses propres classes; le crayon a besoin de la
+   * même avance.
+   */
+  const [hoveredTool, setHoveredTool] = useState<{ clipId: number; tool: SmartTool } | null>(null);
+
+  /**
+   * Où finit la barre de titre de **ce** clip, mesurée sur elle.
+   *
+   * Pas une constante recopiée : la feuille de style décide déjà de cette
+   * hauteur, et l'écrire une seconde fois ici ferait diverger la frontière du
+   * curseur de celle qu'on voit. `offsetHeight` lit la ligne réellement
+   * dessinée, et ne coûte pas de recalcul de style — contrairement à
+   * `getComputedStyle`, qu'on ne veut pas appeler à chaque déplacement du
+   * pointeur.
+   */
+  const headingHeightOf = (clipElement: Element) => {
+    const heading = clipElement.querySelector(".clip-heading");
+    const measured = heading instanceof HTMLElement ? heading.offsetHeight : 0;
+    return measured > 0 ? measured : CLIP_HEADING_FALLBACK_PX;
+  };
   const [trimDrafts, setTrimDrafts] = useState<Record<number, ClipTrim>>({});
   const activeTrim = useRef<{ clipId: number; edge: TrimEdge; trim: ClipTrim } | null>(null);
   const activeTempoPointDrag = useRef<ActiveTempoPointDrag | null>(null);
@@ -414,15 +458,32 @@ export function TimelinePanel({
     pixelsPerBeat: 16,
     minimumZoom: 1,
   });
+  /** Le zoom visé pendant le geste; `null` hors geste. */
+  const pendingZoom = useRef<number | null>(null);
+  const zoomSettleTimer = useRef<number | null>(null);
+  /**
+   * L'élément que l'étirement du geste habite, et lui seul.
+   *
+   * React n'écrit **jamais** son style : deux écrivains sur une même propriété
+   * était le défaut d'origine. React ne réécrit une propriété que si *sa*
+   * version a changé — le translate du contenu ne bouge pas quand la tête est
+   * au temps zéro —, si bien que l'étirement écrit à la main survivait au
+   * rendu net. Chaque pose sur-zoomait, et le premier cran du geste suivant
+   * remplaçait ce reliquat par une petite valeur : un saut dans l'autre sens,
+   * le stroboscope même qu'on voulait soigner.
+   */
+  const zoomStretch = useRef<HTMLDivElement | null>(null);
+  /* L'ancre du dernier rendu net, pour que l'étirement écrit entre deux rendus
+     tourne autour du même point que le rendu. */
+  const zoomAnchor = useRef(0);
+  const lastZoomTickAt = useRef(0);
   const tempoEditingLocked = busy || transport.status === "playing";
 
-  /* Le crayon a besoin d'une ligne visible. Masquer les deux automations
-     laissait un outil armé qui capturait le geste et n'écrivait rien : le trait
-     partait dans le vide, sans que rien ne le dise. Il se désarme donc de
-     lui-même, et son cran revient à « éteint ». */
-  useEffect(() => {
-    if (automationView === "none") setDrawShape(null);
-  }, [automationView]);
+  /* Le crayon a toujours besoin d'une ligne visible — mais il n'y a plus rien à
+     désarmer. `drawArmable` suffit : sans ligne affichée, le corps d'un clip
+     redevient une prise pour le déplacer, et le curseur ne propose jamais un
+     geste qui n'écrirait nulle part. La forme choisie, elle, survit à l'aller-
+     retour par `VIEW`. */
 
   useEffect(() => {
     setClipDrafts({});
@@ -481,15 +542,6 @@ export function TimelinePanel({
   }, [timeline.clips, clipDrafts]);
   const totalBeats = Math.max(MIN_VISIBLE_BEATS, Math.ceil(projectEndBeat + TRAILING_BEATS));
   const minimumZoom = minimumTimelineZoom(viewportWidth, totalBeats);
-  const measures = useMemo(
-    () => {
-      const labelStride = Math.max(1, Math.ceil(48 / (pixelsPerBeat * 4)));
-      return Array.from({ length: Math.ceil(totalBeats / 4) + 1 }, (_, index) => index).filter(
-        (index) => index % labelStride === 0,
-      );
-    },
-    [pixelsPerBeat, totalBeats],
-  );
   const contentWidth = totalBeats * pixelsPerBeat;
   const displayTempoPoints = useMemo(() => {
     const points = [
@@ -531,17 +583,102 @@ export function TimelinePanel({
     setPixelsPerBeat((current) => Math.max(current, minimumZoom));
   }, [minimumZoom]);
 
+  /* L'étirement s'efface dans le commit même qui rend le zoom net — après
+     l'écriture du DOM, avant la peinture. Plus tôt, une image montrerait
+     l'ancienne mise en page sans étirement; plus tard, la nouvelle encore
+     étirée. Les deux sont le sursaut qu'on soigne. */
+  useLayoutEffect(() => {
+    const element = zoomStretch.current;
+    if (!element) return;
+    // `scaleX(1)`, jamais l'absence de transformation : retirer la propriété
+    // dépromouvait le calque de composition à chaque pose, et la
+    // re-rastérisation plein écran qui suit est exactement le genre de
+    // soubresaut qui grandit avec la taille de ce qu'il y a à rastériser.
+    element.style.transform = "scaleX(1)";
+    element.style.transformOrigin = `${zoomAnchor.current}px 0px`;
+  }, [pixelsPerBeat]);
+
+  /**
+   * Rend le zoom visé pour de bon, et remet l'étirement à un.
+   *
+   * Un seul commit : le rendu net et la fin de l'étirement arrivent dans la
+   * même image, sans quoi on verrait l'un sans l'autre — le défaut qu'on
+   * soigne, réintroduit à la sortie du geste.
+   */
+  const commitPendingZoom = useCallback(() => {
+    if (zoomSettleTimer.current !== null) {
+      window.clearTimeout(zoomSettleTimer.current);
+      zoomSettleTimer.current = null;
+    }
+    const pending = pendingZoom.current;
+    if (pending === null) return;
+    pendingZoom.current = null;
+    if (pending === zoomState.current.pixelsPerBeat) {
+      // Rien à rendre — l'étirement valait un, on le repose tout de suite.
+      const element = zoomStretch.current;
+      if (element) {
+        element.style.transform = "scaleX(1)";
+        element.style.transformOrigin = `${zoomAnchor.current}px 0px`;
+      }
+      return;
+    }
+    zoomState.current.pixelsPerBeat = pending;
+    setPixelsPerBeat(pending);
+  }, []);
+
+  /** L'étirement du geste, écrit directement — ni mise en page ni repeinture. */
+  const paintZoomPreview = useCallback(() => {
+    const element = zoomStretch.current;
+    const pending = pendingZoom.current;
+    if (!element || pending === null) return;
+    const scale = zoomPreviewScale(zoomState.current.pixelsPerBeat, pending);
+    element.style.transform = `scaleX(${scale})`;
+    element.style.transformOrigin = `${zoomAnchor.current}px 0px`;
+  }, []);
+
+  /**
+   * Un cran de zoom. Pendant le geste le contenu est **étiré** — une seule
+   * transformation, composée par le GPU — et le vrai rendu attend la fin du
+   * geste. Chaque cran relançait la mise en page du monde entier; la cadence
+   * s'effondrait, la molette s'accumulait pendant les images manquées, et
+   * chaque image peinte sautait un grand pas avec des niveaux d'onde et des
+   * étiquettes qui claquaient : le stroboscope venait de là, pas d'une couche
+   * en retard. Étiré, tout bouge d'un seul bloc parce que tout **est** un seul
+   * bloc.
+   */
   const applyTimelineZoom = useCallback((deltaPixels: number) => {
     const boundedDelta = Math.max(-240, Math.min(240, deltaPixels));
     const state = zoomState.current;
+    const base = pendingZoom.current ?? state.pixelsPerBeat;
     const nextZoom = clampTimelineZoom(
-      state.pixelsPerBeat * Math.exp(-boundedDelta * 0.0015),
+      base * Math.exp(-boundedDelta * 0.0015),
       state.minimumZoom,
     );
-    if (Math.abs(nextZoom - state.pixelsPerBeat) < 0.000_01) return;
-    zoomState.current.pixelsPerBeat = nextZoom;
-    setPixelsPerBeat(nextZoom);
-  }, []);
+    if (Math.abs(nextZoom - base) < 0.000_01) return;
+    const now = performance.now();
+    const burst = isZoomGestureBurst(now, lastZoomTickAt.current, pendingZoom.current !== null);
+    lastZoomTickAt.current = now;
+    pendingZoom.current = nextZoom;
+    // Un cran isolé se rend tout de suite : une seule image change, dans le
+    // sens commandé, et la paire étirer-puis-poser n'existe pas du tout. Elle
+    // ne sert qu'aux rafales, là où rendre à chaque cran faisait strober.
+    if (!burst) {
+      commitPendingZoom();
+      return;
+    }
+    // Au-delà du double ou de la moitié, l'étirement se verrait trop : on rend
+    // net et le geste repart de là. Quelques rendus par grand zoom, chacun
+    // entier, plutôt que trente rendus déchirés.
+    if (zoomPreviewNeedsCommit(zoomPreviewScale(state.pixelsPerBeat, nextZoom))) {
+      commitPendingZoom();
+      return;
+    }
+    paintZoomPreview();
+    if (zoomSettleTimer.current !== null) {
+      window.clearTimeout(zoomSettleTimer.current);
+    }
+    zoomSettleTimer.current = window.setTimeout(commitPendingZoom, ZOOM_SETTLE_MS);
+  }, [commitPendingZoom, paintZoomPreview]);
 
   const queueTimelineZoom = useCallback((deltaPixels: number) => {
     pendingZoomDelta.current = Math.max(
@@ -599,6 +736,18 @@ export function TimelinePanel({
     contentWidth,
     viewportWidth,
   );
+  /* Le point que l'étirement garde immobile : le même que celui que le rendu
+     net épingle au centre. Étirer autour d'un autre ferait glisser l'image
+     pendant le geste puis sauter au rendu. */
+  zoomAnchor.current = timelineZoomAnchorPx(displayBeat, pixelsPerBeat, contentWidth, viewportWidth);
+
+  /* Un marqueur par mesure **visible**, pas par mesure du projet : sur un long
+     mix, des milliers de marqueurs hors champ étaient mis en page à chaque
+     rendu — le gros du coût qui faisait strober le zoom. */
+  const measures = useMemo(() => {
+    const labelStride = Math.max(1, Math.ceil(48 / (pixelsPerBeat * 4)));
+    return visibleMeasures(displayBeat, pixelsPerBeat, viewportWidth, totalBeats, labelStride, contentWidth);
+  }, [contentWidth, displayBeat, pixelsPerBeat, totalBeats, viewportWidth]);
 
   const visibleBeats = pixelsPerBeat > 0 && viewportWidth > 0 ? viewportWidth / pixelsPerBeat : MIN_VISIBLE_BEATS;
   const thumbWidthRatio = Math.max(0.08, Math.min(1, visibleBeats / totalBeats));
@@ -636,6 +785,9 @@ export function TimelinePanel({
     if (zoomAnimationFrame.current !== null) {
       window.cancelAnimationFrame(zoomAnimationFrame.current);
     }
+    if (zoomSettleTimer.current !== null) {
+      window.clearTimeout(zoomSettleTimer.current);
+    }
   }, []);
 
   useEffect(() => {
@@ -661,11 +813,14 @@ export function TimelinePanel({
           : rawDelta;
 
       if (isHorizontalScrollGesture) {
+        // Un zoom encore étiré se rend d'abord : le pas de défilement se
+        // mesure ensuite dans le zoom réel, pas dans celui d'avant le geste.
+        commitPendingZoom();
         // Pro Tools Standard: Shift + Wheel -> Horizontal Timeline Viewport Scroll
         const maxScrollBeat = Math.max(128, totalBeats + 64);
         setScrollBeatOffset((current) => {
           const startBeat = current ?? transport.positionBeat;
-          const beatsToMove = (deltaPixels / Math.max(1, pixelsPerBeat)) * 1.5;
+          const beatsToMove = (deltaPixels / Math.max(1, zoomState.current.pixelsPerBeat)) * 1.5;
           return Math.max(0, Math.min(maxScrollBeat, startBeat + beatsToMove));
         });
         holdManualScroll();
@@ -677,7 +832,7 @@ export function TimelinePanel({
 
     element.addEventListener("wheel", handleWheel, { passive: false });
     return () => element.removeEventListener("wheel", handleWheel);
-  }, [holdManualScroll, pixelsPerBeat, totalBeats, queueTimelineZoom, transport.positionBeat]);
+  }, [commitPendingZoom, holdManualScroll, totalBeats, queueTimelineZoom, transport.positionBeat]);
 
   /* L'état de `Ctrl`, suivi au clavier parce que le CSS ne connaît pas les
      modificateurs. Le `blur` remet à zéro : sortir de la fenêtre en le tenant
@@ -739,7 +894,7 @@ export function TimelinePanel({
         case "period":
           // La période n'a de sens qu'une fois une forme choisie, comme sa
           // moitié de touche qui reste éteinte tant que le crayon dort.
-          if (drawArmable && drawShape) setDrawPeriod((current) => nextDrawPeriod(current));
+          if (drawArmable) setDrawPeriod((current) => nextDrawPeriod(current));
           break;
       }
     };
@@ -816,7 +971,7 @@ export function TimelinePanel({
     // Le crayon armé change de mode : on dessine par-dessus les clips, on ne
     // les déplace plus. Sans cette garde, tout trait commencé sur un clip
     // partait en déplacement.
-    if (drawShape || busy || event.button !== 0 || (event.target as HTMLElement).closest("button")) {
+    if (busy || event.button !== 0 || (event.target as HTMLElement).closest("button")) {
       return;
     }
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -838,16 +993,58 @@ export function TimelinePanel({
     return (clientX - bounds.left) / pixelsPerBeat;
   };
 
-  const updateTrimCursor = (event: ReactPointerEvent<HTMLDivElement>, clip: TimelineClip) => {
-    if (drawShape || activeTrim.current || activeDrag.current || busy) return;
+  /**
+   * Ce qu'un appui ici déclencherait.
+   *
+   * Une même lecture sert au curseur et au geste : les calculer séparément
+   * laisserait le premier annoncer ce que le second ne fait pas — le défaut
+   * qui revient le plus souvent dans ce projet.
+   *
+   * Les commandes d'un clip n'entrent pas dans le jeu. Un appui né sur `EQ`,
+   * `VOX`, la chaîne, `BAKE` ou la croix reste un clic; le trait le capturait
+   * autrement et ces boutons semblaient morts.
+   */
+  const toolAtPointer = (
+    event: ReactPointerEvent<HTMLDivElement>,
+    clip: TimelineClip,
+  ): SmartTool | null => {
+    // Rien sur le bouton ici. Un `pointermove` de survol porte `button === -1`
+    // — aucun bouton n'a changé d'état —, si bien qu'exiger le bouton gauche
+    // faisait sortir la fonction avant tout calcul : le curseur ne changeait
+    // jamais au survol, seulement le geste à l'appui. Quel bouton est pressé
+    // regarde l'appui, pas la position.
+    if (busy) return null;
+    if (event.target instanceof Element && event.target.closest(".clip-heading button, .clip-heading-actions")) {
+      return null;
+    }
     const beat = pointerBeat(event.clientX);
-    if (beat === null) return;
-    const edge = trimEdgeAtPointer(clipWithTrim(clip, trimDrafts[clip.id]), beat, pixelsPerBeat);
-    setHoveredTrim(edge ? { clipId: clip.id, edge } : null);
+    if (beat === null) return null;
+    return smartToolAt(clipWithTrim(clip, trimDrafts[clip.id]), {
+      beat,
+      offsetY: event.clientY - event.currentTarget.getBoundingClientRect().top,
+      headingHeight: headingHeightOf(event.currentTarget),
+      pixelsPerBeat,
+      canDraw: drawArmable,
+    });
+  };
+
+  const updateSmartCursor = (event: ReactPointerEvent<HTMLDivElement>, clip: TimelineClip) => {
+    if (activeTrim.current || activeDrag.current || busy) return;
+    const tool = toolAtPointer(event, clip);
+    setHoveredTool(tool ? { clipId: clip.id, tool } : null);
+    // Le bord armé s'allume, ce qui est une seconde information : le curseur
+    // dit l'outil, la surbrillance dit **quel** bord partira.
+    setHoveredTrim(
+      tool === "trim-start"
+        ? { clipId: clip.id, edge: "start" }
+        : tool === "trim-end"
+          ? { clipId: clip.id, edge: "end" }
+          : null,
+    );
   };
 
   const startClipTrim = (event: ReactPointerEvent<HTMLDivElement>, clip: TimelineClip) => {
-    if (drawShape || busy || event.button !== 0) return false;
+    if (busy || event.button !== 0) return false;
     const beat = pointerBeat(event.clientX);
     if (beat === null) return false;
     const edge = trimEdgeAtPointer(clipWithTrim(clip, trimDrafts[clip.id]), beat, pixelsPerBeat);
@@ -1443,7 +1640,7 @@ export function TimelinePanel({
   };
 
   const startShapeStroke = (event: ReactPointerEvent<HTMLDivElement>, lane: number) => {
-    if (!drawShape || busy || event.button !== 0) return false;
+    if (busy || event.button !== 0) return false;
     // Les commandes d'un clip restent des commandes, crayon armé ou non.
     //
     // Le trait capture le pointeur sur la voie dès l'appui; un appui né sur
@@ -1474,7 +1671,7 @@ export function TimelinePanel({
     const stroke = drawStroke.current;
     drawStroke.current = null;
     setShapePreview(null);
-    if (!stroke || !drawShape) return;
+    if (!stroke) return;
     const bounds = timelineTracks.current?.getBoundingClientRect();
     if (!bounds) return;
 
@@ -1544,7 +1741,7 @@ export function TimelinePanel({
      sont calculés par les mêmes fonctions que l'écriture : l'aperçu est le
      résultat, pas une approximation de celui-ci. */
   const previewVolumeNodes = (lane: number) => {
-    if (!shapePreview || !drawShape || shapePreview.lane !== lane || !showVolumeAutomation) {
+    if (!shapePreview || shapePreview.lane !== lane || !showVolumeAutomation) {
       return null;
     }
     const { startBeat, endBeat, units } = shapePreview;
@@ -1560,7 +1757,7 @@ export function TimelinePanel({
   };
 
   const previewPanNodes = (lane: number) => {
-    if (!shapePreview || !drawShape || shapePreview.lane !== lane || !showPanAutomation) {
+    if (!shapePreview || shapePreview.lane !== lane || !showPanAutomation) {
       return null;
     }
     const { startBeat, endBeat, units } = shapePreview;
@@ -1783,7 +1980,7 @@ export function TimelinePanel({
                     panne. Seuls les chiffres retiennent leur clic. */}
                 <span className="transport-hint">
                 <div
-                  className={`analog-transport-button analog-draw${drawShape ? " is-active" : ""}${
+                  className={`analog-transport-button analog-draw${drawArmable ? " is-active" : ""}${
                     drawArmable ? "" : " is-disabled"
                   }`}
                   onClick={() => {
@@ -1791,13 +1988,13 @@ export function TimelinePanel({
                   }}
                   aria-label={
                     drawArmable
-                      ? `Pencil: ${drawShape ?? "off"} — click to cycle, or press S`
+                      ? `Pencil: ${drawShape} — click to cycle, or press S`
                       : "Show a line first — VIEW"
                   }
                 >
                   <div className="transport-led-socket">
                     <i
-                      className={`transport-led draw-led${drawShape ? " is-active" : ""}`}
+                      className={`transport-led draw-led${drawArmable ? " is-active" : ""}`}
                       aria-hidden="true"
                     />
                   </div>
@@ -1807,12 +2004,12 @@ export function TimelinePanel({
                       className="draw-half"
                       disabled={!drawArmable}
                     >
-                      <TransportGlyph name={drawShape ? DRAW_GLYPHS[drawShape] : "draw-off"} />
+                      <TransportGlyph name={DRAW_GLYPHS[drawShape]} />
                     </button>
                     <button
                       type="button"
                       className={`draw-half draw-half--period${drawPeriod < 1 ? " is-fraction" : ""}`}
-                      disabled={!drawShape}
+                      disabled={!drawArmable}
                       onClick={(event) => {
                         // La touche entière change la forme; seuls les chiffres
                         // gardent leur clic pour eux.
@@ -1830,45 +2027,11 @@ export function TimelinePanel({
                   <strong>Pencil</strong>
                   <span>Left half the shape, right half the period</span>
                   <span><kbd>S</kbd> shape · <kbd>D</kbd> period</span>
-                  <span>{drawArmable ? "Drag a lane to draw" : "Show a line first — VIEW"}</span>
+                  <span>{drawArmable ? "Drag a clip's body to draw" : "Show a line first — VIEW"}</span>
                 </span>
                 </span>
               </div>
 
-              {/* Ce que fait un clic dans la timeline. Ce n'est ni un réglage
-                  d'affichage ni un traitement du son, d'où son propre bloc :
-                  c'est une règle de conduite du transport.
-                  Non persisté, comme les réglages de vue — allumé est l'état
-                  qu'on veut retrouver au lancement, et c'est le défaut. */}
-              <div className="analog-transport">
-                <span className="transport-hint">
-                <button
-                  className={`analog-transport-button analog-autoplay${autoplay ? " is-active" : ""}`}
-                  type="button"
-                  aria-pressed={autoplay}
-                  onClick={() => onSetAutoplay(!autoplay)}
-                  aria-label={
-                    autoplay
-                      ? "Autoplay on: clicking the timeline starts playback"
-                      : "Autoplay off: clicking the timeline only moves the playhead"
-                  }
-                >
-                  <div className="transport-led-socket">
-                    <i
-                      className={`transport-led autoplay-led${autoplay ? " is-active" : ""}`}
-                      aria-hidden="true"
-                    />
-                  </div>
-                  <TransportGlyph name="autoplay" />
-                  <span className="transport-button-label">AUTO</span>
-                </button>
-                <span className="lane-hint-tip" aria-hidden="true">
-                  <strong>Autoplay</strong>
-                  <span>{autoplay ? "On — a click starts playback" : "Off — a click only moves the playhead"}</span>
-                  <span>Applies when a track is previewing</span>
-                </span>
-                </span>
-              </div>
             </div>
           </div>
         </div>
@@ -1886,6 +2049,41 @@ export function TimelinePanel({
             <span>Tracks: <strong>{timeline.clips.length}</strong></span>
             <span>Total Time: <strong>{formatDuration(totalTimeMs)}</strong></span>
           </div>
+        </div>
+
+        {/* Ce que fait un clic dans la timeline. Ce n'est ni un réglage
+            d'affichage ni un traitement du son : une règle de conduite du
+            transport, à part du reste et posée après le VU-mètre.
+            Non persisté, comme les réglages de vue — allumé est l'état qu'on
+            veut retrouver au lancement, et c'est le défaut. */}
+        <div className="analog-transport autoplay-bay">
+          <span className="transport-hint">
+            <button
+              className={`analog-transport-button analog-autoplay${autoplay ? " is-active" : ""}`}
+              type="button"
+              aria-pressed={autoplay}
+              onClick={() => onSetAutoplay(!autoplay)}
+              aria-label={
+                autoplay
+                  ? "Autoplay on: clicking the timeline starts playback"
+                  : "Autoplay off: clicking the timeline only moves the playhead"
+              }
+            >
+              <div className="transport-led-socket">
+                <i
+                  className={`transport-led autoplay-led${autoplay ? " is-active" : ""}`}
+                  aria-hidden="true"
+                />
+              </div>
+              <TransportGlyph name="autoplay" />
+              <span className="transport-button-label">AUTO</span>
+            </button>
+            <span className="lane-hint-tip" aria-hidden="true">
+              <strong>Autoplay</strong>
+              <span>{autoplay ? "On — a click starts playback" : "Off — a click only moves the playhead"}</span>
+              <span>Clicking the timeline, whatever else is playing</span>
+            </span>
+          </span>
         </div>
 
         <div className="timeline-controls">
@@ -1944,7 +2142,7 @@ export function TimelinePanel({
         </div>
       </div>
 
-      <div className={`timeline-body${drawShape ? " is-drawing" : ""}`} ref={timelineBody}>
+      <div className="timeline-body" ref={timelineBody}>
         <div className="timeline-lane-controls" aria-label="Fixed track controls">
           <div aria-hidden="true" />
           {TIMELINE_LANES.map((lane) => {
@@ -2024,15 +2222,21 @@ export function TimelinePanel({
         <div
           className="timeline-scroll"
           ref={timelineScroll}
+          /* Un appui pendant l'étirement rend d'abord net : les gestes lisent
+             leurs positions dans le zoom rendu, et un écran étiré leur ferait
+             viser à côté d'un facteur d'échelle. */
+          onPointerDownCapture={commitPendingZoom}
         >
           <div
-            className="timeline-content timeline-content--following"
+            className="timeline-content"
             style={{
               width: contentWidth,
-              "--timeline-follow-padding": `${contentLayout.paddingPx}px`,
-              "--timeline-follow-offset": `${contentLayout.offsetPx}px`,
-            } as CSSProperties}
+              transform: `translateX(${contentLayout.paddingPx + contentLayout.offsetPx}px)`,
+            }}
           >
+          {/* L'étireur du geste. Personne d'autre que `paintZoomPreview` et son
+              nettoyage n'écrit ici — c'est la propriété entière du correctif. */}
+          <div className="timeline-zoom-stretch" ref={zoomStretch}>
           <div className="timeline-ruler" onClick={handleTimelineSeek}>
             <svg
               className="timeline-tempo-curve"
@@ -2163,7 +2367,6 @@ export function TimelinePanel({
                     } as CSSProperties}
                     data-lane={lane}
                     onClick={handleTimelineSeek}
-                    onPointerDown={(event) => startShapeStroke(event, lane)}
                     onPointerMove={moveShapeStroke}
                     onPointerUp={finishShapeStroke}
                     onPointerCancel={() => {
@@ -2389,6 +2592,7 @@ export function TimelinePanel({
                 clip.needsAnalysis ? "timeline-clip--invalid" : "",
                 isAudible ? "" : "timeline-clip--inaudible",
                 trimEdge ? `timeline-clip--trim-${trimEdge}` : "",
+                hoveredTool?.clipId === clip.id ? smartToolClass(hoveredTool.tool) : "",
               ]
                 .filter(Boolean)
                 .join(" ");
@@ -2408,21 +2612,32 @@ export function TimelinePanel({
                      clip. Asking the trim first is what keeps the two gestures
                      from fighting over the same pointer. */
                   onPointerDown={(event) => {
-                    if (startShapeStroke(event, lane)) return;
-                    if (startClipTrim(event, clip)) return;
+                    if (event.button !== 0) return;
+                    const tool = toolAtPointer(event, clip);
+                    if (tool === "draw") {
+                      if (startShapeStroke(event, lane)) return;
+                    } else if (tool === "trim-start" || tool === "trim-end") {
+                      if (startClipTrim(event, clip)) return;
+                    }
                     startClipDrag(event, clip);
                   }}
                   onPointerMove={(event) => {
+                    // Un geste engagé garde la main jusqu'au relâchement : le
+                    // pointeur est capturé, donc un trait né dans le corps
+                    // continue de dessiner même en passant sur la barre.
                     if (drawStroke.current) {
                       moveShapeStroke(event);
                       return;
                     }
                     if (moveClipTrim(event, clip)) return;
-                    updateTrimCursor(event, clip);
+                    updateSmartCursor(event, clip);
                     moveClipDraft(event, clip.id);
                   }}
                   onPointerLeave={() => {
-                    if (!activeTrim.current) setHoveredTrim(null);
+                    if (!activeTrim.current) {
+                      setHoveredTrim(null);
+                      setHoveredTool(null);
+                    }
                   }}
                   onPointerUp={(event) => {
                     if (drawStroke.current) {
@@ -2511,6 +2726,27 @@ export function TimelinePanel({
                       >
                         {isClipEqActive(clip.eqSettings) ? "EQ •" : "EQ"}
                       </button>
+                      {/* Cuire ce clip : ses effets passent dans un fichier à
+                          lui, et la voie repart à plat sous lui. C'est une
+                          bascule — le même bouton défait ce qu'il a fait — et
+                          l'automation retirée est gardée pour ça. */}
+                      <button
+                        type="button"
+                        className={`clip-bake-btn${clip.isBaked ? " is-active" : ""}`}
+                        disabled={busy || clip.isMissing || clip.needsAnalysis}
+                        aria-pressed={clip.isBaked}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void onSetClipBaked(clip.id, !clip.isBaked);
+                        }}
+                        title={
+                          clip.isBaked
+                            ? "Baked — click to undo it and bring the automation back (replaces what was drawn since)"
+                            : "Bake this clip: render its EQ and this lane's automation into its own file, then flatten the lane under it"
+                        }
+                      >
+                        BAKE
+                      </button>
                       <button
                         type="button"
                         className="clip-remove-btn"
@@ -2544,6 +2780,7 @@ export function TimelinePanel({
               <span />
             </div>
           )}
+          </div>
           </div>
         </div>
       </div>

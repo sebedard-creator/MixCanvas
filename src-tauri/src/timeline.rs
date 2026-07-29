@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     analysis::WaveformPeaks,
-    library::decode_waveform,
+    library::{decode_waveform, encode_waveform_values},
     tempo::{TempoMap, TempoPoint},
 };
 
@@ -142,6 +142,12 @@ pub struct TimelineClip {
     /// instantané d'un rendu de deux minutes, et l'interface doit le savoir
     /// **avant** de cliquer pour ouvrir la bonne fenêtre.
     pub has_stems: bool,
+    /// Si ce clip joue un fichier cuit plutôt que sa source.
+    ///
+    /// L'automation et l'égalisation qu'il portait sont alors **dans** le son :
+    /// les commandes qui les règlent n'ont plus rien à régler, et l'interface
+    /// doit pouvoir les éteindre plutôt que de les laisser mentir.
+    pub is_baked: bool,
     pub is_missing: bool,
     pub needs_analysis: bool,
     pub eq_settings: Option<ClipEqSettings>,
@@ -210,27 +216,30 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
                     COALESCE(tracks.manual_bpm, tracks.bpm),
                     COALESCE(tracks.manual_first_beat_ms, tracks.first_beat_ms),
                     tracks.duration_ms,
-                    -- La forme d'onde du stem l'emporte quand le clip en joue
-                    -- un : montrer le mix complet en jouant la voix mentirait
-                    -- sur ce qu'on entend.
-                    COALESCE(stems.bucket_count, waveforms.bucket_count),
-                    COALESCE(stems.left_min, waveforms.left_min),
-                    COALESCE(stems.left_max, waveforms.left_max),
-                    COALESCE(stems.left_rms, waveforms.left_rms),
-                    COALESCE(stems.right_min, waveforms.right_min),
-                    COALESCE(stems.right_max, waveforms.right_max),
-                    COALESCE(stems.right_rms, waveforms.right_rms),
+                    -- Trois ondes possibles, dans l'ordre où le moteur choisit
+                    -- sa source : le fichier cuit d'abord — c'est lui qu'on
+                    -- entend, filtre compris —, puis le stem quand le clip en
+                    -- joue un, puis le morceau entier.
+                    COALESCE(bakes.bucket_count, stems.bucket_count, waveforms.bucket_count),
+                    COALESCE(bakes.left_min, stems.left_min, waveforms.left_min),
+                    COALESCE(bakes.left_max, stems.left_max, waveforms.left_max),
+                    COALESCE(bakes.left_rms, stems.left_rms, waveforms.left_rms),
+                    COALESCE(bakes.right_min, stems.right_min, waveforms.right_min),
+                    COALESCE(bakes.right_max, stems.right_max, waveforms.right_max),
+                    COALESCE(bakes.right_rms, stems.right_rms, waveforms.right_rms),
                     clips.eq_settings,
                     clips.trim_start_beats,
                     clips.trim_end_beats,
                     clips.is_sidechain_key,
                     clips.stem,
-                    EXISTS(SELECT 1 FROM clip_stems WHERE clip_stems.clip_id = clips.id)
+                    EXISTS(SELECT 1 FROM clip_stems WHERE clip_stems.clip_id = clips.id),
+                    bakes.id IS NOT NULL
              FROM timeline_clips AS clips
              JOIN library_tracks AS tracks ON tracks.id = clips.library_track_id
              LEFT JOIN track_waveforms AS waveforms ON waveforms.track_id = tracks.id
              LEFT JOIN clip_stems AS stems
                     ON stems.clip_id = clips.id AND stems.kind = clips.stem
+             LEFT JOIN clip_bakes AS bakes ON bakes.clip_id = clips.id
              ORDER BY clips.lane, clips.anchor_beat, clips.id",
         )
         .map_err(database_read_error)?;
@@ -260,6 +269,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
                 row.get::<_, i64>(20)? != 0,
                 row.get::<_, String>(21)?,
                 row.get::<_, i64>(22)? != 0,
+                row.get::<_, i64>(23)? != 0,
             ))
         })
         .map_err(database_read_error)?;
@@ -290,6 +300,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
             is_sidechain_key,
             stem,
             has_stems,
+            is_baked,
         ) = row.map_err(database_read_error)?;
         let geometry = clip_geometry(
             duration_ms,
@@ -333,6 +344,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
             is_sidechain_key,
             stem,
             has_stems,
+            is_baked,
             needs_analysis: geometry.needs_analysis,
             eq_settings,
             waveform,
@@ -1218,6 +1230,12 @@ pub(crate) fn clip_audio_source(
     stem: &str,
     original: &str,
 ) -> (String, f64) {
+    // Le bake passe avant tout le reste : le fichier cuit contient déjà le stem
+    // qui jouait au moment de la cuisson, ainsi que l'égalisation et
+    // l'automation. Le relire à travers un stem reviendrait à choisir deux fois.
+    if let Some(baked) = baked_audio_source(connection, clip_id) {
+        return baked;
+    }
     if stem == "full" {
         return (original.to_owned(), 0.0);
     }
@@ -1233,6 +1251,26 @@ pub(crate) fn clip_audio_source(
         .filter(|(path, _)| Path::new(path).is_file())
         .map(|(path, from_ms)| (path, from_ms as f64))
         .unwrap_or_else(|| (original.to_owned(), 0.0))
+}
+
+/// Le fichier cuit d'un clip, s'il en a un et qu'il est toujours là.
+///
+/// Un bake dont le fichier a disparu — dossier de données effacé, disque
+/// externe absent — ne doit pas rendre le clip muet : on retombe sur la source,
+/// donc sur le clip sans ses effets. C'est faux à l'oreille, mais audible et
+/// réparable d'un clic sur `BAKE`; un silence, lui, ne se diagnostique pas.
+fn baked_audio_source(connection: &Connection, clip_id: i64) -> Option<(String, f64)> {
+    connection
+        .query_row(
+            "SELECT file_path, source_from_ms FROM clip_bakes WHERE clip_id = ?1",
+            params![clip_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .filter(|(path, _)| Path::new(path).is_file())
+        .map(|(path, from_ms)| (path, from_ms as f64))
 }
 
 /// La tranche de la source qu'un clip fait entendre, en millisecondes.
@@ -2283,6 +2321,26 @@ pub fn split_timeline_clip(
             params![right_id, clip_id],
         )
         .map_err(database_write_error)?;
+
+    // Et de la cuisson, pour la même raison : le fichier cuit couvre l'étendue
+    // que les deux moitiés se partagent, avec la même origine dans la source.
+    // Sans cela, la moitié droite repartait de l'original — donc sans les effets
+    // qu'on venait d'y cuire, en gardant sa touche allumée.
+    //
+    // `removed` est recopiée telle quelle : décuire l'une ou l'autre rend la
+    // même automation, ce qui est bien ce qu'on veut, puisqu'elle appartenait à
+    // la voie et non à la moitié.
+    transaction
+        .execute(
+            "INSERT INTO clip_bakes
+             (clip_id, file_path, source_from_ms, removed, bucket_count,
+              left_min, left_max, left_rms, right_min, right_max, right_rms)
+             SELECT ?1, file_path, source_from_ms, removed, bucket_count,
+                    left_min, left_max, left_rms, right_min, right_max, right_rms
+             FROM clip_bakes WHERE clip_id = ?2",
+            params![right_id, clip_id],
+        )
+        .map_err(database_write_error)?;
     transaction.commit().map_err(database_write_error)?;
 
     snapshot(connection)
@@ -2500,6 +2558,376 @@ fn validate_lane(lane: i64) -> Result<(), String> {
         return Err("The track has to be A, B or C.".to_owned());
     }
     Ok(())
+}
+
+// ─── Bake ────────────────────────────────────────────────────────────────────
+
+/// Combien de source on cuit de part et d'autre de ce que le clip fait entendre.
+///
+/// Sans cette marge, rallonger le rognage après une cuisson tomberait dans le
+/// vide : le fichier s'arrêterait exactement là où le clip s'arrêtait. Huit
+/// secondes couvrent les retouches ordinaires; au-delà, il faut décuire.
+const BAKE_MARGIN_MS: f64 = 8_000.0;
+
+/// L'automation qu'un bake a emportée, telle qu'elle était.
+///
+/// C'est ce qui rend l'opération réversible. Sans elle, cuire un effet dans un
+/// fichier serait un aller simple — et un bouton dont on ne revient pas finit
+/// par ne plus être cliqué du tout.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RemovedAutomation {
+    lane: i64,
+    from_beat: f64,
+    to_beat: f64,
+    /// `(temps, gain)`. Le gain est facultatif : `NULL` vaut le silence.
+    volume: Vec<(f64, Option<f64>)>,
+    pan: Vec<(f64, f64)>,
+    /// `(temps, valeur, tension)`.
+    filter: Vec<(f64, f64, f64)>,
+}
+
+/// Tout ce qu'il faut pour cuire un clip, lu sans rien modifier.
+///
+/// La lecture et l'écriture sont séparées parce que le rendu dure : le verrou
+/// de la bibliothèque est pris pour préparer, relâché pendant la cuisson, puis
+/// repris pour ranger le résultat.
+pub(crate) struct BakeSpec {
+    pub plan: TimelineRenderPlan,
+    /// Où commence le fichier cuit dans la source, en millisecondes.
+    pub source_from_ms: f64,
+    pub removed: RemovedAutomation,
+}
+
+/// Prépare la cuisson d'un clip : le plan de rendu, et ce qui sera retiré.
+///
+/// Le plan ne contient **que** ce clip, sur sa voie, avec l'automation de cette
+/// voie et son égalisation. Trois choses en sont délibérément absentes :
+///
+/// - **L'étirement temporel.** La carte de tempo est fixée au tempo propre de la
+///   source, donc le rapport vaut un. Cuire un clip déjà étiré vers le tempo du
+///   projet le ferait étirer une seconde fois le jour où ce tempo change.
+///   L'automation, elle, reste indexée sur les temps : son alignement avec le
+///   son est le même avant et après.
+/// - **Le compresseur et le limiteur**, qui appartiennent au bus général. Les
+///   cuire dans un clip les appliquerait deux fois.
+/// - **Le sidechain**, qui n'est pas un effet du clip mais une relation avec un
+///   autre clip — lequel peut encore bouger. Figé, il pomperait à contretemps.
+pub(crate) fn prepare_bake(connection: &Connection, clip_id: i64) -> Result<BakeSpec, String> {
+    let timeline = snapshot(connection)?;
+    let clip = timeline
+        .clips
+        .iter()
+        .find(|clip| clip.id == clip_id)
+        .ok_or_else(|| "This clip is no longer on the timeline.".to_owned())?;
+    if clip.is_missing {
+        return Err(format!(
+            "{} is missing. Put the file back before baking it.",
+            clip.file_name
+        ));
+    }
+    if clip.is_baked {
+        return Err("This clip is already baked.".to_owned());
+    }
+    let source_bpm = clip
+        .bpm
+        .ok_or_else(|| format!("{} needs its BPM analyzed first.", clip.file_name))?;
+    let first_beat_ms = clip
+        .first_beat_ms
+        .ok_or_else(|| format!("{} needs its first beat corrected first.", clip.file_name))?;
+
+    let duration_ms = connection
+        .query_row(
+            "SELECT tracks.duration_ms
+             FROM timeline_clips AS clips
+             JOIN library_tracks AS tracks ON tracks.id = clips.library_track_id
+             WHERE clips.id = ?1",
+            params![clip_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(database_read_error)?;
+
+    // Le clip élargi de sa marge, des deux côtés. `clip_geometry` recalcule
+    // alors une étendue plus longue qui commence plus tôt — c'est elle qu'on
+    // rend, et le rognage d'origine s'y retrouvera par simple soustraction.
+    let beat_ms = 60_000.0 / source_bpm;
+    let margin_beats = BAKE_MARGIN_MS / beat_ms;
+    let baked_trim_start = (clip.trim_start_beats - margin_beats).max(0.0);
+    let baked_trim_end = (clip.trim_end_beats - margin_beats).max(0.0);
+    let geometry = clip_geometry(
+        duration_ms,
+        Some(source_bpm),
+        Some(first_beat_ms as i64),
+        clip.anchor_beat,
+        baked_trim_start,
+        baked_trim_end,
+    );
+    if geometry.needs_analysis || geometry.duration_beats <= 0.0 {
+        return Err(format!("{} has nothing to bake.", clip.file_name));
+    }
+
+    // La source que le clip joue **aujourd'hui** : son stem, s'il en a choisi
+    // un. Cuire l'original alors qu'on entend la voix seule produirait un
+    // fichier qui ne ressemble pas à ce qu'on écoutait.
+    let (file_path, stem_from_ms) =
+        clip_audio_source(connection, clip.id, &clip.stem, &clip.file_path);
+    let stem_trim_beats = if stem_from_ms > 0.0 {
+        stem_from_ms / beat_ms
+    } else {
+        0.0
+    };
+
+    let plan = TimelineRenderPlan {
+        project_bpm: source_bpm,
+        tempo_map: TempoMap::new(source_bpm, Vec::new())?,
+        end_beat: geometry.visual_end_beat,
+        audible_lane_mask: 1 << clip.lane,
+        limiter_enabled: false,
+        compressor_enabled: false,
+        clips: vec![TimelineRenderClip {
+            id: clip.id,
+            lane: clip.lane,
+            file_path,
+            source_bpm,
+            first_beat_ms,
+            anchor_beat: clip.anchor_beat as f64,
+            visual_start_beat: geometry.visual_start_beat,
+            duration_beats: geometry.duration_beats,
+            trim_start_beats: (baked_trim_start - stem_trim_beats).max(0.0),
+            trim_end_beats: baked_trim_end,
+            is_sidechain_key: false,
+            eq_settings: clip.eq_settings.clone(),
+        }],
+        volume_nodes: timeline.volume_nodes.clone(),
+        pan_nodes: timeline.pan_nodes.clone(),
+        filter_nodes: timeline.filter_nodes.clone(),
+    };
+
+    Ok(BakeSpec {
+        removed: collect_removed_automation(
+            &timeline,
+            clip.lane,
+            geometry.visual_start_beat,
+            geometry.visual_end_beat,
+        ),
+        source_from_ms: baked_trim_start * beat_ms,
+        plan,
+    })
+}
+
+/// Ce que la cuisson emportera : l'automation de la voie sur l'étendue rendue.
+fn collect_removed_automation(
+    timeline: &TimelineSnapshot,
+    lane: i64,
+    from_beat: f64,
+    to_beat: f64,
+) -> RemovedAutomation {
+    let inside =
+        |node_lane: i64, beat: f64| node_lane == lane && beat >= from_beat && beat <= to_beat;
+    RemovedAutomation {
+        lane,
+        from_beat,
+        to_beat,
+        volume: timeline
+            .volume_nodes
+            .iter()
+            .filter(|node| inside(node.lane, node.beat))
+            .map(|node| (node.beat, node.gain_db))
+            .collect(),
+        pan: timeline
+            .pan_nodes
+            .iter()
+            .filter(|node| inside(node.lane, node.beat))
+            .map(|node| (node.beat, node.value))
+            .collect(),
+        filter: timeline
+            .filter_nodes
+            .iter()
+            .filter(|node| inside(node.lane, node.beat))
+            .map(|node| (node.beat, node.value, node.tension))
+            .collect(),
+    }
+}
+
+/// Range le fichier cuit et retire l'automation qu'il contient désormais.
+///
+/// Une seule transaction : un enregistrement écrit sans que l'automation parte
+/// donnerait un clip qui joue ses effets deux fois — une fois dans le fichier,
+/// une fois par la voie.
+pub fn commit_bake(
+    connection: &mut Connection,
+    clip_id: i64,
+    file_path: &str,
+    source_from_ms: f64,
+    removed: &RemovedAutomation,
+    waveform: Option<&WaveformPeaks>,
+) -> Result<TimelineSnapshot, String> {
+    let serialised = serde_json::to_string(removed)
+        .map_err(|error| format!("The removed automation could not be stored: {error}"))?;
+    let transaction = connection.transaction().map_err(database_write_error)?;
+
+    let (bucket_count, left_min, left_max, left_rms, right_min, right_max, right_rms) =
+        match waveform {
+            Some(peaks) => (
+                Some(peaks.left_min.len() as i64),
+                Some(encode_waveform_values(&peaks.left_min)),
+                Some(encode_waveform_values(&peaks.left_max)),
+                Some(encode_waveform_values(&peaks.left_rms)),
+                Some(encode_waveform_values(&peaks.right_min)),
+                Some(encode_waveform_values(&peaks.right_max)),
+                Some(encode_waveform_values(&peaks.right_rms)),
+            ),
+            None => (None, None, None, None, None, None, None),
+        };
+
+    transaction
+        .execute(
+            "INSERT INTO clip_bakes
+             (clip_id, file_path, source_from_ms, removed, bucket_count,
+              left_min, left_max, left_rms, right_min, right_max, right_rms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(clip_id) DO UPDATE SET
+                 file_path = excluded.file_path,
+                 source_from_ms = excluded.source_from_ms,
+                 removed = excluded.removed,
+                 bucket_count = excluded.bucket_count,
+                 left_min = excluded.left_min,
+                 left_max = excluded.left_max,
+                 left_rms = excluded.left_rms,
+                 right_min = excluded.right_min,
+                 right_max = excluded.right_max,
+                 right_rms = excluded.right_rms",
+            params![
+                clip_id,
+                file_path,
+                source_from_ms.max(0.0).round() as i64,
+                serialised,
+                bucket_count,
+                left_min,
+                left_max,
+                left_rms,
+                right_min,
+                right_max,
+                right_rms,
+            ],
+        )
+        .map_err(database_write_error)?;
+
+    clear_lane_automation(&transaction, removed)?;
+    transaction.commit().map_err(database_write_error)?;
+    snapshot(connection)
+}
+
+/// Efface l'automation de la voie sur l'étendue cuite, et referme les bords.
+///
+/// Les deux nœuds de repos ne sont pas une politesse : la voie continue après le
+/// clip, et sans eux la ligne rejoindrait le nœud suivant en rampant depuis le
+/// dernier nœud d'avant — de l'automation que personne n'a demandée, en travers
+/// de ce qui suit.
+fn clear_lane_automation(
+    transaction: &Transaction<'_>,
+    removed: &RemovedAutomation,
+) -> Result<(), String> {
+    for (table, column, rest) in [
+        ("timeline_volume_nodes", "gain_db", DEFAULT_TRACK_GAIN_DB),
+        ("timeline_pan_nodes", "value", PAN_CENTRE),
+        ("timeline_filter_nodes", "value", 0.0),
+    ] {
+        transaction
+            .execute(
+                &format!("DELETE FROM {table} WHERE lane = ?1 AND beat >= ?2 AND beat <= ?3"),
+                params![removed.lane, removed.from_beat, removed.to_beat],
+            )
+            .map_err(database_write_error)?;
+        for beat in [removed.from_beat, removed.to_beat] {
+            transaction
+                .execute(
+                    &format!(
+                        "INSERT INTO {table} (lane, beat, {column}) VALUES (?1, ?2, ?3)
+                         ON CONFLICT(lane, beat) DO UPDATE SET {column} = excluded.{column}"
+                    ),
+                    params![removed.lane, beat, rest],
+                )
+                .map_err(database_write_error)?;
+        }
+    }
+    Ok(())
+}
+
+/// Défait une cuisson : l'automation revient, le fichier s'en va.
+///
+/// Ce qui a été dessiné **depuis** la cuisson, sur cette voie et sur cette
+/// étendue, est remplacé — deux automations ne peuvent pas occuper les mêmes
+/// temps. L'annulation le couvre, et le bouton le dit.
+///
+/// Le chemin du fichier est renvoyé pour que l'appelant l'efface : le faire ici
+/// mettrait une écriture sur disque dans une transaction de base de données, et
+/// un échec à la validation laisserait un enregistrement sans son fichier.
+pub fn unbake_clip(
+    connection: &mut Connection,
+    clip_id: i64,
+) -> Result<(TimelineSnapshot, Option<String>), String> {
+    let record = connection
+        .query_row(
+            "SELECT file_path, removed FROM clip_bakes WHERE clip_id = ?1",
+            params![clip_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(database_read_error)?;
+    let Some((file_path, serialised)) = record else {
+        return Err("This clip is not baked.".to_owned());
+    };
+    let removed: RemovedAutomation = serde_json::from_str(&serialised)
+        .map_err(|error| format!("The stored automation could not be read: {error}"))?;
+
+    let transaction = connection.transaction().map_err(database_write_error)?;
+    for table in [
+        "timeline_volume_nodes",
+        "timeline_pan_nodes",
+        "timeline_filter_nodes",
+    ] {
+        transaction
+            .execute(
+                &format!("DELETE FROM {table} WHERE lane = ?1 AND beat >= ?2 AND beat <= ?3"),
+                params![removed.lane, removed.from_beat, removed.to_beat],
+            )
+            .map_err(database_write_error)?;
+    }
+    for (beat, gain_db) in &removed.volume {
+        transaction
+            .execute(
+                "INSERT INTO timeline_volume_nodes (lane, beat, gain_db) VALUES (?1, ?2, ?3)",
+                params![removed.lane, beat, gain_db],
+            )
+            .map_err(database_write_error)?;
+    }
+    for (beat, value) in &removed.pan {
+        transaction
+            .execute(
+                "INSERT INTO timeline_pan_nodes (lane, beat, value) VALUES (?1, ?2, ?3)",
+                params![removed.lane, beat, value],
+            )
+            .map_err(database_write_error)?;
+    }
+    for (beat, value, tension) in &removed.filter {
+        transaction
+            .execute(
+                "INSERT INTO timeline_filter_nodes (lane, beat, value, tension)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![removed.lane, beat, value, tension],
+            )
+            .map_err(database_write_error)?;
+    }
+    transaction
+        .execute(
+            "DELETE FROM clip_bakes WHERE clip_id = ?1",
+            params![clip_id],
+        )
+        .map_err(database_write_error)?;
+    transaction.commit().map_err(database_write_error)?;
+
+    Ok((snapshot(connection)?, Some(file_path)))
 }
 
 fn rounded_bpm(bpm: f64) -> f64 {
@@ -3767,6 +4195,197 @@ mod tests {
             if candidate.exists() {
                 fs::remove_file(candidate).expect("test database should be removed");
             }
+        }
+    }
+
+    /// Décuire doit rendre exactement ce que cuire a emporté.
+    ///
+    /// C'est la promesse du bouton : sans elle, `BAKE` est un aller simple, et
+    /// un bouton dont on ne revient pas ne se clique plus. Le test vérifie les
+    /// trois automations à la fois — le volume, le panoramique et le filtre —
+    /// parce que la troisième porte une colonne de plus et qu'une boucle
+    /// écrite pour deux l'oublie sans rien dire.
+    #[test]
+    fn a_bake_gives_back_exactly_what_it_took() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-bake-roundtrip-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+        let fake_mp3 = database_path.with_extension("mp3");
+        fs::write(&fake_mp3, []).expect("fake MP3 should be created");
+
+        {
+            let mut store = LibraryStore::open(&database_path).expect("database should open");
+            store
+                .connection
+                .execute(
+                    "INSERT INTO library_tracks
+                     (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                      bpm, first_beat_ms, beat_count, analysis_status)
+                     VALUES (?1, ?2, 'bake.mp3', 120000, 44100, 2, 120.0, 500, 240, 'analyzed')",
+                    params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+                )
+                .expect("track should be inserted");
+            let track_id = store.connection.last_insert_rowid();
+            let placed = add_clip(&mut store.connection, track_id, Some(8.0), Some(1))
+                .expect("clip should be added");
+            let clip = placed.clips[0].clone();
+
+            // De l'automation dans le clip, et de l'automation en dehors : la
+            // seconde ne doit pas bouger d'un cheveu.
+            let place = |connection: &rusqlite::Connection, beat: f64, gain: f64| {
+                connection
+                    .execute(
+                        "INSERT INTO timeline_volume_nodes (lane, beat, gain_db)
+                         VALUES (1, ?1, ?2)",
+                        params![beat, gain],
+                    )
+                    .expect("volume node should be added");
+            };
+            for beat in [clip.visual_start_beat + 2.0, clip.visual_start_beat + 4.0] {
+                place(&store.connection, beat, -12.0);
+                store
+                    .connection
+                    .execute(
+                        "INSERT INTO timeline_pan_nodes (lane, beat, value) VALUES (1, ?1, 0.5)",
+                        params![beat],
+                    )
+                    .expect("pan node should be added");
+                store
+                    .connection
+                    .execute(
+                        "INSERT INTO timeline_filter_nodes (lane, beat, value, tension)
+                         VALUES (1, ?1, 0.7, 0.25)",
+                        params![beat],
+                    )
+                    .expect("filter node should be added");
+            }
+            let outside = clip.visual_end_beat + 16.0;
+            place(&store.connection, outside, -3.0);
+
+            let spec =
+                super::prepare_bake(&store.connection, clip.id).expect("the bake should prepare");
+            assert_eq!(spec.plan.clips.len(), 1, "un seul clip est cuit");
+            assert!(
+                !spec.plan.limiter_enabled && !spec.plan.compressor_enabled,
+                "le bus général n'entre pas dans un clip"
+            );
+            assert!(
+                !spec.plan.clips[0].is_sidechain_key,
+                "le sidechain reste vivant"
+            );
+            // Le rapport d'étirement vaut un : le tempo de rendu est celui de
+            // la source, sinon le fichier cuit serait étiré une seconde fois.
+            assert!((spec.plan.project_bpm - 120.0).abs() < 1e-9);
+            let before = super::snapshot(&store.connection).expect("snapshot");
+            // Compté sur l'état réel plutôt qu'écrit en dur : poser un clip
+            // sème déjà des nœuds à ses bornes, et un nombre fixe ne dirait
+            // que la date à laquelle le test a été écrit.
+            let in_range =
+                |beat: f64| beat >= spec.removed.from_beat && beat <= spec.removed.to_beat;
+            let expected_volume = before
+                .volume_nodes
+                .iter()
+                .filter(|node| node.lane == 1 && in_range(node.beat))
+                .count();
+            assert_eq!(spec.removed.volume.len(), expected_volume);
+            assert!(
+                spec.removed.volume.len() >= 2,
+                "le clip porte bien l'automation qu'on vient d'y poser"
+            );
+            assert_eq!(spec.removed.filter.len(), 2);
+            let baked_file = database_path.with_extension("baked.wav");
+            fs::write(&baked_file, []).expect("fake bake should be created");
+            let after = super::commit_bake(
+                &mut store.connection,
+                clip.id,
+                &baked_file.to_string_lossy(),
+                1_500.0,
+                &spec.removed,
+                None,
+            )
+            .expect("the bake should commit");
+
+            assert!(after.clips[0].is_baked, "le clip se dit cuit");
+            // La voie est plate sur l'étendue cuite : il ne reste que les deux
+            // ancres de repos, sans quoi ce qui suit le clip hériterait d'une
+            // rampe que personne n'a demandée.
+            let inside: Vec<_> = after
+                .volume_nodes
+                .iter()
+                .filter(|node| {
+                    node.lane == 1
+                        && node.beat >= spec.removed.from_beat
+                        && node.beat <= spec.removed.to_beat
+                })
+                .collect();
+            assert_eq!(inside.len(), 2, "deux ancres, et rien entre elles");
+            assert!(
+                inside
+                    .iter()
+                    .all(|node| node.gain_db == Some(DEFAULT_TRACK_GAIN_DB))
+            );
+            assert!(
+                after
+                    .volume_nodes
+                    .iter()
+                    .any(|node| (node.beat - outside).abs() < 1e-9 && node.gain_db == Some(-3.0)),
+                "le nœud hors du clip est resté"
+            );
+
+            let (restored, removed_file) =
+                super::unbake_clip(&mut store.connection, clip.id).expect("the bake should undo");
+            assert_eq!(
+                removed_file.as_deref(),
+                Some(&*baked_file.to_string_lossy())
+            );
+            assert!(!restored.clips[0].is_baked, "le clip n'est plus cuit");
+
+            let key = |snapshot: &TimelineSnapshot| {
+                let mut volume: Vec<_> = snapshot
+                    .volume_nodes
+                    .iter()
+                    .map(|node| ((node.beat * 1e6) as i64, node.lane, node.gain_db))
+                    .collect();
+                let mut pan: Vec<_> = snapshot
+                    .pan_nodes
+                    .iter()
+                    .map(|node| ((node.beat * 1e6) as i64, node.lane, node.value))
+                    .collect();
+                let mut filter: Vec<_> = snapshot
+                    .filter_nodes
+                    .iter()
+                    .map(|node| {
+                        (
+                            (node.beat * 1e6) as i64,
+                            node.lane,
+                            node.value,
+                            node.tension,
+                        )
+                    })
+                    .collect();
+                volume.sort_by_key(|entry| (entry.1, entry.0));
+                pan.sort_by_key(|entry| (entry.1, entry.0));
+                filter.sort_by_key(|entry| (entry.1, entry.0));
+                (volume, pan, filter)
+            };
+            assert_eq!(
+                key(&restored),
+                key(&before),
+                "l'automation revient exactement comme elle était"
+            );
+        }
+
+        let _ = fs::remove_file(&fake_mp3);
+        let _ = fs::remove_file(database_path.with_extension("baked.wav"));
+        for suffix in ["", "-wal", "-shm"] {
+            let candidate =
+                std::path::PathBuf::from(format!("{}{}", database_path.to_string_lossy(), suffix));
+            let _ = fs::remove_file(candidate);
         }
     }
 

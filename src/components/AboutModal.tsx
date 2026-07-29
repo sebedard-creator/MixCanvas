@@ -160,9 +160,22 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
           <section className="about-block">
             <h3>Your music</h3>
             <p>
-              Nothing leaves this machine. Tracks are read where they sit, analysis and
-              separated stems are cached beside the library, and the program makes no
-              network request of any kind.
+              Nothing leaves this machine. Tracks are read where they sit, and the program
+              makes no network request of any kind.
+            </p>
+            {/* On finit toujours par se demander où sont passés ces gigaoctets.
+                Le dire ici évite d'avoir à le chercher. */}
+            <p>
+              Separated stems and baked clips are written as WAV files into a{" "}
+              <strong>MixCanvas Files</strong> folder beside the program — or into the
+              application data folder when that location is read-only. Each project gets a
+              folder of its own, named after it; an unsaved session lives in{" "}
+              <strong>Scratch</strong> until you name it, and its media follow when you do.
+            </p>
+            <p className="about-fineprint">
+              On exit, files that nothing refers to any more are deleted. A file that is
+              still referenced is never touched, whether or not the current session uses
+              it — a separation costs minutes, and the safe test is the strict one.
             </p>
           </section>
         </div>
