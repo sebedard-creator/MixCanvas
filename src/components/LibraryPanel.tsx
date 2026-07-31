@@ -271,7 +271,7 @@ export function LibraryPanel({
                   : "Preview";
 
             const bpmControl = track.analysisStatus === "analyzing" ? (
-              <span className="analysis-running"><span />Analyzing...</span>
+              <span className="analysis-running"><span aria-hidden="true" />Analyzing</span>
             ) : track.bpm ? (
               <button
                 className={`bpm-value${track.isCorrected ? " bpm-value--manual" : ""}`}

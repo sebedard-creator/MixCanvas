@@ -42,6 +42,7 @@ import { canBeSidechainKey, clipsCoveredByKey } from "../lib/sidechainKey";
 import {
   clipTrimLimits,
   clipWithTrim,
+  minimumAnchorBeat,
   trimEdgeAtPointer,
   trimForEdge,
   type ClipTrim,
@@ -75,15 +76,10 @@ import {
 } from "../lib/volumeCurve";
 import type { LibraryTrack } from "../library/types";
 import {
-  ZOOM_SETTLE_MS,
   clampTimelineZoom,
-  isZoomGestureBurst,
   minimumTimelineZoom,
   timelineContentLayout,
-  timelineZoomAnchorPx,
   visibleMeasures,
-  zoomPreviewNeedsCommit,
-  zoomPreviewScale,
 } from "../lib/timelineZoom";
 import type {
   TimelineClip,
@@ -458,25 +454,6 @@ export function TimelinePanel({
     pixelsPerBeat: 16,
     minimumZoom: 1,
   });
-  /** Le zoom visé pendant le geste; `null` hors geste. */
-  const pendingZoom = useRef<number | null>(null);
-  const zoomSettleTimer = useRef<number | null>(null);
-  /**
-   * L'élément que l'étirement du geste habite, et lui seul.
-   *
-   * React n'écrit **jamais** son style : deux écrivains sur une même propriété
-   * était le défaut d'origine. React ne réécrit une propriété que si *sa*
-   * version a changé — le translate du contenu ne bouge pas quand la tête est
-   * au temps zéro —, si bien que l'étirement écrit à la main survivait au
-   * rendu net. Chaque pose sur-zoomait, et le premier cran du geste suivant
-   * remplaçait ce reliquat par une petite valeur : un saut dans l'autre sens,
-   * le stroboscope même qu'on voulait soigner.
-   */
-  const zoomStretch = useRef<HTMLDivElement | null>(null);
-  /* L'ancre du dernier rendu net, pour que l'étirement écrit entre deux rendus
-     tourne autour du même point que le rendu. */
-  const zoomAnchor = useRef(0);
-  const lastZoomTickAt = useRef(0);
   const tempoEditingLocked = busy || transport.status === "playing";
 
   /* Le crayon a toujours besoin d'une ligne visible — mais il n'y a plus rien à
@@ -583,102 +560,26 @@ export function TimelinePanel({
     setPixelsPerBeat((current) => Math.max(current, minimumZoom));
   }, [minimumZoom]);
 
-  /* L'étirement s'efface dans le commit même qui rend le zoom net — après
-     l'écriture du DOM, avant la peinture. Plus tôt, une image montrerait
-     l'ancienne mise en page sans étirement; plus tard, la nouvelle encore
-     étirée. Les deux sont le sursaut qu'on soigne. */
-  useLayoutEffect(() => {
-    const element = zoomStretch.current;
-    if (!element) return;
-    // `scaleX(1)`, jamais l'absence de transformation : retirer la propriété
-    // dépromouvait le calque de composition à chaque pose, et la
-    // re-rastérisation plein écran qui suit est exactement le genre de
-    // soubresaut qui grandit avec la taille de ce qu'il y a à rastériser.
-    element.style.transform = "scaleX(1)";
-    element.style.transformOrigin = `${zoomAnchor.current}px 0px`;
-  }, [pixelsPerBeat]);
-
   /**
-   * Rend le zoom visé pour de bon, et remet l'étirement à un.
+   * Un cran publie une seule géométrie React.
    *
-   * Un seul commit : le rendu net et la fin de l'étirement arrivent dans la
-   * même image, sans quoi on verrait l'un sans l'autre — le défaut qu'on
-   * soigne, réintroduit à la sortie du geste.
-   */
-  const commitPendingZoom = useCallback(() => {
-    if (zoomSettleTimer.current !== null) {
-      window.clearTimeout(zoomSettleTimer.current);
-      zoomSettleTimer.current = null;
-    }
-    const pending = pendingZoom.current;
-    if (pending === null) return;
-    pendingZoom.current = null;
-    if (pending === zoomState.current.pixelsPerBeat) {
-      // Rien à rendre — l'étirement valait un, on le repose tout de suite.
-      const element = zoomStretch.current;
-      if (element) {
-        element.style.transform = "scaleX(1)";
-        element.style.transformOrigin = `${zoomAnchor.current}px 0px`;
-      }
-      return;
-    }
-    zoomState.current.pixelsPerBeat = pending;
-    setPixelsPerBeat(pending);
-  }, []);
-
-  /** L'étirement du geste, écrit directement — ni mise en page ni repeinture. */
-  const paintZoomPreview = useCallback(() => {
-    const element = zoomStretch.current;
-    const pending = pendingZoom.current;
-    if (!element || pending === null) return;
-    const scale = zoomPreviewScale(zoomState.current.pixelsPerBeat, pending);
-    element.style.transform = `scaleX(${scale})`;
-    element.style.transformOrigin = `${zoomAnchor.current}px 0px`;
-  }, []);
-
-  /**
-   * Un cran de zoom. Pendant le geste le contenu est **étiré** — une seule
-   * transformation, composée par le GPU — et le vrai rendu attend la fin du
-   * geste. Chaque cran relançait la mise en page du monde entier; la cadence
-   * s'effondrait, la molette s'accumulait pendant les images manquées, et
-   * chaque image peinte sautait un grand pas avec des niveaux d'onde et des
-   * étiquettes qui claquaient : le stroboscope venait de là, pas d'une couche
-   * en retard. Étiré, tout bouge d'un seul bloc parce que tout **est** un seul
-   * bloc.
+   * Largeur musicale, placement, grille, clips, courbes et playhead dérivent
+   * tous du même `pixelsPerBeat`. Il n'existe donc aucune phase d'aperçu
+   * `scaleX`, ni de calque GPU persistant que WebView2 pourrait recomposer avec
+   * la texture de l'image précédente. Le regroupement par animation frame
+   * absorbe encore les micro-événements d'une rafale de molette.
    */
   const applyTimelineZoom = useCallback((deltaPixels: number) => {
     const boundedDelta = Math.max(-240, Math.min(240, deltaPixels));
     const state = zoomState.current;
-    const base = pendingZoom.current ?? state.pixelsPerBeat;
     const nextZoom = clampTimelineZoom(
-      base * Math.exp(-boundedDelta * 0.0015),
+      state.pixelsPerBeat * Math.exp(-boundedDelta * 0.0015),
       state.minimumZoom,
     );
-    if (Math.abs(nextZoom - base) < 0.000_01) return;
-    const now = performance.now();
-    const burst = isZoomGestureBurst(now, lastZoomTickAt.current, pendingZoom.current !== null);
-    lastZoomTickAt.current = now;
-    pendingZoom.current = nextZoom;
-    // Un cran isolé se rend tout de suite : une seule image change, dans le
-    // sens commandé, et la paire étirer-puis-poser n'existe pas du tout. Elle
-    // ne sert qu'aux rafales, là où rendre à chaque cran faisait strober.
-    if (!burst) {
-      commitPendingZoom();
-      return;
-    }
-    // Au-delà du double ou de la moitié, l'étirement se verrait trop : on rend
-    // net et le geste repart de là. Quelques rendus par grand zoom, chacun
-    // entier, plutôt que trente rendus déchirés.
-    if (zoomPreviewNeedsCommit(zoomPreviewScale(state.pixelsPerBeat, nextZoom))) {
-      commitPendingZoom();
-      return;
-    }
-    paintZoomPreview();
-    if (zoomSettleTimer.current !== null) {
-      window.clearTimeout(zoomSettleTimer.current);
-    }
-    zoomSettleTimer.current = window.setTimeout(commitPendingZoom, ZOOM_SETTLE_MS);
-  }, [commitPendingZoom, paintZoomPreview]);
+    if (Math.abs(nextZoom - state.pixelsPerBeat) < 0.000_01) return;
+    zoomState.current.pixelsPerBeat = nextZoom;
+    setPixelsPerBeat(nextZoom);
+  }, []);
 
   const queueTimelineZoom = useCallback((deltaPixels: number) => {
     pendingZoomDelta.current = Math.max(
@@ -736,11 +637,6 @@ export function TimelinePanel({
     contentWidth,
     viewportWidth,
   );
-  /* Le point que l'étirement garde immobile : le même que celui que le rendu
-     net épingle au centre. Étirer autour d'un autre ferait glisser l'image
-     pendant le geste puis sauter au rendu. */
-  zoomAnchor.current = timelineZoomAnchorPx(displayBeat, pixelsPerBeat, contentWidth, viewportWidth);
-
   /* Un marqueur par mesure **visible**, pas par mesure du projet : sur un long
      mix, des milliers de marqueurs hors champ étaient mis en page à chaque
      rendu — le gros du coût qui faisait strober le zoom. */
@@ -785,9 +681,6 @@ export function TimelinePanel({
     if (zoomAnimationFrame.current !== null) {
       window.cancelAnimationFrame(zoomAnimationFrame.current);
     }
-    if (zoomSettleTimer.current !== null) {
-      window.clearTimeout(zoomSettleTimer.current);
-    }
   }, []);
 
   useEffect(() => {
@@ -813,9 +706,6 @@ export function TimelinePanel({
           : rawDelta;
 
       if (isHorizontalScrollGesture) {
-        // Un zoom encore étiré se rend d'abord : le pas de défilement se
-        // mesure ensuite dans le zoom réel, pas dans celui d'avant le geste.
-        commitPendingZoom();
         // Pro Tools Standard: Shift + Wheel -> Horizontal Timeline Viewport Scroll
         const maxScrollBeat = Math.max(128, totalBeats + 64);
         setScrollBeatOffset((current) => {
@@ -832,7 +722,7 @@ export function TimelinePanel({
 
     element.addEventListener("wheel", handleWheel, { passive: false });
     return () => element.removeEventListener("wheel", handleWheel);
-  }, [commitPendingZoom, holdManualScroll, totalBeats, queueTimelineZoom, transport.positionBeat]);
+  }, [holdManualScroll, totalBeats, queueTimelineZoom, transport.positionBeat]);
 
   /* L'état de `Ctrl`, suivi au clavier parce que le CSS ne connaît pas les
      modificateurs. Le `blur` remet à zéro : sortir de la fenêtre en le tenant
@@ -903,8 +793,9 @@ export function TimelinePanel({
   }, [drawArmable, drawShape]);
 
   useLayoutEffect(() => {
-    // Zoom and transport following are rendered through one CSS transform.
-    // Keep the compositor-owned native scroll offset out of that transaction.
+    // Zoom and transport following belong to the layout. Keep the browser's
+    // independent native scroll offset at zero so it cannot add a second,
+    // compositor-owned displacement to the same image.
     const element = timelineScroll.current;
     if (element && element.scrollLeft !== 0) {
       element.scrollLeft = 0;
@@ -980,7 +871,7 @@ export function TimelinePanel({
       startClientX: event.clientX,
       startAnchorBeat: clipDrafts[clip.id]?.anchorBeat ?? clip.anchorBeat,
       currentAnchorBeat: clipDrafts[clip.id]?.anchorBeat ?? clip.anchorBeat,
-      minimumAnchorBeat: Math.ceil(clip.preRollBeats),
+      minimumAnchorBeat: minimumAnchorBeat(clip.preRollBeats, clip.trimStartBeats),
       startLane: clipDrafts[clip.id]?.lane ?? clip.lane,
       currentLane: clipDrafts[clip.id]?.lane ?? clip.lane,
     };
@@ -2222,21 +2113,15 @@ export function TimelinePanel({
         <div
           className="timeline-scroll"
           ref={timelineScroll}
-          /* Un appui pendant l'étirement rend d'abord net : les gestes lisent
-             leurs positions dans le zoom rendu, et un écran étiré leur ferait
-             viser à côté d'un facteur d'échelle. */
-          onPointerDownCapture={commitPendingZoom}
         >
           <div
-            className="timeline-content"
+            className="timeline-content timeline-content--following"
             style={{
               width: contentWidth,
-              transform: `translateX(${contentLayout.paddingPx + contentLayout.offsetPx}px)`,
-            }}
+              "--timeline-follow-padding": `${contentLayout.paddingPx}px`,
+              "--timeline-follow-offset": `${contentLayout.offsetPx}px`,
+            } as CSSProperties}
           >
-          {/* L'étireur du geste. Personne d'autre que `paintZoomPreview` et son
-              nettoyage n'écrit ici — c'est la propriété entière du correctif. */}
-          <div className="timeline-zoom-stretch" ref={zoomStretch}>
           <div className="timeline-ruler" onClick={handleTimelineSeek}>
             <svg
               className="timeline-tempo-curve"
@@ -2780,7 +2665,6 @@ export function TimelinePanel({
               <span />
             </div>
           )}
-          </div>
           </div>
         </div>
       </div>

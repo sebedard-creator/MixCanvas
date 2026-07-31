@@ -157,6 +157,23 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
             </p>
           </section>
 
+          {/* Un drapeau de lancement ne se découvre pas tout seul, et celui-ci
+              décide si l'interface scintille ou non sur une machine donnée. */}
+          <section className="about-block">
+            <h3>If the display flickers</h3>
+            <p>
+              MixCanvas draws its interface in <strong>software</strong> by default. Some graphics
+              drivers make WebView2's hardware compositor tear during a zoom, and no amount of
+              care on our side fixes that — so correctness wins, at a cost this 2D interface can
+              afford. Audio, analysis and rendering are native Rust and are never affected.
+            </p>
+            <p className="about-fineprint">
+              Launch with <strong>--gpu</strong> for full hardware acceleration, or{" "}
+              <strong>--gpu-safe</strong> to keep hardware drawing while compositing in software —
+              often the best of both. If either one flickers, go back to launching it plainly.
+            </p>
+          </section>
+
           <section className="about-block">
             <h3>Your music</h3>
             <p>

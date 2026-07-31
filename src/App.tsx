@@ -35,6 +35,7 @@ interface PreviewSnapshot {
   filePath: string | null;
   durationMs: number;
   positionMs: number;
+  playbackSpeed: number;
   sampleRate: number | null;
   channels: number | null;
 }
@@ -45,6 +46,7 @@ const EMPTY_PREVIEW: PreviewSnapshot = {
   filePath: null,
   durationMs: 0,
   positionMs: 0,
+  playbackSpeed: 1,
   sampleRate: null,
   channels: null,
 };
@@ -571,15 +573,11 @@ function App() {
         });
         setLibrary(tracks);
         await refreshTimeline();
-        // The backend quantises the entered position onto the analysed grid,
-        // so the message reports what was stored rather than what was typed.
         const stored = tracks.find((candidate) => candidate.id === track.id);
+        const savedBpm = stored?.bpm ?? bpm;
         const savedFirstBeatMs = stored?.firstBeatMs ?? firstBeatMs;
-        const snapped = Math.abs(savedFirstBeatMs - firstBeatMs) >= 1;
         setLibraryMessage(
-          `${track.fileName} now uses ${bpm.toFixed(3)} BPM with its first downbeat at ${formatDuration(savedFirstBeatMs)}${
-            snapped ? ", snapped to the nearest detected beat" : ""
-          }.`,
+          `${track.fileName} now uses ${savedBpm.toFixed(3)} BPM with its first downbeat at ${formatDuration(savedFirstBeatMs)}.`,
         );
       } catch (gridError) {
         setError(errorMessage(gridError));
@@ -931,6 +929,21 @@ function App() {
       setError(errorMessage(seekError));
     }
   }, []);
+
+  const setPreviewSpeed = useCallback(async (speed: number) => {
+    setError(null);
+    try {
+      setPreview(await invoke<PreviewSnapshot>("set_preview_speed", { speed }));
+    } catch (speedError) {
+      setError(errorMessage(speedError));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (editingTrackId === null && preview.playbackSpeed !== 1) {
+      void setPreviewSpeed(1);
+    }
+  }, [editingTrackId, preview.playbackSpeed, setPreviewSpeed]);
 
   const setTimelineLaneMuted = useCallback(async (lane: number, isMuted: boolean) => {
     await runTimelineEdit(
@@ -1400,11 +1413,13 @@ function App() {
             previewFilePath={preview.filePath}
             previewPositionMs={preview.positionMs}
             previewDurationMs={preview.durationMs}
+            previewPlaybackSpeed={preview.playbackSpeed}
             isPreviewPlaying={isPlaying}
             busy={gridBusy || analysisBusy || timelinePlaybackLocked}
             onClose={() => setEditingTrackId(null)}
             onPreview={() => void previewLibraryTrack(editingTrack)}
             onSeekPreview={(positionMs) => void seekPreview(positionMs)}
+            onSetPreviewSpeed={(speed) => void setPreviewSpeed(speed)}
             onReanalyze={() => void analyzeLibraryTracks([editingTrack.id])}
             onSave={(bpm, firstBeatMs) =>
               void saveBeatgridCorrection(editingTrack, bpm, firstBeatMs)

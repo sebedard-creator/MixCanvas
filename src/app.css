@@ -491,18 +491,42 @@ button:disabled{
   white-space: nowrap;
 }
 
+/* L'anneau qui tourne pendant l'analyse.
+ *
+ * Un arc de trois quarts plutôt qu'un seul quart : à neuf pixels, un quart de
+ * tour se lit comme un point qui vibre, pas comme un anneau qui tourne. Le
+ * bleu est celui de l'application, et le reste de l'anneau garde une trace
+ * visible pour que la forme se lise même à l'arrêt d'une image.
+ *
+ * L'anneau est **indéterminé**, et il le restera : `analyze_file` est un seul
+ * appel opaque dans la caisse `beat-this`, sans rappel de progression. Un
+ * anneau qui se remplirait sur une durée estimée serait une invention — il
+ * mentirait précisément quand l'analyse traîne, c'est-à-dire quand on le
+ * regarde. */
 .analysis-running > span{
-  width: 7px;
-  height: 7px;
-  border: 1px solid rgba(30, 58, 99, 0.25);
-  border-top-color: #152c4e;
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border: 1.5px solid rgba(30, 58, 99, 0.16);
+  border-top-color: #0284c7;
+  border-right-color: #0284c7;
+  border-bottom-color: #0284c7;
   border-radius: 50%;
-  animation: analysis-spin 700ms linear infinite;
+  animation: analysis-spin 780ms linear infinite;
 }
 
 @keyframes analysis-spin{
   to {
     transform: rotate(360deg);
+  }
+}
+
+/* Le rendu est logiciel : une animation continue coûte du processeur à chaque
+   image. Celle-ci ne tourne que sur la rangée en cours d'analyse, et s'arrête
+   d'elle-même quand le mouvement est refusé par le système. */
+@media (prefers-reduced-motion: reduce){
+  .analysis-running > span{
+    animation-duration: 2.4s;
   }
 }
 
@@ -583,6 +607,110 @@ button:disabled{
   background: #171b24;
   cursor: pointer;
   font-size: 18px;
+}
+
+/* La marche à suivre : trois pas numérotés, entre l'écoute et les champs.
+   Un pas franchi s'éteint plutôt que de disparaître — une liste dont les
+   éléments s'enlèvent fait sauter ceux d'en dessous sous le curseur. */
+.beatgrid-recipe{
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  /* Le rembourrage du bas n'est pas décoratif : sans lui le dernier pas
+     touchait le panneau clair au pixel près, et son coin arrondi disparaissait
+     dedans — la bande avait l'air coupée. */
+  padding: 18px 26px;
+  list-style: none;
+}
+
+.beatgrid-recipe li{
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border: 1px solid rgba(155, 135, 255, 0.22);
+  border-radius: 10px;
+  background: rgba(125, 101, 244, 0.06);
+  transition: opacity 140ms ease, border-color 140ms ease;
+}
+
+.beatgrid-recipe li.is-done{
+  border-color: rgba(155, 135, 255, 0.12);
+  opacity: 0.5;
+}
+
+.beatgrid-recipe-step{
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(125, 101, 244, 0.22);
+  color: #e6e1ff;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.beatgrid-recipe strong{
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.beatgrid-recipe p{
+  margin: 2px 0 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  opacity: 0.72;
+}
+
+.beatgrid-recipe-action{
+  padding: 6px 11px;
+  border: 1px solid #7c6ef0;
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(140, 120, 250, 0.28) 0%, rgba(94, 76, 200, 0.28) 100%);
+  color: #efecff;
+  cursor: pointer;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.beatgrid-recipe-action:hover:not(:disabled){
+  border-color: #a394ff;
+  background: linear-gradient(180deg, rgba(160, 142, 255, 0.4) 0%, rgba(110, 90, 220, 0.4) 100%);
+}
+
+.beatgrid-recipe-action.is-active{
+  border-color: #34d399;
+  background: linear-gradient(180deg, rgba(52, 211, 153, 0.28) 0%, rgba(16, 140, 100, 0.28) 100%);
+  color: #d8fff0;
+}
+
+.beatgrid-recipe-action:disabled{
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* D'où vient la valeur du champ, dit dans son étiquette : sans ça, deux
+   champs également remplissables se lisent comme deux méthodes au choix. */
+.beatgrid-field-origin{
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(125, 101, 244, 0.18);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  opacity: 0.85;
 }
 
 .beatgrid-editor-body{
@@ -733,6 +861,15 @@ button:disabled{
   color: #2c3e55;
   font-size: 11px;
   line-height: 1.45;
+}
+
+.tap-accuracy{
+  color: inherit;
+  font-weight: 900;
+}
+
+.tap-accuracy--good{
+  color: #16803b;
 }
 
 .seconds-input{
@@ -1694,22 +1831,15 @@ body,
   min-height: 330px;
 }
 
-/* Le contenu se place par une transformation, écrite dans le composant.
-   `left` et `margin-inline` relançaient une mise en page à chacun de leurs
-   changements — vingt fois par seconde en lecture; une transformation se
-   compose sur le GPU sans rien mettre en page ni repeindre. */
-
-/* L'étireur du zoom : le geste écrit son échelle ici, et React n'y écrit
-   jamais. Sur un élément partagé, React ne réécrit une propriété que si sa
-   version à lui a changé — l'étirement de la main survivait donc au rendu
-   net, et le cran suivant sautait dans l'autre sens en le remplaçant. */
-.timeline-zoom-stretch{
-  height: 100%;
-  /* Un calque permanent : sans lui, chaque pose de zoom dépromouvait
-     l'élément et re-rastérisait tout l'écran — un soubresaut proportionnel à
-     la surface affichée. Chromium ne rastérise que les tuiles visibles, la
-     largeur du contenu n'est donc pas un coût. */
-  will-change: transform;
+/* Le placement appartient au même layout que la largeur et les coordonnées de
+   tous les enfants. Une transformation composite pouvait être publiée par
+   WebView2 avec la texture de l'image précédente : pendant une frame, le
+   playhead, la grille, les clips et les courbes ne représentaient alors plus
+   le même zoom. `left` et `margin-inline` coûtent un layout, mais garantissent
+   une seule géométrie peinte. */
+.timeline-content--following{
+  margin-inline: var(--timeline-follow-padding);
+  left: var(--timeline-follow-offset);
 }
 
 .timeline-tracks{
@@ -2478,6 +2608,10 @@ body,
   background: #dce0e6;
 }
 
+.mini-preview--speed{
+  grid-template-columns: 28px auto minmax(0, 1fr) auto;
+}
+
 .mini-preview-toggle{
   display: inline-flex;
   align-items: center;
@@ -2508,6 +2642,28 @@ body,
 
 .mini-preview-toggle:active:not(:disabled){
   transform: translateY(1px);
+}
+
+.mini-preview-speed{
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid #a0acbe;
+  border-top-color: #ffffff;
+  border-radius: 5px;
+  color: #526178;
+  background: linear-gradient(180deg, #ffffff 0%, #edf1f7 100%);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.mini-preview-speed.is-active{
+  border-color: #9a6b16;
+  border-top-color: #f1cc69;
+  color: #fff8df;
+  background: linear-gradient(180deg, #b17b1a 0%, #74500f 100%);
+  box-shadow: 0 0 8px rgba(202, 145, 35, 0.28);
 }
 
 .mini-preview-main{
@@ -3910,6 +4066,21 @@ body,
   font-size: 8px;
 }
 
+.bpm-edit-row .tempo-assist > .downbeat-tap-reset{
+  min-width: 0;
+  height: 27px;
+  padding: 3px 6px;
+  color: #526178;
+  font-size: 8px;
+  box-shadow: none;
+}
+
+.bpm-edit-row .tempo-assist > .downbeat-tap-reset:hover:not(:disabled){
+  border-color: #0f2442;
+  color: #ffffff;
+  background: #0f2442;
+}
+
 .capture-beat-button{
   border: 1px solid #061020 !important;
   border-top-color: #1f3a63 !important;
@@ -3929,7 +4100,7 @@ body,
   background: #181b22;
 }
 
-/* Le même rubis que `Tap`, avec qui il forme un seul geste : on tape, on
+/* Le même rubis que `Tap 1`, avec qui il forme un seul geste : on tape, on
    recale, on enregistre. Il était en bleu nuit, la teinte que le programme
    emploie partout pour une commande ordinaire — or celle-ci conclut le
    travail de l'éditeur et mérite de se distinguer. */
@@ -5315,4 +5486,3 @@ body,
 .timeline-scrollbar-thumb:active .scrollbar-thumb-ridges span{
   background: #38bdf8;
 }
-

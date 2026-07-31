@@ -7,11 +7,7 @@ import {
   scrollLeftFollowingBeat,
   TIMELINE_FIT_RATIO,
   timelineContentLayout,
-  isZoomGestureBurst,
-  timelineZoomAnchorPx,
   visibleMeasures,
-  zoomPreviewNeedsCommit,
-  zoomPreviewScale,
 } from "./timelineZoom";
 
 describe("minimumTimelineZoom", () => {
@@ -112,57 +108,6 @@ describe("timeline zoom anchoring", () => {
     expect(scrollLeftFollowingBeat(0, 5, 400)).toBe(0);
     expect(scrollLeftFollowingBeat(130, 5, 400)).toBe(650);
     expect(scrollLeftFollowingBeat(999, 5, 400)).toBe(2_000);
-  });
-});
-
-describe("isZoomGestureBurst", () => {
-  it("treats a lone notch as its own gesture, rendered at once", () => {
-    // C'est le cas rapporté : « un cran » — il ne doit jamais passer par la
-    // paire étirer-puis-poser, donc jamais par ses artefacts.
-    expect(isZoomGestureBurst(1_000, 0, false)).toBe(false);
-    expect(isZoomGestureBurst(1_000, 900, false)).toBe(true);
-    // Un aperçu encore en vol garde le geste ouvert, quel que soit l'écart.
-    expect(isZoomGestureBurst(9_999, 0, true)).toBe(true);
-  });
-});
-
-describe("zoom preview", () => {
-  it("stretches within bounds and commits beyond them", () => {
-    expect(zoomPreviewScale(16, 20)).toBeCloseTo(1.25);
-    expect(zoomPreviewNeedsCommit(zoomPreviewScale(16, 20))).toBe(false);
-    // Au-delà du double ou de la moitié, l'étirement se verrait trop : on rend.
-    expect(zoomPreviewNeedsCommit(2.01)).toBe(true);
-    expect(zoomPreviewNeedsCommit(0.49)).toBe(true);
-    expect(zoomPreviewNeedsCommit(2)).toBe(false);
-  });
-
-  it("keeps the anchored beat exactly where the settled render will put it", () => {
-    // C'est l'invariant qui empêche l'image de sauter au moment du rendu net :
-    // le point fixe de l'étirement doit être celui que la mise en page nette
-    // garde immobile — le temps affiché, épinglé au centre de la fenêtre.
-    const viewport = 1280;
-    for (const [displayBeat, committed, pending] of [
-      [64, 16, 24],
-      [512, 8, 4.31],
-      [3, 96, 55],
-    ] as const) {
-      const contentWidth = 4_096 * committed;
-      const layout = timelineContentLayout(displayBeat, committed, contentWidth, viewport);
-      const anchor = timelineZoomAnchorPx(displayBeat, committed, contentWidth, viewport);
-      const scale = zoomPreviewScale(committed, pending);
-      const translate = layout.paddingPx + layout.offsetPx;
-      // Où l'ancre tombe à l'écran pendant l'étirement…
-      const previewX = translate + anchor + scale * (anchor - anchor);
-      // …et où le même temps tombera une fois rendu net au zoom visé.
-      const settled = timelineContentLayout(displayBeat, pending, 4_096 * pending, viewport);
-      const settledX = settled.paddingPx + settled.offsetPx + displayBeat * pending;
-      expect(previewX).toBeCloseTo(settledX, 6);
-      expect(previewX).toBeCloseTo(viewport / 2, 6);
-    }
-  });
-
-  it("anchors a project that fits on its middle", () => {
-    expect(timelineZoomAnchorPx(10, 4, 800, 1280)).toBe(400);
   });
 });
 

@@ -4,6 +4,7 @@ import {
   CLIP_EQ_PEAK_MAX_DB,
   CLIP_EQ_SILENCE_DB,
   DEFAULT_CLIP_EQ,
+  graphPointToViewBox,
   isClipEqActive,
   isClipEqSilent,
   parseClipEqGainDb,
@@ -108,5 +109,35 @@ describe("parseClipEqGainDb", () => {
     for (const absurde of ["", "   ", "abc", "3 dB 4", "--6", "+"]) {
       expect(parseClipEqGainDb(absurde)).toBeNull();
     }
+  });
+});
+
+describe("graphPointToViewBox", () => {
+  const rect = { left: 100, top: 50, width: 290, height: 110 };
+
+  it("scales screen pixels into the drawing's own units", () => {
+    // Le graphe fait 580 × 220 unités pour 290 × 110 pixels : chaque pixel
+    // vaut deux unités. Lu sans conversion, le milieu tombait au quart.
+    expect(graphPointToViewBox(100, 50, rect, 580, 220)).toEqual({ x: 0, y: 0 });
+    expect(graphPointToViewBox(245, 105, rect, 580, 220)).toEqual({ x: 290, y: 110 });
+    expect(graphPointToViewBox(390, 160, rect, 580, 220)).toEqual({ x: 580, y: 220 });
+  });
+
+  it("puts the handle exactly under the pointer, at any scale", () => {
+    // L'invariant qui compte : la fraction parcourue à l'écran est la fraction
+    // parcourue dans le dessin. Sans elle, la poignée traîne d'autant plus
+    // qu'on s'éloigne du bord — l'effet élastique rapporté.
+    for (const width of [200, 290, 580, 900]) {
+      const scaled = { left: 0, top: 0, width, height: width / 2 };
+      for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
+        const point = graphPointToViewBox(width * fraction, 0, scaled, 580, 220);
+        expect(point.x / 580).toBeCloseTo(fraction, 10);
+      }
+    }
+  });
+
+  it("returns the origin rather than infinity for a collapsed element", () => {
+    expect(graphPointToViewBox(10, 10, { left: 0, top: 0, width: 0, height: 0 }, 580, 220))
+      .toEqual({ x: 0, y: 0 });
   });
 });

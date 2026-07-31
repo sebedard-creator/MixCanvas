@@ -56,6 +56,11 @@ tauri-build = { version = "2.6.3", features = [] }
 embed-resources = []
 
 [dependencies]
+# Rééchantillonneur sinc, pour amener un morceau à la fréquence sur laquelle le
+# modèle de séparation a été entraîné. Déjà dans l'arbre par `beat-this` : le
+# déclarer ici ne coûte ni téléchargement ni compilation, et évite d'écrire un
+# rééchantillonneur maison là où il en existe un bon.
+rubato = "3.0"
 # `wav` sert aux stems : ils sortent de la séparation en PCM, et doivent
 # pouvoir rentrer par la même porte que les MP3 de la bibliothèque.
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "mp3", "wav"] }

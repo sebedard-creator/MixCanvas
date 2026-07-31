@@ -6,6 +6,23 @@ use serde::Serialize;
 use super::metadata::{metadata_from_decoder, open_mp3_decoder};
 
 const PREVIEW_OUTPUT_BUFFER_FRAMES: u32 = 4_096;
+const NORMAL_PREVIEW_SPEED: f32 = 1.0;
+const SLOW_PREVIEW_SPEED: f32 = 0.5;
+/// Le niveau de l'écoute, en décibels sous l'original.
+///
+/// Un MP3 masterisé sort à pleine échelle, et l'écoute sert à travailler —
+/// taper les temps, chercher un premier temps — pas à juger un mix. Quatre
+/// décibels de moins font la différence entre un outil qu'on ouvre sans y
+/// penser et un qui fait sursauter.
+///
+/// Écrit en décibels et converti, plutôt qu'en gain linéaire : « 0,63 » ne se
+/// relit pas, et personne ne saurait dire de combien il faut le bouger pour
+/// gagner un décibel de plus.
+const PREVIEW_GAIN_DB: f32 = -4.0;
+
+fn preview_gain() -> f32 {
+    10.0_f32.powf(PREVIEW_GAIN_DB / 20.0)
+}
 
 #[derive(Clone, Debug)]
 struct LoadedTrack {
@@ -34,16 +51,29 @@ pub struct PreviewSnapshot {
     file_path: Option<String>,
     duration_ms: u64,
     position_ms: u64,
+    playback_speed: f32,
     sample_rate: Option<u32>,
     channels: Option<u16>,
 }
 
-#[derive(Default)]
 pub struct PreviewEngine {
     output: Option<MixerDeviceSink>,
     player: Option<Player>,
     track: Option<LoadedTrack>,
     stored_position: Duration,
+    playback_speed: f32,
+}
+
+impl Default for PreviewEngine {
+    fn default() -> Self {
+        Self {
+            output: None,
+            player: None,
+            track: None,
+            stored_position: Duration::ZERO,
+            playback_speed: NORMAL_PREVIEW_SPEED,
+        }
+    }
 }
 
 impl PreviewEngine {
@@ -63,8 +93,10 @@ impl PreviewEngine {
             channels: metadata.channels,
         };
 
+        self.playback_speed = NORMAL_PREVIEW_SPEED;
         self.ensure_output()?;
         let player = self.player_ref()?;
+        player.set_speed(self.playback_speed);
         player.stop();
         player.append(decoder);
         player.pause();
@@ -92,7 +124,10 @@ impl PreviewEngine {
             }
             if !self.stored_position.is_zero() {
                 self.player_ref()?
-                    .try_seek(self.stored_position)
+                    .try_seek(player_position_for_source(
+                        self.stored_position,
+                        self.playback_speed,
+                    ))
                     .map_err(|error| format!("Could not resume the preview: {error}"))?;
             }
         }
@@ -107,23 +142,18 @@ impl PreviewEngine {
         }
 
         self.player_ref()?.pause();
-        self.stored_position = self.player_ref()?.get_pos();
+        self.stored_position = self.current_source_position();
         Ok(self.snapshot())
     }
 
     pub fn release_output(&mut self) -> PreviewSnapshot {
+        self.stored_position = self.current_source_position();
         if let Some(player) = &self.player {
-            self.stored_position = self.track.as_ref().map_or(Duration::ZERO, |track| {
-                if player.empty() {
-                    track.duration
-                } else {
-                    player.get_pos().min(track.duration)
-                }
-            });
             player.stop();
         }
         self.player = None;
         self.output = None;
+        self.playback_speed = NORMAL_PREVIEW_SPEED;
         self.snapshot()
     }
 
@@ -160,7 +190,7 @@ impl PreviewEngine {
         }
 
         self.player_ref()?
-            .try_seek(target)
+            .try_seek(player_position_for_source(target, self.playback_speed))
             .map_err(|error| format!("Could not seek within the MP3: {error}"))?;
 
         if was_playing {
@@ -173,6 +203,33 @@ impl PreviewEngine {
         Ok(self.snapshot())
     }
 
+    pub fn set_speed(&mut self, speed: f32) -> Result<PreviewSnapshot, String> {
+        if !is_supported_preview_speed(speed) {
+            return Err("Preview speed must be normal or half speed.".to_owned());
+        }
+
+        if (self.playback_speed - speed).abs() < f32::EPSILON {
+            return Ok(self.snapshot());
+        }
+
+        let source_position = self.current_source_position();
+        self.playback_speed = speed;
+        if let Some(player) = &self.player {
+            player.set_speed(speed);
+            if !player.empty() {
+                player
+                    .try_seek(player_position_for_source(source_position, speed))
+                    .map_err(|error| {
+                        format!(
+                            "Could not preserve the preview position after changing speed: {error}"
+                        )
+                    })?;
+            }
+        }
+        self.stored_position = source_position;
+        Ok(self.snapshot())
+    }
+
     pub fn snapshot(&self) -> PreviewSnapshot {
         let Some(track) = &self.track else {
             return PreviewSnapshot {
@@ -181,6 +238,7 @@ impl PreviewEngine {
                 file_path: None,
                 duration_ms: 0,
                 position_ms: 0,
+                playback_speed: self.playback_speed,
                 sample_rate: None,
                 channels: None,
             };
@@ -188,8 +246,14 @@ impl PreviewEngine {
 
         let (status, position) = match &self.player {
             Some(player) if player.empty() => (PreviewStatus::Ended, track.duration),
-            Some(player) if player.is_paused() => (PreviewStatus::Paused, player.get_pos()),
-            Some(player) => (PreviewStatus::Playing, player.get_pos()),
+            Some(player) if player.is_paused() => (
+                PreviewStatus::Paused,
+                source_position_from_player(player.get_pos(), self.playback_speed),
+            ),
+            Some(player) => (
+                PreviewStatus::Playing,
+                source_position_from_player(player.get_pos(), self.playback_speed),
+            ),
             None => (
                 PreviewStatus::Paused,
                 self.stored_position.min(track.duration),
@@ -202,6 +266,7 @@ impl PreviewEngine {
             file_path: Some(track.path.to_string_lossy().into_owned()),
             duration_ms: duration_millis(track.duration),
             position_ms: duration_millis(position.min(track.duration)),
+            playback_speed: self.playback_speed,
             sample_rate: Some(track.sample_rate),
             channels: Some(track.channels),
         }
@@ -221,6 +286,10 @@ impl PreviewEngine {
             .or_else(|_| DeviceSinkBuilder::open_default_sink())
             .map_err(|error| format!("Could not open the default audio output: {error}"))?;
         let player = Player::connect_new(output.mixer());
+        player.set_speed(self.playback_speed);
+        // Posé une fois, à la création : ni `stop` ni `append` n'y touchent,
+        // donc le niveau tient d'un morceau à l'autre.
+        player.set_volume(preview_gain());
 
         self.output = Some(output);
         self.player = Some(player);
@@ -246,6 +315,19 @@ impl PreviewEngine {
             .as_ref()
             .ok_or_else(|| "The audio output is not running.".to_owned())
     }
+
+    fn current_source_position(&self) -> Duration {
+        let Some(track) = &self.track else {
+            return Duration::ZERO;
+        };
+
+        match &self.player {
+            Some(player) if player.empty() => track.duration,
+            Some(player) => source_position_from_player(player.get_pos(), self.playback_speed)
+                .min(track.duration),
+            None => self.stored_position.min(track.duration),
+        }
+    }
 }
 
 fn duration_millis(duration: Duration) -> u64 {
@@ -256,9 +338,26 @@ fn clamp_seek_position(position_ms: u64, duration: Duration) -> Duration {
     Duration::from_millis(position_ms).min(duration)
 }
 
+fn source_position_from_player(player_position: Duration, playback_speed: f32) -> Duration {
+    player_position.mul_f32(playback_speed)
+}
+
+fn player_position_for_source(source_position: Duration, playback_speed: f32) -> Duration {
+    source_position.div_f32(playback_speed)
+}
+
+fn is_supported_preview_speed(speed: f32) -> bool {
+    speed.is_finite()
+        && ((speed - NORMAL_PREVIEW_SPEED).abs() < f32::EPSILON
+            || (speed - SLOW_PREVIEW_SPEED).abs() < f32::EPSILON)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{clamp_seek_position, duration_millis};
+    use super::{
+        PreviewEngine, clamp_seek_position, duration_millis, player_position_for_source,
+        source_position_from_player,
+    };
     use std::time::Duration;
 
     #[test]
@@ -275,5 +374,39 @@ mod tests {
             Duration::from_millis(42_500)
         );
         assert_eq!(clamp_seek_position(250_000, duration), duration);
+    }
+
+    #[test]
+    fn preview_speed_accepts_only_normal_and_half_speed() {
+        let mut engine = PreviewEngine::default();
+
+        assert_eq!(
+            engine
+                .set_speed(0.5)
+                .expect("half speed should be accepted")
+                .playback_speed,
+            0.5
+        );
+        assert_eq!(
+            engine
+                .set_speed(1.0)
+                .expect("normal speed should be accepted")
+                .playback_speed,
+            1.0
+        );
+        assert!(engine.set_speed(0.75).is_err());
+        assert!(engine.set_speed(f32::NAN).is_err());
+    }
+
+    #[test]
+    fn half_speed_positions_are_converted_to_source_time() {
+        let source_position = Duration::from_secs(12);
+        let player_position = player_position_for_source(source_position, 0.5);
+
+        assert_eq!(player_position, Duration::from_secs(24));
+        assert_eq!(
+            source_position_from_player(player_position, 0.5),
+            source_position
+        );
     }
 }

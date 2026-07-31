@@ -150,3 +150,22 @@ export function clipTrimLimits(
 
   return { limitStartBeat, limitEndBeat };
 }
+
+/**
+ * Le temps le plus à gauche où l'ancre d'un clip peut se poser.
+ *
+ * Miroir de `minimum_anchor_beat` dans `src-tauri/src/timeline.rs`, et il doit
+ * le rester : le serveur refuserait un déplacement que l'interface aurait
+ * autorisé, et le clip reviendrait en arrière sous le curseur.
+ *
+ * L'ancre porte le **premier temps**, pas le début du clip. Ce qu'on protège,
+ * c'est que la partie *visible* ne commence pas avant le temps zéro — donc
+ * `ancre − pré-roll + rognage ≥ 0`. Le rognage manquait à ce calcul : un clip
+ * dont on avait coupé la tête restait retenu par une part qu'il ne fait plus
+ * entendre.
+ */
+export function minimumAnchorBeat(preRollBeats: number, trimStartBeats: number): number {
+  const usable = Number.isFinite(preRollBeats) && Number.isFinite(trimStartBeats);
+  if (!usable) return 0;
+  return Math.max(0, Math.ceil(preRollBeats - trimStartBeats));
+}

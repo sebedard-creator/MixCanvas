@@ -2084,6 +2084,7 @@ dependencies = [
  "beat-this",
  "ort",
  "rodio",
+ "rubato",
  "rusqlite",
  "rustfft",
  "serde",

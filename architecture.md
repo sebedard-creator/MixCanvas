@@ -6,7 +6,7 @@ Ce document vivant décrit la mécanique sous le capot de MixCanvas : les respon
 
 Il ne sert pas à décrire l'apparence de l'interface ni à imposer prématurément un langage ou un framework. Toute décision qui modifie le fonctionnement interne doit être reflétée ici. Chaque modification matérielle du projet doit également être inscrite dans `changelog.md` le jour où elle est faite.
 
-Dernière mise à jour : 2026-07-28
+Dernière mise à jour : 2026-07-29
 
 ## Vision du produit
 
@@ -23,7 +23,7 @@ La version 0.1 vise les fonctions suivantes :
 - timeline de trois pistes stéréo;
 - déplacement de clips avec snapping musical;
 - courbe globale de tempo avec segments constants ou progressifs;
-- bouton Tap Tempo;
+- outil manuel Tap 1 sur plusieurs mesures;
 - time-stretch conservant la tonalité;
 - transport Play/Pause;
 - traitement audio interne en virgule flottante 32 bits;
@@ -161,7 +161,9 @@ Le transport musical est la source de vérité du playhead. Les actions Play, Pa
 
 La borne de zoom extérieure s'arrête volontairement un cran avant l'ajustement parfait : le projet occupe une fraction de la largeur, si bien qu'atteindre la limite se lit comme une limite plutôt que comme une commande bloquée, et que les deux extrémités du mix sont visibles d'un coup d'œil. Cela garantit un playhead continu, stable et aligné avec l'axe musical de la timeline.
 
-Le zoom de la timeline est ancré au playhead. Les événements de molette sont regroupés en une seule variation bornée par image affichée, ce qui évite les valeurs d'échelle transitoires lors d'une rafale de micro-événements. La largeur musicale et la position `left` qui place le beat courant au centre sont dérivées du même état React et publiées dans le même commit DOM. Le viewport conserve un `overflow-x: hidden` et son `scrollLeft` natif reste à zéro. Une translation GPU n'est volontairement pas utilisée : WebView2 pouvait composer ce calque avant le nouveau layout de ses enfants.
+Le zoom de la timeline est ancré au playhead. Les événements de molette sont regroupés en une seule variation bornée par image affichée, ce qui évite les valeurs d'échelle transitoires lors d'une rafale de micro-événements. La largeur musicale et la position `left` qui place le beat courant au centre sont dérivées du même état React et publiées dans le même commit DOM. Le viewport conserve un `overflow-x: hidden` et son `scrollLeft` natif reste à zéro. Une translation GPU n'est volontairement pas utilisée : WebView2 pouvait composer ce calque avant le nouveau layout de ses enfants. Pour la même raison, le zoom ne possède ni aperçu intermédiaire par `scaleX`, ni conteneur forcé en calque par `will-change` : grille, clips, courbes, waveforms et playhead n'existent qu'à une seule échelle validée par image.
+
+Une variante de compilation diagnostique `disable-gpu` existe sous Windows. Avant la création du premier WebView, elle ajoute `--disable-gpu` à `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`, ce qui demande à WebView2 de désactiver son accélération matérielle. Elle préserve les éventuels autres arguments WebView2 déjà présents et n'est combinée avec `embed-resources` que pour produire un exécutable de test portable clairement identifié. Le test comparatif du 2026-07-29 est concluant sur la machine de développement : le même projet et les mêmes commandes de zoom produisent le flash avec l'accélération matérielle et n'en produisent plus dans la build `NOGPU`. Le défaut appartient donc à la composition GPU de WebView2 ou à son interaction avec le pilote, et non aux coordonnées calculées par MixCanvas. La feature demeure distincte tant que l'impact du rendu logiciel sur la charge CPU, les waveforms et la fluidité générale n'a pas été mesuré.
 
 ## État de référence technique — audit du 2026-07-28
 
@@ -270,7 +272,7 @@ Le quatrième flux vertical est implémenté :
 
 1. l'utilisateur ouvre l'éditeur en cliquant sur le BPM d'un morceau analysé;
 2. il peut saisir un BPM, le diviser ou le multiplier par deux;
-3. Tap Tempo estime le BPM médian des intervalles récents et se réinitialise après deux secondes d'inactivité;
+3. Tap 1 enregistre le premier temps de mesures successives et ajuste une grille rigide à partir de quatre mesures au minimum;
 4. la Preview du morceau sert de repère auditif pour placer le premier beat;
 5. la position courante, idéalement après une Pause sur l'attaque, peut être capturée en millisecondes;
 6. la correction est enregistrée séparément du BPM, du premier beat et des positions automatiques;
@@ -279,7 +281,7 @@ Le quatrième flux vertical est implémenté :
 
 Le schéma 3 ajoute `manual_bpm` et `manual_first_beat_ms`. Il ne duplique pas les milliers de positions corrigées : puisque la version 0.1 suppose un tempo source constant, elles peuvent être dérivées de ces deux valeurs. La future timeline devra demander la grille effective à une abstraction interne plutôt que lire directement `track_beats`.
 
-Une correction manuelle du premier temps est calée sur la grille analysée. Personne ne clique exactement sur un temps, et un downbeat décalé de cent millisecondes fait dériver tous les clips construits dessus; l'analyse sachant déjà où sont les temps, la correction n'a qu'à désigner lequel est le temps 1. La grille est prolongée arithmétiquement à partir du BPM et du premier temps automatiques, et non cherchée parmi les positions stockées : un downbeat placé avant le premier temps analysé doit tomber sur le bon temps plutôt que sauter vers l'ancre. Corriger le tempo est en revanche un geste différent, qui décrit une grille que l'analyse n'a jamais produite : la position saisie est alors conservée telle quelle.
+Le flux manuel sépare maintenant trois responsabilités. Tap 1 donne à la fois la période approximative et la phase musicale : chaque pression désigne le premier temps de la mesure suivante, donc les indices de beat `0, 4, 8, 12…` sont connus sans demander à l'utilisateur de compter ou saisir le nombre de mesures. « Snap to beat » relance ensuite l'ajustement audio dans une fenêtre étroite autour de ce BPM et produit une grille rigide précise; la position de premier temps issue des taps est calée sur le beat le plus proche de cette nouvelle grille. L'origine fournie par le modèle n'est utilisée que comme phase de pulsation : le beat choisi par l'utilisateur demeure le `1`, même si le modèle classe une autre phase de mesure comme downbeat. Enfin, « Save Correction » enregistre littéralement le BPM et le premier temps affichés, sans les recaler une seconde fois sur l'ancienne analyse automatique. Cette séparation est essentielle lorsque l'analyse à corriger est précisément celle qui s'est trompée.
 
 Les corrections sont bornées entre 40 et 300 BPM et le premier beat ne peut pas dépasser la durée du morceau. Une réanalyse remplace le résultat automatique, mais conserve la correction manuelle jusqu'à sa restauration explicite.
 
@@ -413,7 +415,7 @@ timeline non uniforme et ferait dériver tout ce qui suit une omission.
 
 MixCanvas ajuste donc sa propre grille rigide aux observations :
 
-1. le BPM médian du modèle — ou le Tap Tempo dans l'éditeur — fournit seulement
+1. le BPM médian du modèle — ou le Tap 1 multi-mesures dans l'éditeur — fournit seulement
    l'ordre de grandeur;
 2. toutes les paires d'événements séparées de 2 à 16 secondes votent pour une
    période, leur écart étant divisé par le nombre entier de beats le plus
@@ -643,7 +645,7 @@ La bande de filtre garde son propre geste, séparé du crayon d'automation : `Ct
 
 Le **crayon** dessine une forme préétablie d'un seul glissé — carré, sinus, triangle, sur ½, 1, 2 ou 4 temps —, l'étendue et la hauteur du geste donnant la longueur et l'amplitude. Armé, c'est un **mode** : le déplacement de clip est suspendu et le curseur devient un crayon, sans quoi tout trait commencé sur de l'audio partirait en déplacement. Il ne peut pas s'armer sans ligne affichée, et se désarme si `VIEW` les masque toutes : dessiner sur ce qu'on ne voit pas revient à écrire dans le vide. La courbe s'écrit pendant le geste, par les mêmes fonctions que l'écriture définitive. Chaque trait est **ancré au repos à ses deux bouts** — le centre en panoramique, le niveau en place en volume — pour ne pas créer d'automation *vers* le dessin; l'ancrage est posé et non déduit, puisque selon la forme le premier point tombe sur une crête ou sur un creux. La géométrie vit dans `src/lib/automationShapes.ts`, testée seule, et le serveur revalide le plafond de nœuds qu'elle respecte déjà.
 
-Le **sidechain lit le clip-clé tel qu'il arrive dans le mix** : son enveloppe de volume et sa place dans le champ stéréo, et non son signal brut. Baisser la clé allège le pompage, ce qui permet d'en écrire une progression; la pousser sur un côté l'allège aussi de trois décibels au maximum, comme une console dont le départ est pris après le panoramique. Les deux passent par la profondeur du ducking et non par le niveau du détecteur, dont le déclenchement compare deux énergies et ignore donc le niveau qu'on lui donne. Enfin, la **correction de beatgrid** se fait en deux temps : `Tap Tempo` donne l'ordre de grandeur, puis `Snap to Kicks` laisse l'audio décider du tempo exact — la main est imprécise, les kicks ne le sont pas.
+Le **sidechain lit le clip-clé tel qu'il arrive dans le mix** : son enveloppe de volume et sa place dans le champ stéréo, et non son signal brut. Baisser la clé allège le pompage, ce qui permet d'en écrire une progression; la pousser sur un côté l'allège aussi de trois décibels au maximum, comme une console dont le départ est pris après le panoramique. Les deux passent par la profondeur du ducking et non par le niveau du détecteur, dont le déclenchement compare deux énergies et ignore donc le niveau qu'on lui donne. Enfin, la **correction de beatgrid** se fait en deux temps : `Tap 1` ajuste une grille à plusieurs premiers temps choisis musicalement, puis `Snap to beat` laisse l'audio en raffiner la période sans remplacer ce choix de phase.
 
 
 ### Séparation en stems
@@ -723,21 +725,19 @@ Exemple : un marqueur à 124 BPM suivi huit mesures plus tard d'un marqueur à 1
 
 Les marqueurs de clips se calent sur leurs ancres de mesure. Les courbes libres, les formes d'accélération complexes, l'édition manuelle de cibles intermédiaires et les automations de tempo par clip sont reportées après la version 0.1.
 
-### 4. Tap Tempo
+### 4. Tap 1 multi-mesures
 
-Le bouton Tap permet d'estimer un BPM à partir d'une série de frappes régulières. Son calcul réutilisable est implémenté depuis le jalon 0.0.4 dans l'éditeur de beatgrid source et pilote le BPM de départ de la carte globale depuis le jalon 0.0.14.
+Le bouton Tap 1 ne demande pas des pulsations quelconques : chaque pression désigne le premier temps de la mesure suivante. La position est lue directement dans `preview_snapshot`, donc dans l'horloge source du moteur audio. Ni l'heure de l'événement navigateur, ni le rafraîchissement périodique du mini-player ne peuvent quantifier le geste à 50 ms ou confondre une latence d'interface avec le temps du MP3.
 
-Comportement actuel dans l'éditeur source :
+Quatre premiers temps consécutifs sont requis, huit sont recommandés et la série s'arrête à seize sans faire glisser son premier repère. Pour le tap d'indice `i`, MixCanvas connaît le beat `4i`. Une régression linéaire des positions source sur ces indices ajuste simultanément la durée d'une mesure et l'interception de la droite : la première donne `BPM = 240 000 / millisecondes_par_mesure`, la seconde raffine la position du premier temps. Toutes les pressions contribuent, plutôt que les deux extrémités seulement, ce qui répartit l'erreur humaine sur la durée observée. L'interface expose l'erreur quadratique moyenne en millisecondes comme retour de stabilité.
 
-- la première frappe démarre la série;
-- les frappes suivantes produisent une estimation progressivement stabilisée;
-- une pause suffisamment longue réinitialise la série;
-- le BPM estimé demeure visible pendant la saisie;
-- la confirmation enregistre la correction du morceau.
+Une série dont un intervalle s'écarte de plus de 40 % de l'intervalle médian est refusée : une mesure oubliée vaut presque exactement deux intervalles et ne doit jamais être interprétée comme un ralentissement réel. Revenir en arrière dans la Preview démarre automatiquement une nouvelle série; `Clear` la retire explicitement et remet les champs à la correction enregistrée. Une saisie manuelle du BPM ou du premier temps retire aussi la série afin que l'interface ne présente pas comme mesuré un nombre qui vient d'être remplacé.
 
-L'édition future des marqueurs permettra à Tap de modifier une cible sélectionnée ou d'en créer une à la position courante de la tête de lecture. Dans le jalon actuel, le Tap principal modifie uniquement le point de départ.
+Tap 1 remplit directement le BPM et le premier temps, mais ne persiste rien. Dès quatre mesures cohérentes, `Snap to beat` peut utiliser ce BPM comme fenêtre de recherche étroite et recaler la phase choisie sur le beat audio le plus proche. `Save Correction` demeure l'unique confirmation qui écrit la correction.
 
-Le calcul conserve jusqu'à neuf frappes, utilise la médiane des intervalles pour atténuer une frappe imprécise et attend au moins deux frappes. Une pause supérieure à deux secondes réinitialise la série. Le résultat remplit le champ BPM, mais une confirmation explicite demeure nécessaire pour enregistrer la correction.
+Le mini-player du Beatgrid Editor offre `½ SPEED`. Il s'agit volontairement d'un varispeed Rodio à `0.5`, et non du time-stretch musical de la timeline : le pitch descend, mais les attaques restent franches pour être pointées à la main. Rodio exprime toutefois `Player::get_pos()` dans le temps transformé par le varispeed : à demi-vitesse, cette coordonnée avance deux fois plus loin que la position équivalente dans le MP3 source. `PreviewEngine` multiplie donc la position Rodio par la vitesse avant de la publier, et divise inversement toute cible de Seek par cette vitesse. Tap 1 reçoit ainsi des positions source et calcule le BPM natif — donc deux fois le BPM brut observé à demi-vitesse. Lors d'un changement de vitesse, le moteur capture d'abord la position source avec l'ancien facteur, puis se recale avec le nouveau afin d'éviter tout saut. La commande IPC n'accepte que `0.5` et `1.0`. Charger un autre morceau, céder la sortie à la timeline ou fermer l'éditeur remet la Preview à vitesse normale.
+
+La rangée de correction ne contient plus `÷2` ni `×2`. Le bouton `Clear` est rendu en permanence, désactivé tant que la série est vide : sa place est réservée avant la première pression et Tap 1 ne peut donc plus se déplacer sous la souris au milieu d'une mesure. L'accuracy RMS n'est affichée qu'une fois les quatre prises minimales obtenues; son nombre seul devient vert lorsqu'elle est strictement inférieure à 20 ms. Avant quatre prises, aucune couleur ne prétend qu'une précision a déjà été mesurée.
 
 ### 5. Timeline et clips
 

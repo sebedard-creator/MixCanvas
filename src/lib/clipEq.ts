@@ -120,3 +120,33 @@ export function isClipEqActive(eqSettings?: Partial<ClipEqSettings> | null): boo
     Math.abs(clipGain) > 0.01
   );
 }
+
+/**
+ * Le point du pointeur, exprimé dans les unités du dessin.
+ *
+ * Le graphe est un SVG en `width: 100 %` avec un `viewBox` fixe : sa largeur à
+ * l'écran n'est presque jamais celle de son système de coordonnées. Lire
+ * `clientX - rect.left` donne donc des **pixels d'écran** là où le dessin
+ * attend des **unités de viewBox**, et la poignée se pose à une fraction de la
+ * distance parcourue par la main. C'est ce décalage, proportionnel à l'écart
+ * au bord, qui donnait l'impression d'un élastique.
+ *
+ * Une division par zéro est possible — un élément replié n'a pas de largeur —
+ * et rendrait un point infini : on renvoie alors l'origine, qui est au moins
+ * une position valide.
+ */
+export function graphPointToViewBox(
+  clientX: number,
+  clientY: number,
+  rect: { left: number; top: number; width: number; height: number },
+  viewBoxWidth: number,
+  viewBoxHeight: number,
+): { x: number; y: number } {
+  if (!(rect.width > 0) || !(rect.height > 0)) {
+    return { x: 0, y: 0 };
+  }
+  return {
+    x: (clientX - rect.left) * (viewBoxWidth / rect.width),
+    y: (clientY - rect.top) * (viewBoxHeight / rect.height),
+  };
+}

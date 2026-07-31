@@ -19,6 +19,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rodio::Source;
+use rubato::audioadapter_buffers::direct::InterleavedSlice;
+use rubato::{
+    Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType,
+    WindowFunction,
+};
 
 use crate::analysis::{WAVEFORM_BUCKET_COUNT, WaveformPeaks};
 use crate::audio::open_mp3_decoder;
@@ -351,10 +356,52 @@ const DECODE_SHARE: f64 = 0.25;
 /// La fréquence à laquelle le modèle a été entraîné.
 ///
 /// Un spectre analysé à une autre fréquence range les mêmes sons dans d'autres
-/// bandes : le modèle chercherait une voix là où il n'y en a pas. Rééchantillonner
-/// à la volée abîmerait un audio destiné à être entendu, alors on refuse
-/// franchement — quitte à y revenir avec un vrai rééchantillonneur.
+/// bandes : le modèle chercherait une voix là où il n'y en a pas. Un morceau
+/// qui arrive à une autre fréquence est donc **amené** à celle-ci, et non plus
+/// refusé — la timeline accepte le 48 kHz, la séparation devait suivre.
 const REQUIRED_SAMPLE_RATE: u32 = 44_100;
+
+/// Amène un canal à la fréquence du modèle.
+///
+/// Interpolation sinc plutôt qu'une interpolation linéaire écrite ici : le
+/// résultat s'écoute, et un rééchantillonneur maison se paierait en repliement
+/// dans l'aigu. Les paramètres sont ceux dont `beat-this` se sert déjà avec la
+/// même version de la caisse.
+///
+/// Chaque canal passe séparément. Deux instances identiques appliquent le même
+/// retard, donc l'image stéréo ne bouge pas — et c'est plus simple que
+/// d'entrelacer pour désentrelacer ensuite.
+fn resample_channel(samples: &[f32], from: u32, to: u32) -> Result<Vec<f32>, String> {
+    if from == to {
+        return Ok(samples.to_vec());
+    }
+    if samples.is_empty() {
+        return Ok(Vec::new());
+    }
+    let parameters = SincInterpolationParameters {
+        sinc_len: 256,
+        f_cutoff: 0.95,
+        interpolation: SincInterpolationType::Linear,
+        oversampling_factor: 256,
+        window: WindowFunction::BlackmanHarris2,
+    };
+    let frames = samples.len();
+    let mut resampler = Async::<f32>::new_sinc(
+        f64::from(to) / f64::from(from),
+        2.0,
+        &parameters,
+        frames,
+        1,
+        FixedAsync::Input,
+    )
+    .map_err(|error| format!("The resampler could not be built: {error}"))?;
+    let input = InterleavedSlice::new(samples, 1, frames)
+        .map_err(|error| format!("The resampler rejected the audio: {error:?}"))?;
+    let output = resampler
+        .process(&input, 0, None)
+        .map_err(|error| format!("The audio could not be resampled: {error}"))?;
+    Ok(output.take_data())
+}
 
 /// Sépare un morceau en deux fichiers : la voix, et tout le reste.
 ///
@@ -391,15 +438,18 @@ pub fn separate_track(
     // avancement, et il s'arrête à la fin de la fenêtre au lieu de lire la
     // queue du fichier pour rien.
     let stop_after_ms = window.map(|(_, end_ms)| end_ms + STEM_MARGIN_MS);
-    let (mut channels, sample_rate, source_ms) =
+    let (mut channels, decoded_rate, source_ms) =
         decode_stereo(source, stop_after_ms, &mut |fraction| {
             on_progress(fraction * DECODE_SHARE)
         })?;
-    if sample_rate != REQUIRED_SAMPLE_RATE {
-        return Err(format!(
-            "This track is at {sample_rate} Hz. Stem separation needs 44.1 kHz for now."
-        ));
+    // Tout ce qui suit compte en échantillons **du modèle**. Le
+    // rééchantillonnage a donc lieu ici, avant la moindre conversion de
+    // millisecondes en indices : plus bas, une seule de ces conversions restée
+    // à l'ancienne fréquence décalerait la fenêtre du clip.
+    for channel in &mut channels {
+        *channel = resample_channel(channel, decoded_rate, REQUIRED_SAMPLE_RATE)?;
     }
+    let sample_rate = REQUIRED_SAMPLE_RATE;
     // La fenêtre du clip, pas le morceau entier : séparer six minutes pour huit
     // mesures utilisées coûterait vingt fois le travail nécessaire. Une marge
     // est prise de chaque côté — le modèle a besoin de contexte pour décider, et
@@ -639,6 +689,77 @@ fn decode_stereo(
     }
     on_progress(1.0);
     Ok(([left, right], sample_rate, total))
+}
+
+#[cfg(test)]
+mod resample_tests {
+    use super::{REQUIRED_SAMPLE_RATE, resample_channel};
+
+    /// À fréquence identique, on ne touche à rien — pas même d'un millième.
+    #[test]
+    fn matching_rates_pass_the_audio_through_untouched() {
+        let samples: Vec<f32> = (0..1_000).map(|n| (n as f32 * 0.01).sin()).collect();
+        let out = resample_channel(&samples, REQUIRED_SAMPLE_RATE, REQUIRED_SAMPLE_RATE)
+            .expect("passing through should work");
+        assert_eq!(out, samples);
+    }
+
+    /// Un morceau à 48 kHz doit sortir à 44,1 kHz **de la même durée**.
+    ///
+    /// C'est ce qui compte pour la suite : la fenêtre du clip, le décalage de
+    /// source et la grille se comptent en millisecondes. Une durée qui glisse
+    /// décalerait le stem sous la grille sans que rien ne le signale.
+    #[test]
+    fn a_48k_second_becomes_a_44k1_second() {
+        let seconds = 2.0_f64;
+        let frames = (48_000.0 * seconds) as usize;
+        let samples: Vec<f32> = (0..frames)
+            .map(|n| (n as f32 / 48_000.0 * 440.0 * std::f32::consts::TAU).sin())
+            .collect();
+
+        let out = resample_channel(&samples, 48_000, REQUIRED_SAMPLE_RATE)
+            .expect("resampling should work");
+
+        let produced = out.len() as f64 / f64::from(REQUIRED_SAMPLE_RATE);
+        assert!(
+            (produced - seconds).abs() < 0.01,
+            "deux secondes sont devenues {produced:.3} s"
+        );
+    }
+
+    /// Le signal reste le signal : ni évanoui, ni saturé.
+    #[test]
+    fn a_sine_keeps_its_level_across_the_conversion() {
+        let frames = 48_000;
+        let samples: Vec<f32> = (0..frames)
+            .map(|n| (n as f32 / 48_000.0 * 1_000.0 * std::f32::consts::TAU).sin() * 0.5)
+            .collect();
+
+        let out = resample_channel(&samples, 48_000, REQUIRED_SAMPLE_RATE)
+            .expect("resampling should work");
+
+        // La moitié centrale, pour ignorer la montée et la descente du filtre.
+        let middle = &out[out.len() / 4..out.len() * 3 / 4];
+        let rms = (middle.iter().map(|s| s * s).sum::<f32>() / middle.len() as f32).sqrt();
+        let expected = 0.5 / std::f32::consts::SQRT_2;
+        assert!(
+            (rms - expected).abs() < 0.02,
+            "niveau attendu {expected:.3}, obtenu {rms:.3}"
+        );
+        assert!(
+            out.iter().all(|s| s.abs() <= 1.0),
+            "le rééchantillonnage a fait saturer le signal"
+        );
+    }
+
+    #[test]
+    fn an_empty_channel_is_not_an_error() {
+        assert!(
+            resample_channel(&[], 48_000, REQUIRED_SAMPLE_RATE)
+                .expect("an empty channel should be allowed")
+                .is_empty()
+        );
+    }
 }
 
 #[cfg(test)]

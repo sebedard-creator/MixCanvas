@@ -744,7 +744,7 @@ pub fn add_clip(
     }
 
     let pre_roll_beats = beats_for_milliseconds(source.first_beat_ms, source.bpm);
-    let minimum_anchor = minimum_anchor_beat(pre_roll_beats);
+    let minimum_anchor = minimum_anchor_beat(pre_roll_beats, 0.0);
     let current = snapshot(connection)?;
     let is_first_clip = current.clips.is_empty();
     let duration_ms = i64::try_from(source.duration_ms)
@@ -1088,7 +1088,7 @@ pub fn move_clip(
     }
     let anchor_beat = snap_anchor_beat(
         requested_anchor_beat,
-        minimum_anchor_beat(geometry.pre_roll_beats),
+        minimum_anchor_beat(geometry.pre_roll_beats, trim_start),
     )?;
     let old_geometry = clip_geometry(
         duration_ms,
@@ -2503,8 +2503,22 @@ fn beats_for_milliseconds(milliseconds: u64, bpm: f64) -> f64 {
     milliseconds as f64 * bpm / 60_000.0
 }
 
-fn minimum_anchor_beat(pre_roll_beats: f64) -> i64 {
-    pre_roll_beats.ceil() as i64
+/// Le temps le plus à gauche où l'ancre d'un clip peut se poser.
+///
+/// L'ancre porte le **premier temps**, pas le début du clip : entre les deux il
+/// y a le pré-roll, tout ce que le morceau fait entendre avant sa première
+/// mesure. Ce qu'on ne veut pas, c'est que la partie *visible* commence avant
+/// le temps zéro — donc `ancre − pré-roll + rognage ≥ 0`.
+///
+/// Le rognage manquait à ce calcul. Un clip dont on avait coupé le début
+/// restait bloqué à sa position d'origine : la butée protégeait encore une
+/// tête que le clip ne fait plus entendre, et le premier clip d'une timeline
+/// refusait de reculer jusqu'à zéro. On ne borne que ce qui s'entend.
+///
+/// Le plancher à zéro reste : le schéma interdit une ancre négative, et un
+/// clip dont le pré-roll dépasse le rognage garde donc sa marge.
+fn minimum_anchor_beat(pre_roll_beats: f64, trim_start_beats: f64) -> i64 {
+    ((pre_roll_beats - trim_start_beats).ceil() as i64).max(0)
 }
 
 fn snap_anchor_beat(requested: f64, minimum: i64) -> Result<i64, String> {
@@ -2973,9 +2987,72 @@ mod tests {
 
     #[test]
     fn minimum_anchor_keeps_audio_after_project_start() {
-        assert_eq!(minimum_anchor_beat(0.0), 0);
-        assert_eq!(minimum_anchor_beat(0.2), 1);
-        assert_eq!(minimum_anchor_beat(2.0), 2);
+        assert_eq!(minimum_anchor_beat(0.0, 0.0), 0);
+        assert_eq!(minimum_anchor_beat(0.2, 0.0), 1);
+        assert_eq!(minimum_anchor_beat(2.0, 0.0), 2);
+    }
+
+    /// Un clip rogné du début doit pouvoir reculer d'autant.
+    ///
+    /// La butée protégeait le pré-roll entier, y compris la part qu'on venait
+    /// de couper : le premier clip d'une timeline refusait de reculer jusqu'à
+    /// zéro, retenu par une tête qu'il ne fait plus entendre.
+    #[test]
+    fn trimming_the_head_lets_a_clip_move_that_much_further_left() {
+        // Huit temps de pré-roll, deux coupés : il reste six temps à protéger.
+        assert_eq!(minimum_anchor_beat(8.0, 2.0), 6);
+        // Tout le pré-roll coupé : le clip commence sur son premier temps et
+        // peut donc se poser au tout début.
+        assert_eq!(minimum_anchor_beat(8.0, 8.0), 0);
+        // Rogné au-delà : on ne descend pas sous zéro, le schéma l'interdit.
+        assert_eq!(minimum_anchor_beat(8.0, 40.0), 0);
+        // Et la marge d'un clip non rogné ne bouge pas d'un pouce.
+        assert_eq!(minimum_anchor_beat(8.4, 0.0), 9);
+    }
+
+    /// La butée et la géométrie doivent parler de la même chose : à l'ancre
+    /// minimale, le clip visible commence à zéro ou après — jamais avant.
+    #[test]
+    fn the_clamp_and_the_geometry_agree_on_where_zero_is() {
+        for (duration_ms, bpm, first_beat_ms, trim_start) in [
+            (300_000_i64, 120.0_f64, 4_000_i64, 0.0_f64),
+            (300_000, 120.0, 4_000, 3.0),
+            (300_000, 128.0, 15_000, 12.0),
+            (300_000, 174.0, 500, 60.0),
+        ] {
+            let probe = clip_geometry(
+                duration_ms,
+                Some(bpm),
+                Some(first_beat_ms),
+                0,
+                trim_start,
+                0.0,
+            );
+            let minimum = minimum_anchor_beat(probe.pre_roll_beats, trim_start);
+            let placed = clip_geometry(
+                duration_ms,
+                Some(bpm),
+                Some(first_beat_ms),
+                minimum,
+                trim_start,
+                0.0,
+            );
+            assert!(
+                placed.visual_start_beat >= -1e-9,
+                "à l'ancre minimale le clip commencerait à {} — avant le début",
+                placed.visual_start_beat
+            );
+            // Quand la butée est ce qui retient, elle doit retenir *juste* :
+            // pas un temps de jeu perdu. Quand elle est déjà à zéro, c'est le
+            // plancher du schéma — une ancre ne peut pas être négative — et le
+            // reste est irréductible : un clip rogné plus loin que son
+            // pré-roll ne peut pas commencer au temps zéro.
+            assert!(
+                placed.visual_start_beat < 1.0 || minimum == 0,
+                "la butée laisse {} temps de jeu inutiles avant le début",
+                placed.visual_start_beat
+            );
+        }
     }
 
     #[test]

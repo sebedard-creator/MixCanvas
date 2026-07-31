@@ -112,6 +112,11 @@ fn seek_preview(position_ms: u64, state: State<'_, AudioState>) -> Result<Previe
 }
 
 #[tauri::command]
+fn set_preview_speed(speed: f32, state: State<'_, AudioState>) -> Result<PreviewSnapshot, String> {
+    with_audio_engine(&state, |engine| engine.set_speed(speed))
+}
+
+#[tauri::command]
 fn preview_snapshot(state: State<'_, AudioState>) -> Result<PreviewSnapshot, String> {
     with_audio_engine(&state, |engine| Ok(engine.snapshot()))
 }
@@ -1429,6 +1434,28 @@ struct TempoSuggestion {
     confidence: f64,
 }
 
+/// Aligns the downbeat chosen by the user to the nearest beat of a refined
+/// rigid grid. The grid origin may be any beat reported by the model: shifting
+/// it by a whole number of beats produces the same beat lattice.
+///
+/// Crucially, the returned point keeps the user's bar phase. The model supplies
+/// timing precision, not the musical decision of which beat should be called 1.
+fn snap_manual_downbeat(requested_ms: u64, bpm: f64, analyzed_grid_origin_ms: u64) -> u64 {
+    if !bpm.is_finite() || bpm <= 0.0 {
+        return requested_ms;
+    }
+
+    let period_ms = 60_000.0 / bpm;
+    let origin_ms = analyzed_grid_origin_ms as f64;
+    let beats = ((requested_ms as f64 - origin_ms) / period_ms).round();
+    let snapped_ms = origin_ms + beats * period_ms;
+    if !snapped_ms.is_finite() || snapped_ms < 0.0 {
+        return requested_ms;
+    }
+
+    snapped_ms.round() as u64
+}
+
 /// Recale un tempo tapé sur celui que portent réellement les kicks.
 ///
 /// Le verrou de la bibliothèque n'est tenu que le temps de lire le chemin :
@@ -1437,11 +1464,14 @@ struct TempoSuggestion {
 async fn refine_tapped_tempo(
     id: i64,
     tapped_bpm: f64,
+    anchor_ms: u64,
     app: tauri::AppHandle,
     library_state: State<'_, LibraryState>,
 ) -> Result<TempoSuggestion, String> {
     if !tapped_bpm.is_finite() || tapped_bpm <= 0.0 {
-        return Err("Tap a few more times before snapping to the beat.".to_owned());
+        return Err(
+            "Tap at least four consecutive bar ones before snapping to the beat.".to_owned(),
+        );
     }
 
     let path = {
@@ -1454,9 +1484,10 @@ async fn refine_tapped_tempo(
 
     tauri::async_runtime::spawn_blocking(move || {
         let analysis = analyze_mp3_near(std::path::Path::new(&path), tapped_bpm, &models)?;
+        let first_beat_ms = snap_manual_downbeat(anchor_ms, analysis.bpm, analysis.first_beat_ms);
         Ok(TempoSuggestion {
             bpm: analysis.bpm,
-            first_beat_ms: analysis.first_beat_ms,
+            first_beat_ms,
             confidence: analysis.confidence,
         })
     })
@@ -1688,8 +1719,106 @@ fn adopt_legacy_library(data_directory: &Path, database_path: &Path) -> io::Resu
     Ok(())
 }
 
+/// Comment WebView2 doit peindre l'interface.
+///
+/// Le scintillement du zoom venait de la composition matérielle de WebView2 —
+/// pas de notre mise en page. La preuve tient en deux essais : une approche
+/// tout en transformations, censée être la plus douce pour le GPU, l'a
+/// **aggravée**; couper le GPU l'a fait disparaître. On ne « répare » pas ça
+/// depuis ici : c'est le compositeur de Chromium sur un pilote donné.
+///
+/// Le choix est donc **à l'exécution**, pas à la compilation. Une feature de
+/// compilation obligerait à livrer deux exécutables, ou à parier pour tous les
+/// utilisateurs à partir d'une seule machine. Un seul binaire qui s'ajuste
+/// permet de comparer sans reconstruire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RenderMode {
+    /// Tout en logiciel. Le défaut : correct sur n'importe quel pilote, et
+    /// l'interface est du DOM en deux dimensions — le vrai travail (décodage,
+    /// analyse, DSP) est en Rust et n'y touche pas.
+    Software,
+    /// Rastérisation matérielle, composition logicielle. L'entre-deux qui
+    /// corrige le plus souvent cette famille d'artefacts sans rendre la carte
+    /// inutile; à essayer avant de conclure que le GPU est perdu.
+    Hybrid,
+    /// Accélération complète, pour une machine dont le pilote se tient bien.
+    Hardware,
+}
+
+/// Le mode demandé sur la ligne de commande.
+///
+/// Le dernier argument reconnu l'emporte, comme partout ailleurs : un raccourci
+/// qu'on modifie en ajoutant un mot à la fin doit faire ce qu'il annonce.
+fn render_mode_from_args<I, S>(arguments: I) -> RenderMode
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut mode = RenderMode::Software;
+    for argument in arguments {
+        match argument.as_ref() {
+            "--gpu" => mode = RenderMode::Hardware,
+            "--gpu-safe" => mode = RenderMode::Hybrid,
+            "--no-gpu" => mode = RenderMode::Software,
+            _ => {}
+        }
+    }
+    mode
+}
+
+/// Ce que ce mode ajoute aux arguments de navigateur de WebView2.
+fn browser_arguments_for(mode: RenderMode) -> &'static str {
+    match mode {
+        RenderMode::Software => "--disable-gpu",
+        RenderMode::Hybrid => "--disable-gpu-compositing",
+        RenderMode::Hardware => "",
+    }
+}
+
+/// Fusionne un drapeau dans ce que l'environnement demandait déjà.
+///
+/// Une variable posée par l'utilisateur avant le lancement est respectée : on
+/// ajoute, on ne remplace pas, et on n'ajoute pas deux fois.
+fn merge_browser_arguments(existing: &str, flag: &str) -> String {
+    if flag.is_empty() {
+        return existing.trim().to_owned();
+    }
+    if existing
+        .split_ascii_whitespace()
+        .any(|argument| argument == flag)
+    {
+        return existing.trim().to_owned();
+    }
+    if existing.trim().is_empty() {
+        flag.to_owned()
+    } else {
+        format!("{} {flag}", existing.trim())
+    }
+}
+
+/// Applique le mode de rendu avant que le moindre WebView existe.
+#[cfg(target_os = "windows")]
+fn apply_render_mode(mode: RenderMode) {
+    const KEY: &str = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
+    let merged = merge_browser_arguments(
+        &std::env::var(KEY).unwrap_or_default(),
+        browser_arguments_for(mode),
+    );
+    if merged.is_empty() {
+        return;
+    }
+    // SAFETY: `run` appelle ceci avant `tauri::Builder`, donc avant que
+    // MixCanvas ou WebView2 ne démarre le moindre thread.
+    unsafe { std::env::set_var(KEY, merged) };
+}
+
+#[cfg(not(target_os = "windows"))]
+fn apply_render_mode(_mode: RenderMode) {}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    apply_render_mode(render_mode_from_args(std::env::args().skip(1)));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         // Le ménage à la fermeture, et **seulement** celui-là : les fichiers
@@ -1751,6 +1880,7 @@ pub fn run() {
             pause_preview,
             stop_preview,
             seek_preview,
+            set_preview_speed,
             preview_snapshot,
             list_library_tracks,
             import_library_paths,
@@ -1868,8 +1998,67 @@ mod embedded_tests {
 }
 
 #[cfg(test)]
+mod render_mode_tests {
+    use super::{
+        RenderMode, browser_arguments_for, merge_browser_arguments, render_mode_from_args,
+    };
+
+    /// Sans rien demander, on peint en logiciel : correct sur n'importe quel
+    /// pilote, et c'est le seul défaut qui ne peut pas rendre l'outil
+    /// inutilisable sur la machine de quelqu'un d'autre.
+    #[test]
+    fn software_is_what_you_get_without_asking() {
+        assert_eq!(
+            render_mode_from_args::<[&str; 0], &str>([]),
+            RenderMode::Software
+        );
+        assert_eq!(
+            render_mode_from_args(["--some-other-flag"]),
+            RenderMode::Software
+        );
+        assert_eq!(browser_arguments_for(RenderMode::Software), "--disable-gpu");
+    }
+
+    #[test]
+    fn each_mode_is_reachable_and_the_last_word_wins() {
+        assert_eq!(render_mode_from_args(["--gpu"]), RenderMode::Hardware);
+        assert_eq!(render_mode_from_args(["--gpu-safe"]), RenderMode::Hybrid);
+        // Un raccourci qu'on corrige en ajoutant un mot à la fin doit faire ce
+        // qu'annonce ce dernier mot.
+        assert_eq!(
+            render_mode_from_args(["--gpu", "--no-gpu"]),
+            RenderMode::Software
+        );
+        assert_eq!(browser_arguments_for(RenderMode::Hardware), "");
+        assert_eq!(
+            browser_arguments_for(RenderMode::Hybrid),
+            "--disable-gpu-compositing"
+        );
+    }
+
+    /// Ce que l'utilisateur avait posé avant nous survit.
+    #[test]
+    fn existing_browser_arguments_are_kept_and_never_doubled() {
+        assert_eq!(
+            merge_browser_arguments("--lang=fr", "--disable-gpu"),
+            "--lang=fr --disable-gpu"
+        );
+        assert_eq!(
+            merge_browser_arguments("--disable-gpu", "--disable-gpu"),
+            "--disable-gpu"
+        );
+        assert_eq!(
+            merge_browser_arguments("", "--disable-gpu"),
+            "--disable-gpu"
+        );
+        // En mode matériel on n'ajoute rien, et on n'efface pas non plus.
+        assert_eq!(merge_browser_arguments("  --lang=fr  ", ""), "--lang=fr");
+    }
+}
+
+#[cfg(test)]
 mod tests {
-    use super::{DATABASE_FILES, LEGACY_IDENTIFIERS, adopt_legacy_library};
+    use super::{DATABASE_FILES, LEGACY_IDENTIFIERS, adopt_legacy_library, snap_manual_downbeat};
     use std::fs;
 
     /// Two sibling folders under a scratch root, mirroring how the identifier
@@ -1991,5 +2180,27 @@ mod tests {
             Some(&"library.sqlite3"),
             "the database must be the last file copied"
         );
+    }
+
+    #[test]
+    fn a_manual_downbeat_snaps_to_the_nearest_beat_of_the_refined_grid() {
+        assert_eq!(snap_manual_downbeat(710, 120.0, 250), 750);
+        assert_eq!(snap_manual_downbeat(1_010, 120.0, 2_000), 1_000);
+    }
+
+    #[test]
+    fn the_models_bar_phase_does_not_replace_the_users_bar_phase() {
+        let chosen = 4_740;
+        let from_first_model_beat = snap_manual_downbeat(chosen, 120.0, 250);
+        let from_later_model_beat = snap_manual_downbeat(chosen, 120.0, 4_250);
+
+        assert_eq!(from_first_model_beat, 4_750);
+        assert_eq!(from_later_model_beat, 4_750);
+    }
+
+    #[test]
+    fn an_impossible_snap_before_the_file_keeps_the_manual_position() {
+        assert_eq!(snap_manual_downbeat(10, 128.0, 300), 10);
+        assert_eq!(snap_manual_downbeat(1_234, f64::NAN, 300), 1_234);
     }
 }

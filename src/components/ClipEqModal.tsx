@@ -209,9 +209,16 @@ export const ClipEqModal: React.FC<ClipEqModalProps> = ({ clip, onClose, onSave 
 
   const handlePointerMove = (e: React.PointerEvent) => {
     if (!activeDrag || !svgRef.current) return;
-    const rect = svgRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    // Le graphe se dessine en unités de `viewBox` mais s'affiche à la largeur
+    // qu'on lui donne. Sans conversion, la poignée n'allait qu'à une fraction
+    // de la distance parcourue par la main — l'effet élastique.
+    const { x, y } = graphPointToViewBox(
+      e.clientX,
+      e.clientY,
+      svgRef.current.getBoundingClientRect(),
+      GRAPH_WIDTH,
+      GRAPH_HEIGHT,
+    );
 
     const freq = xToFreq(x, GRAPH_WIDTH);
 

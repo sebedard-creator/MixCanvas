@@ -4,7 +4,13 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { formatDuration } from "../lib/formatDuration";
 import { libraryDisplayName } from "../lib/libraryDisplayName";
-import { calculateTapTempo, nextTapSeries } from "../lib/tapTempo";
+import {
+  MINIMUM_DOWNBEAT_TAPS,
+  RECOMMENDED_DOWNBEAT_TAPS,
+  appendDownbeatTap,
+  estimateGridFromDownbeatTaps,
+  hasExcellentTapAccuracy,
+} from "../lib/downbeatTap";
 import type { LibraryTrack } from "../library/types";
 import { MiniPreview } from "./MiniPreview";
 
@@ -13,14 +19,22 @@ interface BeatgridEditorProps {
   previewFilePath: string | null;
   previewPositionMs: number;
   previewDurationMs: number;
+  previewPlaybackSpeed: number;
   isPreviewPlaying: boolean;
   busy: boolean;
   onClose: () => void;
   onPreview: () => void;
   onSeekPreview: (positionMs: number) => void;
+  onSetPreviewSpeed: (speed: number) => void;
   onReanalyze: () => void;
   onSave: (bpm: number, firstBeatMs: number) => void;
   onReset: () => void;
+}
+
+interface PreviewTapSnapshot {
+  status: "empty" | "paused" | "playing" | "ended";
+  filePath: string | null;
+  positionMs: number;
 }
 
 function parseNumber(value: string): number {
@@ -32,11 +46,13 @@ export function BeatgridEditor({
   previewFilePath,
   previewPositionMs,
   previewDurationMs,
+  previewPlaybackSpeed,
   isPreviewPlaying,
   busy,
   onClose,
   onPreview,
   onSeekPreview,
+  onSetPreviewSpeed,
   onReanalyze,
   onSave,
   onReset,
@@ -44,14 +60,29 @@ export function BeatgridEditor({
   const [bpmInput, setBpmInput] = useState(String(track.bpm ?? 120));
   const [firstBeatInput, setFirstBeatInput] = useState(((track.firstBeatMs ?? 0) / 1_000).toFixed(3));
   const [taps, setTaps] = useState<number[]>([]);
+  const [capturingTap, setCapturingTap] = useState(false);
   const [snapping, setSnapping] = useState(false);
   const [snapNote, setSnapNote] = useState<string | null>(null);
+  const [tapAccuracyMs, setTapAccuracyMs] = useState<number | null>(null);
 
+  /**
+   * Remet l'atelier d'accord avec le morceau.
+   *
+   * `track.isCorrected` fait partie des dépendances, et c'est lui qui rend
+   * « Restore Automatic » fiable. Les deux autres ne suffisent pas : la
+   * sauvegarde cale le premier temps manuel sur la grille analysée, si bien
+   * qu'une remise à zéro retombe souvent sur **exactement** les mêmes nombres.
+   * L'effet ne se déclenchait alors pas, et l'éditeur gardait les valeurs
+   * tapées comme si de rien n'était. La correction, elle, bascule toujours de
+   * vrai à faux : c'est le seul signal qui ne peut pas manquer.
+   */
   useEffect(() => {
     setBpmInput(String(track.bpm ?? 120));
     setFirstBeatInput(((track.firstBeatMs ?? 0) / 1_000).toFixed(3));
     setTaps([]);
-  }, [track.id, track.bpm, track.firstBeatMs]);
+    setSnapNote(null);
+    setTapAccuracyMs(null);
+  }, [track.id, track.bpm, track.firstBeatMs, track.isCorrected]);
 
   const bpm = parseNumber(bpmInput);
   const firstBeatSeconds = parseNumber(firstBeatInput);
@@ -65,47 +96,81 @@ export function BeatgridEditor({
     firstBeatSeconds >= 0 &&
     firstBeatMs <= track.durationMs;
 
-  const scaleBpm = (factor: number) => {
-    const scaled = Math.round(bpm * factor * 1_000) / 1_000;
-    if (Number.isFinite(scaled)) {
-      setBpmInput(String(scaled));
-    }
-  };
+  const tapEstimate = estimateGridFromDownbeatTaps(taps);
+  /* Le même seuil que le bouton du lecteur : les deux doivent s'allumer
+     ensemble, sinon l'un dit « demi-vitesse » pendant que l'autre l'ignore. */
+  const isSlowPreview = previewPlaybackSpeed < 0.75;
 
-  /* Deux frappes suffisent à produire un tempo : c'est à partir de là que le
-     recalage a quelque chose à recaler. */
-  const hasTaps = taps.length >= 2;
+  /**
+   * Each press names the next bar's musical 1. The timestamp comes from the
+   * Preview engine's source clock, not the browser event clock or the polling
+   * display, so UI refresh cadence cannot quantise the manual grid.
+   */
+  const tapDownbeat = async () => {
+    if (!previewMatches || !isPreviewPlaying || busy || capturingTap) return;
+    setCapturingTap(true);
+    try {
+      const snapshot = await invoke<PreviewTapSnapshot>("preview_snapshot");
+      if (snapshot.filePath !== track.filePath || snapshot.status !== "playing") {
+        setTapAccuracyMs(null);
+        setSnapNote("Start this track's Preview before tapping consecutive bar ones.");
+        return;
+      }
 
-  const tap = () => {
-    const next = nextTapSeries(taps, performance.now());
-    const tappedBpm = calculateTapTempo(next);
-    setTaps(next);
-    setSnapNote(null);
-    if (tappedBpm !== null) {
-      setBpmInput(String(tappedBpm));
+      const next = appendDownbeatTap(taps, snapshot.positionMs);
+      const estimate = estimateGridFromDownbeatTaps(next);
+      setTaps(next);
+      setTapAccuracyMs(null);
+
+      if (next.length === 1) {
+        setFirstBeatInput((snapshot.positionMs / 1_000).toFixed(3));
+        setSnapNote(`First 1 captured at ${(snapshot.positionMs / 1_000).toFixed(3)} s. Tap the next bar's 1.`);
+      } else if (estimate) {
+        setBpmInput(String(estimate.bpm));
+        setFirstBeatInput((estimate.firstBeatMs / 1_000).toFixed(3));
+        const recommendation =
+          next.length < RECOMMENDED_DOWNBEAT_TAPS
+            ? `Continue to ${RECOMMENDED_DOWNBEAT_TAPS} bars for greater accuracy.`
+            : "The manual grid is ready to refine or save.";
+        setTapAccuracyMs(estimate.rmsErrorMs);
+        setSnapNote(recommendation);
+      } else if (next.length < MINIMUM_DOWNBEAT_TAPS) {
+        setSnapNote(
+          `${next.length}/${MINIMUM_DOWNBEAT_TAPS} bar ones captured. Keep tapping the 1 of every consecutive measure.`,
+        );
+      } else {
+        setSnapNote("Those taps are not consecutive measures. Clear the series and tap every bar's 1 without skipping one.");
+      }
+    } catch (error) {
+      setTapAccuracyMs(null);
+      setSnapNote(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCapturingTap(false);
     }
   };
 
   /**
-   * Le tap donne l'ordre de grandeur; les événements du modèle sont ensuite
-   * ajustés à une grille DJ rigide sur tout le morceau. Un beat manquant ou
-   * surnuméraire ne peut donc pas déplacer les suivants.
+   * Le tap donne la période approximative et la position capturée donne
+   * l'intention musicale. Le modèle raffine une grille DJ rigide, puis cette
+   * position est déplacée sur son beat le plus proche sans jamais être
+   * remplacée par le downbeat automatique.
    */
   const snapToKicks = async () => {
     const tapped = parseNumber(bpmInput);
-    if (!Number.isFinite(tapped) || tapped <= 0 || snapping) return;
+    if (!Number.isFinite(tapped) || tapped <= 0 || !isValid || snapping) return;
     setSnapping(true);
+    setTapAccuracyMs(null);
     setSnapNote(null);
     try {
       const refined = await invoke<{ bpm: number; firstBeatMs: number; confidence: number }>(
         "refine_tapped_tempo",
-        { id: track.id, tappedBpm: tapped },
+        { id: track.id, tappedBpm: tapped, anchorMs: firstBeatMs },
       );
       const drift = refined.bpm - tapped;
       setBpmInput(String(Math.round(refined.bpm * 1000) / 1000));
       setFirstBeatInput((refined.firstBeatMs / 1_000).toFixed(3));
       setSnapNote(
-        `Snapped to ${refined.bpm.toFixed(2)} BPM (${drift >= 0 ? "+" : ""}${drift.toFixed(2)} from your tap), first downbeat at ${(refined.firstBeatMs / 1000).toFixed(3)} s.`,
+        `Snapped to ${refined.bpm.toFixed(3)} BPM (${drift >= 0 ? "+" : ""}${drift.toFixed(3)} from the Tap 1 fit). Your chosen downbeat is now exactly on the nearest beat at ${(refined.firstBeatMs / 1000).toFixed(3)} s.`,
       );
     } catch (error) {
       setSnapNote(error instanceof Error ? error.message : String(error));
@@ -136,9 +201,60 @@ export function BeatgridEditor({
         positionMs={previewPositionMs}
         isPlaying={previewMatches && isPreviewPlaying}
         disabled={busy || track.isMissing}
+        playbackSpeed={previewPlaybackSpeed}
         onToggle={onPreview}
         onSeek={onSeekPreview}
+        onSetPlaybackSpeed={onSetPreviewSpeed}
       />
+
+      {/* La marche à suivre, dite une fois et dans l'ordre.
+       *
+       * Les deux champs se présentaient côte à côte, également remplissables,
+       * sans rien dire duquel on part : un nouvel arrivant lisait deux
+       * méthodes concurrentes au lieu d'une procédure. Ils deviennent le
+       * *résultat* de ces trois pas, et l'ordre est écrit plutôt que deviné.
+       *
+       * La demi-vitesse est une recommandation **actionnable** : la répéter en
+       * prose à côté d'un bouton qu'il faut aller chercher ailleurs, c'est la
+       * faire ignorer. */}
+      <ol className="beatgrid-recipe">
+        <li className={isSlowPreview ? "is-done" : undefined}>
+          <span className="beatgrid-recipe-step" aria-hidden="true">1</span>
+          <div>
+            <strong>Play at half speed — strongly recommended.</strong>
+            <p>
+              Twice as long between bars means half the tapping error. Tap 1 reads the source
+              clock, so the tempo it measures is the real one either way.
+            </p>
+          </div>
+          <button
+            className={`beatgrid-recipe-action${isSlowPreview ? " is-active" : ""}`}
+            type="button"
+            disabled={busy || track.isMissing}
+            aria-pressed={isSlowPreview}
+            onClick={() => onSetPreviewSpeed(isSlowPreview ? 1 : 0.5)}
+          >
+            {isSlowPreview ? "½ SPEED ON" : "SET ½ SPEED"}
+          </button>
+        </li>
+        <li className={taps.length >= MINIMUM_DOWNBEAT_TAPS ? "is-done" : undefined}>
+          <span className="beatgrid-recipe-step" aria-hidden="true">2</span>
+          <div>
+            <strong>Tap the 1 of every bar, in a row.</strong>
+            <p>
+              {MINIMUM_DOWNBEAT_TAPS} bars minimum; {RECOMMENDED_DOWNBEAT_TAPS} or more for a grid
+              that still holds at the end of a long track.
+            </p>
+          </div>
+        </li>
+        <li>
+          <span className="beatgrid-recipe-step" aria-hidden="true">3</span>
+          <div>
+            <strong>Snap to beat, then save.</strong>
+            <p>Snapping pulls your taps onto the detected beats. Both fields below fill themselves.</p>
+          </div>
+        </li>
+      </ol>
 
       <div className="beatgrid-editor-body">
         <div className="beatgrid-field-group">
@@ -151,44 +267,72 @@ export function BeatgridEditor({
               max="300"
               step="0.001"
               value={bpmInput}
-              onChange={(event) => setBpmInput(event.currentTarget.value)}
+              onChange={(event) => {
+                setBpmInput(event.currentTarget.value);
+                setTaps([]);
+                setSnapNote(null);
+                setTapAccuracyMs(null);
+              }}
             />
-            <button type="button" onClick={() => scaleBpm(0.5)} disabled={!Number.isFinite(bpm)}>
-              ÷2
-            </button>
-            <button type="button" onClick={() => scaleBpm(2)} disabled={!Number.isFinite(bpm)}>
-              ×2
-            </button>
-            {/* Les deux boutons forment une séquence, pas deux commandes
-                voisines. Taper donne l'ordre de grandeur, recaler demande à
-                l'audio de trancher — et une main ne tombe pratiquement jamais
-                sur le tempo exact, donc le second geste n'est pas optionnel.
-                Le recalage reste manuel : il relit le fichier, ce qui n'a pas
-                sa place entre deux frappes. */}
             <div className="tempo-assist">
-              <button className="tap-tempo-button" type="button" onClick={tap}>
-                Tap
-                <span>{taps.length > 0 ? `${taps.length}/9` : "Tempo"}</span>
+              <button
+                className="tap-tempo-button"
+                type="button"
+                onClick={() => void tapDownbeat()}
+                disabled={busy || capturingTap || !previewMatches || !isPreviewPlaying}
+                title="Tap the first beat of each consecutive measure while Preview is playing"
+              >
+                {capturingTap ? "Reading…" : "Tap 1"}
+                <span>{taps.length > 0 ? `${taps.length} BARS` : "EACH BAR"}</span>
+              </button>
+              <button
+                className="downbeat-tap-reset"
+                type="button"
+                disabled={taps.length === 0}
+                onClick={() => {
+                  setTaps([]);
+                  setSnapNote(null);
+                  setTapAccuracyMs(null);
+                  setBpmInput(String(track.bpm ?? 120));
+                  setFirstBeatInput(((track.firstBeatMs ?? 0) / 1_000).toFixed(3));
+                }}
+                title="Clear the Tap 1 series"
+              >
+                Clear
               </button>
               <span className="tempo-assist-arrow" aria-hidden="true">→</span>
               <button
                 className="snap-kicks-button"
                 type="button"
                 onClick={() => void snapToKicks()}
-                disabled={busy || snapping || !Number.isFinite(bpm) || bpm <= 0}
-                title="Fit an exact, rigid beat grid around the tempo you tapped"
+                disabled={busy || snapping || !isValid || tapEstimate === null}
+                title="Refine the Tap 1 grid against the track's detected beats"
               >
                 {snapping ? "Snapping…" : "Snap to beat"}
               </button>
             </div>
           </div>
-          {snapNote ? (
+          {tapAccuracyMs !== null && tapEstimate ? (
+            <p className="snap-kicks-note">
+              {taps.length} consecutive bar ones fit {tapEstimate.bpm.toFixed(3)} BPM · accuracy{" "}
+              <span
+                className={
+                  hasExcellentTapAccuracy(taps.length, tapAccuracyMs)
+                    ? "tap-accuracy tap-accuracy--good"
+                    : "tap-accuracy"
+                }
+              >
+                {tapAccuracyMs}
+              </span>{" "}
+              ms
+              . {snapNote}
+            </p>
+          ) : snapNote ? (
             <p className="snap-kicks-note">{snapNote}</p>
           ) : (
             <p className="tempo-assist-hint">
-              {hasTaps
-                ? "Now fit the exact beat grid carried by the whole track."
-                : "Tap the beat for a rough tempo, then snap it to the track. Tapping alone rarely lands on the exact BPM."}
+              Play the Preview and tap the 1 of each consecutive measure. Four bars are required;
+              eight or more improve long-range accuracy.
             </p>
           )}
           <p>
@@ -198,7 +342,9 @@ export function BeatgridEditor({
         </div>
 
         <div className="beatgrid-field-group">
-          <label htmlFor="first-beat">First Downbeat (1)</label>
+          <label htmlFor="first-beat">
+            First downbeat <span className="beatgrid-field-origin">set by Tap 1</span>
+          </label>
           <div className="first-beat-row">
             <div className="seconds-input">
               <input
@@ -208,7 +354,12 @@ export function BeatgridEditor({
                 max={track.durationMs / 1_000}
                 step="0.001"
                 value={firstBeatInput}
-                onChange={(event) => setFirstBeatInput(event.currentTarget.value)}
+                onChange={(event) => {
+                  setFirstBeatInput(event.currentTarget.value);
+                  setTaps([]);
+                  setSnapNote(null);
+                  setTapAccuracyMs(null);
+                }}
               />
               <span>seconds</span>
             </div>
@@ -216,14 +367,19 @@ export function BeatgridEditor({
               className="capture-beat-button"
               type="button"
               disabled={!previewMatches || busy}
-              onClick={() => setFirstBeatInput((previewPositionMs / 1_000).toFixed(3))}
+              onClick={() => {
+                setFirstBeatInput((previewPositionMs / 1_000).toFixed(3));
+                setTaps([]);
+                setSnapNote(null);
+                setTapAccuracyMs(null);
+              }}
             >
               Set to {formatDuration(previewPositionMs)}
             </button>
           </div>
           <p>
-            Seek the Preview to beat 1 of a bar, then capture its position. This manual correction
-            remains authoritative when the automatic downbeat is ambiguous.
+            You should not need to touch this. It is here for the rare track whose 1 the analysis
+            and your taps both miss — seek the Preview to the downbeat and capture it.
           </p>
         </div>
       </div>

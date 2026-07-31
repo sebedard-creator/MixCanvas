@@ -4,6 +4,7 @@ import {
   MIN_CLIP_BEATS,
   clipTrimLimits,
   clipWithTrim,
+  minimumAnchorBeat,
   trimEdgeAtPointer,
   trimForEdge,
   untrimmedBounds,
@@ -153,5 +154,27 @@ describe("clipTrimLimits", () => {
       limitStartBeat: 0,
       limitEndBeat: Number.POSITIVE_INFINITY,
     });
+  });
+});
+
+describe("minimumAnchorBeat", () => {
+  it("protects the pre-roll of an untrimmed clip", () => {
+    expect(minimumAnchorBeat(0, 0)).toBe(0);
+    expect(minimumAnchorBeat(0.2, 0)).toBe(1);
+    expect(minimumAnchorBeat(8.4, 0)).toBe(9);
+  });
+
+  it("gives back exactly what the head trim removed", () => {
+    // Le défaut rapporté : le premier clip d'une timeline refusait de reculer
+    // parce que la butée protégeait encore la tête qu'on venait de couper.
+    expect(minimumAnchorBeat(8, 2)).toBe(6);
+    expect(minimumAnchorBeat(8, 8)).toBe(0);
+  });
+
+  it("never asks for a negative anchor", () => {
+    // Le schéma l'interdit; une butée négative ferait refuser côté serveur un
+    // déplacement que l'interface venait d'autoriser.
+    expect(minimumAnchorBeat(8, 40)).toBe(0);
+    expect(minimumAnchorBeat(Number.NaN, 0)).toBe(0);
   });
 });

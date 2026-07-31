@@ -950,16 +950,6 @@ impl LibraryStore {
             return Err("The first beat cannot fall past the end of the track.".to_owned());
         }
 
-        let analyzed = self
-            .connection
-            .query_row(
-                "SELECT bpm, first_beat_ms FROM library_tracks WHERE id = ?1",
-                [id],
-                |row| Ok((row.get::<_, Option<f64>>(0)?, row.get::<_, Option<i64>>(1)?)),
-            )
-            .map_err(database_read_error)?;
-        let first_beat_ms = snap_to_analyzed_grid(analyzed.0, analyzed.1, bpm, first_beat_ms);
-
         self.connection
             .execute(
                 "UPDATE library_tracks
@@ -1180,54 +1170,6 @@ pub(crate) fn decode_waveform(
         right_max: decode_waveform_values(&right_max?, bucket_count)?,
         right_rms: decode_waveform_values(&right_rms?, bucket_count)?,
     })
-}
-
-/// Quantises a hand-entered first beat onto the analysed grid.
-///
-/// Nobody clicks or taps exactly on a beat, and a downbeat a hundred
-/// milliseconds off makes every clip built on it drift. The analysis already
-/// knows where the beats are, so the correction only has to say *which* beat is
-/// beat one; the position itself is read off the grid.
-///
-/// The grid is extended arithmetically rather than looked up in the stored
-/// beats, so a downbeat placed before the analysed first beat — the whole point
-/// of the correction when a track opens without drums — snaps to the right
-/// beat instead of jumping forward to the first stored one.
-///
-/// If the BPM was corrected too, the analysed downbeat still supplies the
-/// phase origin and the corrected period supplies the spacing. Taking the
-/// mouse position literally in that case was the reason "Set to" appeared not
-/// to snap precisely when the automatic BPM was wrong.
-fn snap_to_analyzed_grid(
-    analyzed_bpm: Option<f64>,
-    analyzed_first_beat_ms: Option<i64>,
-    manual_bpm: f64,
-    requested_ms: u64,
-) -> u64 {
-    let (Some(analyzed_bpm), Some(analyzed_first_beat_ms)) = (analyzed_bpm, analyzed_first_beat_ms)
-    else {
-        return requested_ms;
-    };
-    if !analyzed_bpm.is_finite()
-        || !(40.0..=300.0).contains(&analyzed_bpm)
-        || analyzed_first_beat_ms < 0
-        // A small BPM correction keeps the analysed phase useful. A half-time,
-        // double-time or otherwise radical reinterpretation does not: which
-        // old beat becomes the new bar one is a musical choice, so preserve
-        // the position the user captured instead of moving it unexpectedly.
-        || ((manual_bpm / analyzed_bpm) - 1.0).abs() > 0.15
-    {
-        return requested_ms;
-    }
-
-    let period_ms = 60_000.0 / manual_bpm;
-    let origin_ms = analyzed_first_beat_ms as f64;
-    let beats = ((requested_ms as f64 - origin_ms) / period_ms).round();
-    let snapped = origin_ms + beats * period_ms;
-    if snapped < 0.0 {
-        return requested_ms;
-    }
-    snapped.round() as u64
 }
 
 fn ensure_column(
@@ -1529,7 +1471,7 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
 mod tests {
     use super::{
         LATEST_SCHEMA_VERSION, LibraryStore, decode_waveform, discover_mp3_paths,
-        effective_beat_count, encode_waveform_values, normalize_path_key, snap_to_analyzed_grid,
+        effective_beat_count, encode_waveform_values, normalize_path_key,
     };
     use crate::analysis::{ANALYSIS_ALGORITHM_VERSION, BeatAnalysis, WaveformPeaks};
     use rusqlite::params;
@@ -1581,76 +1523,6 @@ mod tests {
         }
 
         remove_database_files(&database_path);
-    }
-
-    /// The schema constant is replayed after every migration. If it still
-    /// stamped an older version, reopening would push the database back down
-    /// and replay the last migrations on each start, forever.
-    /// The case that prompted this: a downbeat given as "about 61.9 seconds"
-    /// on a 126 BPM track whose analysed grid starts at 61 946 ms.
-    #[test]
-    fn a_hand_entered_downbeat_is_quantised_onto_the_analysed_grid() {
-        let analysed_bpm = Some(126.0);
-        let analysed_first = Some(61_946);
-        let period: f64 = 60_000.0 / 126.0;
-
-        // Rough by a quarter of a beat in either direction: same beat.
-        assert_eq!(
-            snap_to_analyzed_grid(analysed_bpm, analysed_first, 126.0, 61_900),
-            61_946
-        );
-        assert_eq!(
-            snap_to_analyzed_grid(analysed_bpm, analysed_first, 126.0, 62_050),
-            61_946
-        );
-
-        // Past the halfway mark it belongs to the next beat, as it should.
-        let next = (61_946.0 + period).round() as u64;
-        assert_eq!(
-            snap_to_analyzed_grid(analysed_bpm, analysed_first, 126.0, 62_250),
-            next
-        );
-
-        // The grid extends backwards, so a downbeat placed in a beatless intro
-        // lands on the right beat instead of jumping to the analysed anchor.
-        let earlier = (61_946.0 - period * 40.0).round() as u64;
-        assert_eq!(
-            snap_to_analyzed_grid(analysed_bpm, analysed_first, 126.0, earlier + 60),
-            earlier
-        );
-    }
-
-    #[test]
-    fn corrected_tempo_still_snaps_around_the_known_downbeat_phase() {
-        assert_eq!(
-            snap_to_analyzed_grid(Some(126.0), Some(61_946), 124.0, 61_900),
-            61_946
-        );
-        assert_eq!(
-            snap_to_analyzed_grid(Some(126.0), Some(61_946), 124.0, 62_250),
-            (61_946.0_f64 + 60_000.0 / 124.0).round() as u64
-        );
-    }
-
-    #[test]
-    fn an_unanalysed_track_keeps_the_entered_position() {
-        assert_eq!(
-            snap_to_analyzed_grid(None, Some(1_000), 128.0, 1_234),
-            1_234
-        );
-        assert_eq!(
-            snap_to_analyzed_grid(Some(128.0), None, 128.0, 1_234),
-            1_234
-        );
-        assert_eq!(
-            snap_to_analyzed_grid(Some(f64::NAN), Some(0), 128.0, 1_234),
-            1_234
-        );
-        // Near the start of the file the nearest beat is simply beat zero.
-        assert_eq!(snap_to_analyzed_grid(Some(128.0), Some(0), 128.0, 100), 0);
-        // But a snap that would land before the file starts is refused: with
-        // the grid anchored at 300 ms, the beat nearest 10 ms sits at -169 ms.
-        assert_eq!(snap_to_analyzed_grid(Some(128.0), Some(300), 128.0, 10), 10);
     }
 
     /// Vider la bibliothèque doit tout emporter, y compris ce qui n'en descend
@@ -2066,6 +1938,76 @@ mod tests {
     /// Ce que `track` renvoie doit être exactement ce que `list_tracks`
     /// aurait mis dans la liste, sans quoi une rangée publiée en cours de lot
     /// contredirait celle qui arrive à la fin.
+    /// « Restore Automatic » doit tout rendre : le tempo, le premier temps, et
+    /// la mention qui dit qu'on y a touché.
+    #[test]
+    fn restoring_the_automatic_grid_leaves_no_trace_of_the_correction() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-restore-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+        let store = LibraryStore::open(&database_path).expect("database should open");
+        store
+            .connection
+            .execute(
+                "INSERT INTO library_tracks
+                 (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                  bpm, first_beat_ms, beat_count, analysis_status)
+                 VALUES ('a.mp3', 'a.mp3', 'a.mp3', 300000, 44100, 2, 120.94, 20000, 600,
+                         'analyzed')",
+                [],
+            )
+            .expect("track should be inserted");
+        let id = store.connection.last_insert_rowid();
+
+        let before = store
+            .list_tracks()
+            .expect("tracks should list")
+            .into_iter()
+            .find(|track| track.id == id)
+            .expect("the track should be there");
+
+        store
+            .update_beatgrid_correction(id, 124.5, 20_374)
+            .expect("the correction should save");
+        let corrected = store
+            .list_tracks()
+            .expect("tracks should list")
+            .into_iter()
+            .find(|track| track.id == id)
+            .expect("the track should be there");
+        assert!(corrected.is_corrected, "la correction est bien posée");
+
+        let restored = store
+            .reset_beatgrid_correction(id)
+            .expect("the correction should reset")
+            .into_iter()
+            .find(|track| track.id == id)
+            .expect("the track should be there");
+
+        assert!(!restored.is_corrected, "plus de mention « corrigé »");
+        assert_eq!(restored.bpm, before.bpm, "le tempo revient à l'analyse");
+        assert_eq!(
+            restored.first_beat_ms, before.first_beat_ms,
+            "et le premier temps aussi"
+        );
+        assert_eq!(
+            restored.beat_count, before.beat_count,
+            "y compris le compte de temps, qui se calcule autrement selon l'état"
+        );
+
+        drop(store);
+        for suffix in ["", "-wal", "-shm"] {
+            let candidate =
+                std::path::PathBuf::from(format!("{}{}", database_path.to_string_lossy(), suffix));
+            let _ = fs::remove_file(candidate);
+        }
+    }
+
     #[test]
     fn one_track_reads_exactly_as_it_does_in_the_full_list() {
         let suffix = SystemTime::now()
@@ -2293,27 +2235,31 @@ mod tests {
                 "INSERT INTO library_tracks
                  (file_path, path_key, file_name, duration_ms, sample_rate, channels,
                   bpm, first_beat_ms, beat_count, analysis_status)
-                 VALUES ('missing.mp3', 'missing.mp3', 'correction.mp3', 60000, 44100, 2,
-                         128.0, 1000, 126, 'analyzed')",
+                 VALUES ('missing.mp3', 'missing.mp3', 'correction.mp3', 120000, 44100, 2,
+                         126.0, 61946, 252, 'analyzed')",
                 [],
             )
             .expect("analyzed track should be inserted");
         let id = store.connection.last_insert_rowid();
 
         let corrected = store
-            .update_beatgrid_correction(id, 64.0, 500)
+            .update_beatgrid_correction(id, 124.0, 61_900)
             .expect("correction should be saved");
-        assert_eq!(corrected[0].bpm, Some(64.0));
-        assert_eq!(corrected[0].analyzed_bpm, Some(128.0));
-        assert_eq!(corrected[0].first_beat_ms, Some(500));
-        assert_eq!(corrected[0].analyzed_first_beat_ms, Some(1_000));
+        assert_eq!(corrected[0].bpm, Some(124.0));
+        assert_eq!(corrected[0].analyzed_bpm, Some(126.0));
+        assert_eq!(
+            corrected[0].first_beat_ms,
+            Some(61_900),
+            "saving must preserve the user's downbeat instead of pulling it back to the automatic grid"
+        );
+        assert_eq!(corrected[0].analyzed_first_beat_ms, Some(61_946));
         assert!(corrected[0].is_corrected);
 
         let restored = store
             .reset_beatgrid_correction(id)
             .expect("automatic analysis should be restored");
-        assert_eq!(restored[0].bpm, Some(128.0));
-        assert_eq!(restored[0].first_beat_ms, Some(1_000));
+        assert_eq!(restored[0].bpm, Some(126.0));
+        assert_eq!(restored[0].first_beat_ms, Some(61_946));
         assert!(!restored[0].is_corrected);
 
         drop(store);
