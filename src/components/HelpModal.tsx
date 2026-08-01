@@ -57,6 +57,7 @@ const SHORTCUTS: ShortcutItem[] = [
   { surface: "key", group: "Transport", keys: ["Esc"], description: "Close the window on top" },
 
   { surface: "key", group: "On the selected track", keys: ["B"], description: "Split its clip at the playhead" },
+  { surface: "key", group: "On the selected track", keys: ["Delete"], description: "Remove the clip under the pointer — the mouse picks it, not the selection" },
   { surface: "key", group: "On the selected track", keys: ["V"], description: "Add a volume node at the playhead" },
   { surface: "key", group: "On the selected track", keys: ["P"], description: "Add a pan node at the playhead" },
   { surface: "key", group: "On the selected track", keys: ["Shift", "S"], description: "Solo" },
@@ -85,6 +86,7 @@ const SHORTCUTS: ShortcutItem[] = [
   { surface: "pointer", group: "Automation", keys: ["Drag a volume node"], description: "Set its level and position — to the bottom of the travel for silence" },
   { surface: "pointer", group: "Automation", keys: ["Drag a pan node"], description: "Up sends the track left, down sends it right" },
   { surface: "pointer", group: "Automation", keys: ["Drag the tempo point"], description: "Ramp the project tempo from a clip's turquoise marker" },
+  { surface: "pointer", group: "Automation", keys: ["Right click the ruler"], description: "Type the tempo of the nearest marker — it is that track's BPM, same as the Beatgrid Editor" },
 
   { surface: "pointer", group: "Filter band", keys: ["Drag"], description: "Draw a filter curve" },
   { surface: "pointer", group: "Filter band", keys: ["Shift", "Drag"], description: "Draw it symmetrical — a triangle" },

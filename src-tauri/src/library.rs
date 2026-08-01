@@ -950,6 +950,18 @@ impl LibraryStore {
             return Err("The first beat cannot fall past the end of the track.".to_owned());
         }
 
+        // Enregistrer exactement ce que l'analyse avait trouvé n'est pas une
+        // correction : c'est y revenir. On efface donc plutôt que d'écrire un
+        // doublon, et la piste cesse de se dire corrigée.
+        //
+        // La règle vit ici et non dans l'interface, pour une raison précise :
+        // « Restore Automatic » remet les champs aux valeurs de l'analyse, et
+        // c'est le même geste que taper ces valeurs à la main. Les deux doivent
+        // finir au même endroit, et un seul écrivain le garantit.
+        if self.matches_analysis(id, bpm, first_beat_ms)? {
+            return self.reset_beatgrid_correction(id);
+        }
+
         self.connection
             .execute(
                 "UPDATE library_tracks
@@ -963,6 +975,32 @@ impl LibraryStore {
             )
             .map_err(database_write_error)?;
         self.list_tracks()
+    }
+
+    /// Si ces valeurs sont, au millième près, celles que l'analyse a trouvées.
+    ///
+    /// Le tempo est comparé arrondi comme il est stocké : les deux passent par
+    /// le même millième, donc une égalité exacte sur des flottants suffirait
+    /// presque — presque, et « presque » est ce qui laisserait une piste se
+    /// dire corrigée pour un chiffre invisible.
+    fn matches_analysis(&self, id: i64, bpm: f64, first_beat_ms: u64) -> Result<bool, String> {
+        let analysed = self
+            .connection
+            .query_row(
+                "SELECT bpm, first_beat_ms FROM library_tracks WHERE id = ?1",
+                [id],
+                |row| Ok((row.get::<_, Option<f64>>(0)?, row.get::<_, Option<i64>>(1)?)),
+            )
+            .map_err(database_read_error)?;
+        let (Some(analysed_bpm), Some(analysed_first_beat)) = analysed else {
+            // Sans analyse, tout est une correction — il n'y a rien à retrouver.
+            return Ok(false);
+        };
+        let requested_bpm = (bpm * 1_000.0).round() / 1_000.0;
+        let same_bpm = (requested_bpm - analysed_bpm).abs() < 0.000_5;
+        let same_first_beat =
+            i64::try_from(first_beat_ms).is_ok_and(|ms| ms == analysed_first_beat);
+        Ok(same_bpm && same_first_beat)
     }
 
     pub fn reset_beatgrid_correction(&self, id: i64) -> Result<Vec<LibraryTrack>, String> {
@@ -1938,6 +1976,77 @@ mod tests {
     /// Ce que `track` renvoie doit être exactement ce que `list_tracks`
     /// aurait mis dans la liste, sans quoi une rangée publiée en cours de lot
     /// contredirait celle qui arrive à la fin.
+    /// Enregistrer les valeurs de l'analyse efface la correction.
+    ///
+    /// C'est ce qui fait marcher « Restore Automatic » : le bouton se contente
+    /// de remettre les champs aux valeurs trouvées, et c'est l'enregistrement
+    /// qui décide qu'il n'y a plus rien à retenir. Taper ces mêmes valeurs à la
+    /// main mène donc exactement au même endroit — un seul écrivain, une seule
+    /// règle.
+    #[test]
+    fn saving_the_analysed_values_clears_the_correction_instead_of_repeating_it() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-save-clears-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+        let store = LibraryStore::open(&database_path).expect("database should open");
+        store
+            .connection
+            .execute(
+                "INSERT INTO library_tracks
+                 (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                  bpm, first_beat_ms, beat_count, analysis_status)
+                 VALUES ('a.mp3', 'a.mp3', 'a.mp3', 300000, 44100, 2, 120.94, 20000, 600,
+                         'analyzed')",
+                [],
+            )
+            .expect("track should be inserted");
+        let id = store.connection.last_insert_rowid();
+
+        let corrected = store
+            .update_beatgrid_correction(id, 124.5, 20_374)
+            .expect("the correction should save")
+            .into_iter()
+            .find(|track| track.id == id)
+            .expect("the track should be there");
+        assert!(corrected.is_corrected, "une vraie correction se retient");
+
+        // Les valeurs de l'analyse, telles quelles : plus rien à retenir.
+        let back = store
+            .update_beatgrid_correction(id, 120.94, 20_000)
+            .expect("the analysed values should save")
+            .into_iter()
+            .find(|track| track.id == id)
+            .expect("the track should be there");
+        assert!(
+            !back.is_corrected,
+            "enregistrer ce que l'analyse a trouvé n'est pas une correction"
+        );
+        assert_eq!(back.bpm, Some(120.94));
+        assert_eq!(back.first_beat_ms, Some(20_000));
+
+        // Un cheveu d'écart reste une correction : le seuil ne doit pas avaler
+        // un réglage que l'utilisateur a réellement posé.
+        let nudged = store
+            .update_beatgrid_correction(id, 120.942, 20_000)
+            .expect("a nudge should save")
+            .into_iter()
+            .find(|track| track.id == id)
+            .expect("the track should be there");
+        assert!(nudged.is_corrected, "deux millièmes restent une correction");
+
+        drop(store);
+        for suffix in ["", "-wal", "-shm"] {
+            let candidate =
+                std::path::PathBuf::from(format!("{}{}", database_path.to_string_lossy(), suffix));
+            let _ = fs::remove_file(candidate);
+        }
+    }
+
     /// « Restore Automatic » doit tout rendre : le tempo, le premier temps, et
     /// la mention qui dit qu'on y a touché.
     #[test]

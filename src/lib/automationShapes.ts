@@ -14,10 +14,12 @@
 import { VOLUME_FLOOR_DB, VOLUME_MAX_DB } from "./volumeCurve";
 
 export type ShapeKind = "step" | "sine" | "triangle";
-export type ShapePeriod = 0.5 | 1 | 2 | 4;
+export type ShapePeriod = 0.5 | 1 | 2 | 4 | 8;
 
 export const SHAPE_KINDS: ShapeKind[] = ["step", "sine", "triangle"];
-export const SHAPE_PERIODS: ShapePeriod[] = [0.5, 1, 2, 4];
+/* Deux mesures par cycle : ce qu'il faut pour un balayage qui respire, là où
+   quatre temps donnaient encore un motif. */
+export const SHAPE_PERIODS: ShapePeriod[] = [0.5, 1, 2, 4, 8];
 
 /**
  * Plafond de nœuds pour un seul trait, dans le même esprit que les 512
@@ -31,6 +33,18 @@ export const SHAPE_PERIODS: ShapePeriod[] = [0.5, 1, 2, 4];
  * dépassement silencieux.
  */
 export const MAX_SHAPE_NODES = 2_048;
+
+/**
+ * Ce que la traduction ajoute à la forme : le nœud qui la referme sur sa fin,
+ * et les deux ancres de repos qui l'encadrent.
+ *
+ * `MAX_SHAPE_NODES` borne la **forme dessinée**; ce qui part vers le serveur en
+ * compte trois de plus. Le serveur bornait le tout à 2048, si bien qu'un long
+ * trait à la période la plus courte arrivait à 2051 et se faisait refuser d'un
+ * message — au lieu d'être raccourci, ou simplement accepté. Les deux côtés
+ * nomment donc maintenant la même réserve.
+ */
+export const SHAPE_EDGE_NODES = 3;
 
 /** Le grain le plus fin, et le plus grossier, de chaque forme sur un cycle. */
 const SAMPLES_PER_CYCLE: Record<ShapeKind, { fine: number; coarse: number }> = {

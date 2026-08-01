@@ -174,14 +174,6 @@ fn update_track_beatgrid(
     })
 }
 
-#[tauri::command]
-fn reset_track_beatgrid(
-    id: i64,
-    state: State<'_, LibraryState>,
-) -> Result<Vec<LibraryTrack>, String> {
-    with_library(&state, |library| library.reset_beatgrid_correction(id))
-}
-
 fn with_timeline(
     state: &State<'_, LibraryState>,
     operation: impl FnOnce(&mut rusqlite::Connection) -> Result<TimelineSnapshot, String>,
@@ -1887,7 +1879,6 @@ pub fn run() {
             remove_library_track,
             update_track_beatgrid,
             refine_tapped_tempo,
-            reset_track_beatgrid,
             analyze_library_tracks,
             backfill_library_waveforms,
             bounce_mix,

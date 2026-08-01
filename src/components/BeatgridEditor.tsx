@@ -28,7 +28,6 @@ interface BeatgridEditorProps {
   onSetPreviewSpeed: (speed: number) => void;
   onReanalyze: () => void;
   onSave: (bpm: number, firstBeatMs: number) => void;
-  onReset: () => void;
 }
 
 interface PreviewTapSnapshot {
@@ -55,7 +54,6 @@ export function BeatgridEditor({
   onSetPreviewSpeed,
   onReanalyze,
   onSave,
-  onReset,
 }: BeatgridEditorProps) {
   const [bpmInput, setBpmInput] = useState(String(track.bpm ?? 120));
   const [firstBeatInput, setFirstBeatInput] = useState(((track.firstBeatMs ?? 0) / 1_000).toFixed(3));
@@ -83,6 +81,32 @@ export function BeatgridEditor({
     setSnapNote(null);
     setTapAccuracyMs(null);
   }, [track.id, track.bpm, track.firstBeatMs, track.isCorrected]);
+
+  /**
+   * Les valeurs que l'analyse a trouvées, s'il y en a.
+   *
+   * `Restore Automatic` y ramène les champs — et rien de plus. Il écrivait
+   * jusqu'ici dans la base sur-le-champ, ce qui n'a pas de sens dans une
+   * fenêtre qui a un bouton `Save` : tant qu'on n'enregistre pas, rien ne doit
+   * changer. C'est `Save` qui décide, et la base reconnaît alors que ces
+   * valeurs-là ne sont pas une correction.
+   */
+  const analysedBpm = track.analyzedBpm;
+  const analysedFirstBeatMs = track.analyzedFirstBeatMs;
+  const canRestore =
+    analysedBpm !== null
+    && analysedFirstBeatMs !== null
+    && (bpmInput !== String(analysedBpm)
+      || firstBeatInput !== (analysedFirstBeatMs / 1_000).toFixed(3));
+
+  const restoreAutomatic = () => {
+    if (analysedBpm === null || analysedFirstBeatMs === null) return;
+    setBpmInput(String(analysedBpm));
+    setFirstBeatInput((analysedFirstBeatMs / 1_000).toFixed(3));
+    setTaps([]);
+    setTapAccuracyMs(null);
+    setSnapNote("Back to the analysed grid — Save to keep it.");
+  };
 
   const bpm = parseNumber(bpmInput);
   const firstBeatSeconds = parseNumber(firstBeatInput);
@@ -389,7 +413,13 @@ export function BeatgridEditor({
           <button className="text-button" type="button" onClick={onReanalyze} disabled={busy || track.isMissing}>
             Reanalyze
           </button>
-          <button className="text-button" type="button" onClick={onReset} disabled={busy || !track.isCorrected}>
+          <button
+            className="text-button"
+            type="button"
+            onClick={restoreAutomatic}
+            disabled={busy || !canRestore}
+            title="Put the analysed tempo and downbeat back in the fields — Save to keep them"
+          >
             Restore Automatic
           </button>
         </div>
@@ -399,7 +429,7 @@ export function BeatgridEditor({
           disabled={busy || !isValid}
           onClick={() => onSave(bpm, firstBeatMs)}
         >
-          {busy ? "Saving…" : "Save Correction"}
+          {busy ? "Saving…" : "Save"}
         </button>
       </div>
     </section>

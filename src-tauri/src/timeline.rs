@@ -16,6 +16,15 @@ const BEATS_PER_MEASURE: i64 = 4;
 /// le geste a déjà borné, faute de quoi une commande forgée pourrait remplir
 /// une piste.
 const MAX_SHAPE_NODES: usize = 2_048;
+/// Le nœud qui referme la forme, et les deux ancres de repos qui l'encadrent.
+///
+/// L'interface borne la **forme dessinée** à `MAX_SHAPE_NODES`, puis ajoute ces
+/// trois-là. Le serveur borne ce qu'il **reçoit** : confondre les deux faisait
+/// refuser un long trait à la période la plus courte — 2051 nœuds arrivaient
+/// contre une limite de 2048, et le trait mourait sur un message au lieu de
+/// s'inscrire. Miroir de `SHAPE_EDGE_NODES` dans `src/lib/automationShapes.ts`.
+const SHAPE_EDGE_NODES: usize = 3;
+const MAX_STROKE_NODES: usize = MAX_SHAPE_NODES + SHAPE_EDGE_NODES;
 const MAX_TIMELINE_BEAT: f64 = 1_000_000.0;
 const MAX_LANE: i64 = 2;
 /// Niveau d'une piste là où l'utilisateur n'a rien décidé.
@@ -142,6 +151,13 @@ pub struct TimelineClip {
     /// instantané d'un rendu de deux minutes, et l'interface doit le savoir
     /// **avant** de cliquer pour ouvrir la bonne fenêtre.
     pub has_stems: bool,
+    /// Si le fichier cuit a disparu du disque.
+    ///
+    /// Le clip reste « cuit » — son automation retirée vit dans
+    /// l'enregistrement et doit rester récupérable — mais il joue sa source, ce
+    /// qui ne s'entend pas comme une panne. Sans ce drapeau, une touche allumée
+    /// affirme un effet que personne n'applique.
+    pub bake_is_missing: bool,
     /// Si ce clip joue un fichier cuit plutôt que sa source.
     ///
     /// L'automation et l'égalisation qu'il portait sont alors **dans** le son :
@@ -233,7 +249,8 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
                     clips.is_sidechain_key,
                     clips.stem,
                     EXISTS(SELECT 1 FROM clip_stems WHERE clip_stems.clip_id = clips.id),
-                    bakes.id IS NOT NULL
+                    bakes.id IS NOT NULL,
+                    bakes.file_path
              FROM timeline_clips AS clips
              JOIN library_tracks AS tracks ON tracks.id = clips.library_track_id
              LEFT JOIN track_waveforms AS waveforms ON waveforms.track_id = tracks.id
@@ -270,6 +287,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
                 row.get::<_, String>(21)?,
                 row.get::<_, i64>(22)? != 0,
                 row.get::<_, i64>(23)? != 0,
+                row.get::<_, Option<String>>(24)?,
             ))
         })
         .map_err(database_read_error)?;
@@ -301,6 +319,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
             stem,
             has_stems,
             is_baked,
+            bake_file_path,
         ) = row.map_err(database_read_error)?;
         let geometry = clip_geometry(
             duration_ms,
@@ -345,6 +364,9 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
             stem,
             has_stems,
             is_baked,
+            bake_is_missing: bake_file_path
+                .as_deref()
+                .is_some_and(|path| !Path::new(path).is_file()),
             needs_analysis: geometry.needs_analysis,
             eq_settings,
             waveform,
@@ -1619,7 +1641,7 @@ pub fn draw_volume_shape(
     validate_lane(lane)?;
     let from = validate_volume_beat(start_beat.min(end_beat))?;
     let to = validate_volume_beat(start_beat.max(end_beat))?;
-    if nodes.len() > MAX_SHAPE_NODES {
+    if nodes.len() > MAX_STROKE_NODES {
         return Err("This stroke asks for more nodes than a lane can hold.".to_owned());
     }
     for (_, gain_db) in nodes {
@@ -1662,7 +1684,7 @@ pub fn draw_pan_shape(
     validate_lane(lane)?;
     let from = validate_pan_beat(start_beat.min(end_beat))?;
     let to = validate_pan_beat(start_beat.max(end_beat))?;
-    if nodes.len() > MAX_SHAPE_NODES {
+    if nodes.len() > MAX_STROKE_NODES {
         return Err("This stroke asks for more nodes than a lane can hold.".to_owned());
     }
     for (_, value) in nodes {

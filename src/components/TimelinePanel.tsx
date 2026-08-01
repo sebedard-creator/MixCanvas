@@ -17,7 +17,7 @@ import {
 } from "../lib/timelinePointerDrag";
 import { tempoBpmAtBeat, tempoCurveGeometry, tempoSecondsAtBeat } from "../lib/tempoCurve";
 import { BEATS_PER_MEASURE, snapTimelineBeat } from "../lib/timelineSnap";
-import { resolveViewShortcut, shouldCaptureTimelineZoom } from "../lib/timelineShortcut";
+import { isDeleteShortcut, resolveViewShortcut, shouldCaptureTimelineZoom } from "../lib/timelineShortcut";
 import {
   FILTER_BUBBLE_DEFAULT_WIDTH_BEATS,
   FILTER_BUBBLE_MAX_WIDTH_BEATS,
@@ -182,6 +182,8 @@ interface TimelinePanelProps {
   onBounceMix: () => Promise<void>;
   onTogglePlayback: () => Promise<void>;
   onSeek: (positionBeat: number) => Promise<void>;
+  /** Règle le tempo d'un morceau depuis son nœud sur la règle. */
+  onSetTrackTempo: (libraryTrackId: number, bpm: number) => Promise<void>;
   selectedLane: number;
   onSelectLane: (lane: number) => void;
   onSetLaneMuted: (lane: number, isMuted: boolean) => Promise<void>;
@@ -337,6 +339,7 @@ export function TimelinePanel({
   onBounceMix,
   onTogglePlayback,
   onSeek,
+  onSetTrackTempo,
   selectedLane,
   onSelectLane,
   onSetLaneMuted,
@@ -424,6 +427,14 @@ export function TimelinePanel({
    * même avance.
    */
   const [hoveredTool, setHoveredTool] = useState<{ clipId: number; tool: SmartTool } | null>(null);
+  /* Le nœud de tempo qu'on est en train de régler au clavier, s'il y en a un. */
+  const [tempoEdit, setTempoEdit] = useState<
+    { clipId: number; libraryTrackId: number; fileName: string; x: number; value: string } | null
+  >(null);
+  /* Lu par l'écouteur de `Delete`, qui ne doit pas se reposer à chaque édition
+     en cours. */
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
 
   /**
    * Où finit la barre de titre de **ce** clip, mesurée sur elle.
@@ -792,6 +803,40 @@ export function TimelinePanel({
     return () => window.removeEventListener("keydown", handleViewShortcut);
   }, [drawArmable, drawShape]);
 
+  /**
+   * `Delete` retire le clip sous la souris.
+   *
+   * C'est la souris qui désigne, pas la sélection : on regarde déjà le clip
+   * dont on veut se débarrasser, et la croix de sa barre demande de viser
+   * quatorze pixels. Le survol est lu par une référence — l'écouteur se pose
+   * une fois, plutôt que de se démonter à chaque clip traversé.
+   */
+  const hoveredClipRef = useRef<number | null>(null);
+  hoveredClipRef.current = hoveredTool?.clipId ?? null;
+
+  useEffect(() => {
+    const handleDelete = (event: KeyboardEvent) => {
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (
+        !isDeleteShortcut(
+          event.key,
+          { shift: event.shiftKey, ctrl: event.ctrlKey, alt: event.altKey, meta: event.metaKey },
+          target?.tagName,
+          target?.isContentEditable,
+        )
+      ) {
+        return;
+      }
+      const clipId = hoveredClipRef.current;
+      if (clipId === null || busyRef.current) return;
+      event.preventDefault();
+      if (event.repeat) return;
+      void onRemoveClip(clipId);
+    };
+    window.addEventListener("keydown", handleDelete);
+    return () => window.removeEventListener("keydown", handleDelete);
+  }, [onRemoveClip]);
+
   useLayoutEffect(() => {
     // Zoom and transport following belong to the layout. Keep the browser's
     // independent native scroll offset at zero so it cannot add a second,
@@ -1046,6 +1091,52 @@ export function TimelinePanel({
     if (nearest?.clipId === null || nearest === null) return;
     const clip = timeline.clips.find((candidate) => candidate.id === nearest.clipId);
     if (clip) startTempoPointDrag(event, clip);
+  };
+
+  /**
+   * Le clic droit sur la règle propose de **taper** le tempo du nœud le plus
+   * proche.
+   *
+   * Le glissé ne déplace le nœud que dans le temps; la valeur, elle, ne se
+   * réglait que dans l'éditeur de grille. Or on lit le chiffre juste là, sur la
+   * règle — c'est là qu'on veut le corriger.
+   */
+  const openTempoEdit = (event: ReactMouseEvent<SVGRectElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (tempoEditingLocked) return;
+    const bounds = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
+    if (!bounds) return;
+    const pointerX = event.clientX - bounds.left;
+    const nearest = tempoCurve.markers
+      .filter((marker) => marker.clipId !== null)
+      .reduce<(typeof tempoCurve.markers)[number] | null>(
+        (closest, marker) =>
+          closest === null || Math.abs(marker.x - pointerX) < Math.abs(closest.x - pointerX)
+            ? marker
+            : closest,
+        null,
+      );
+    if (!nearest?.clipId) return;
+    const clip = timeline.clips.find((candidate) => candidate.id === nearest.clipId);
+    if (!clip?.bpm) return;
+    setTempoEdit({
+      clipId: clip.id,
+      libraryTrackId: clip.libraryTrackId,
+      fileName: clip.fileName,
+      x: nearest.x,
+      value: clip.bpm.toFixed(3),
+    });
+  };
+
+  const commitTempoEdit = () => {
+    if (!tempoEdit) return;
+    const bpm = Number(tempoEdit.value.replace(",", "."));
+    setTempoEdit(null);
+    // Une saisie qui ne veut rien dire laisse le tempo tel quel : répondre zéro
+    // à une frappe malheureuse arrêterait le morceau sans prévenir.
+    if (!Number.isFinite(bpm) || bpm < 40 || bpm > 300) return;
+    void onSetTrackTempo(tempoEdit.libraryTrackId, bpm);
   };
 
   const moveTempoPointDraft = (event: ReactPointerEvent<SVGRectElement>) => {
@@ -1857,7 +1948,8 @@ export function TimelinePanel({
                   <strong>Automation lines</strong>
                   <span>Showing: {AUTOMATION_VIEW_LABELS[automationView]}</span>
                   <span>Cycles pan, volume, both, hidden</span>
-                  <span><kbd>E</kbd> from the keyboard</span>
+                  <span><kbd>E</kbd> cycles · <kbd>V</kbd> volume node · <kbd>P</kbd> pan node</span>
+                  <span>Both drop at the playhead, on the selected track</span>
                 </span>
                 </span>
 
@@ -2142,6 +2234,7 @@ export function TimelinePanel({
                   onPointerMove={moveTempoPointDraft}
                   onPointerUp={finishTempoPointDrag}
                   onPointerCancel={cancelTempoPointDrag}
+                  onContextMenu={openTempoEdit}
                   onClick={(event) => event.stopPropagation()}
                 />
               )}
@@ -2178,6 +2271,45 @@ export function TimelinePanel({
                 style={{ left: measure * 4 * pixelsPerBeat }}
               />
             ))}
+            {tempoEdit && (
+              /* Posée sur le nœud qu'elle règle, pas au coin de l'écran : on
+                 voit le chiffre qu'on change à l'endroit où on l'a lu. */
+              <div
+                className="tempo-edit-popover"
+                style={{ left: tempoEdit.x }}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <label htmlFor="tempo-edit-input">{tempoEdit.fileName}</label>
+                <input
+                  id="tempo-edit-input"
+                  type="number"
+                  min="40"
+                  max="300"
+                  step="0.001"
+                  autoFocus
+                  value={tempoEdit.value}
+                  onChange={(event) =>
+                    setTempoEdit((current) =>
+                      current ? { ...current, value: event.currentTarget.value } : current,
+                    )
+                  }
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      commitTempoEdit();
+                    } else if (event.key === "Escape") {
+                      event.preventDefault();
+                      setTempoEdit(null);
+                    }
+                  }}
+                  /* Quitter le champ abandonne, comme `Échap` : une valeur à
+                     moitié tapée qu'on laisse en cliquant ailleurs ne doit pas
+                     changer le tempo du mix. */
+                  onBlur={() => setTempoEdit(null)}
+                />
+                <span>BPM · Enter to set</span>
+              </div>
+            )}
           </div>
 
           <div
@@ -2617,7 +2749,7 @@ export function TimelinePanel({
                           l'automation retirée est gardée pour ça. */}
                       <button
                         type="button"
-                        className={`clip-bake-btn${clip.isBaked ? " is-active" : ""}`}
+                        className={`clip-bake-btn${clip.isBaked ? " is-active" : ""}${clip.bakeIsMissing ? " is-missing" : ""}`}
                         disabled={busy || clip.isMissing || clip.needsAnalysis}
                         aria-pressed={clip.isBaked}
                         onClick={(event) => {
@@ -2625,12 +2757,14 @@ export function TimelinePanel({
                           void onSetClipBaked(clip.id, !clip.isBaked);
                         }}
                         title={
-                          clip.isBaked
-                            ? "Baked — click to undo it and bring the automation back (replaces what was drawn since)"
-                            : "Bake this clip: render its EQ and this lane's automation into its own file, then flatten the lane under it"
+                          clip.bakeIsMissing
+                            ? "Baked, but its file is gone — the clip is playing its source. Click to undo and get the automation back, then bake again."
+                            : clip.isBaked
+                              ? "Baked — click to undo it and bring the automation back (replaces what was drawn since)"
+                              : "Bake this clip: render its EQ and this lane's automation into its own file, then flatten the lane under it"
                         }
                       >
-                        BAKE
+                        {clip.bakeIsMissing ? "BAKE?" : "BAKE"}
                       </button>
                       <button
                         type="button"

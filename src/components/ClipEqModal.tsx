@@ -7,6 +7,7 @@ import {
   CLIP_EQ_PEAK_MAX_DB,
   CLIP_EQ_SILENCE_DB,
   DEFAULT_CLIP_EQ,
+  graphPointToViewBox,
   isClipEqSilent,
   parseClipEqGainDb,
   sanitizeClipEq,

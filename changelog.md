@@ -6,7 +6,42 @@ Les entrées sont classées de la plus récente à la plus ancienne. Une journé
 
 ## 2026-07-30
 
+- **Le balayage de fermeture effaçait les médias d'un projet enregistré.** C'est le défaut rapporté — un projet rouvert se dit cuit sans rien jouer. Sa prémisse, écrite hier, était fausse : « si aucune ligne ne le désigne, rien ne pourra jamais le rouvrir » ne tient pas dès qu'un projet **sur le disque** porte ses propres références. Vider la timeline suffisait à faire disparaître les lignes, et la fermeture emportait le fichier cuit.
+  - Le balayage ne descend plus que dans **`Scratch`**, le seul dossier dont on puisse affirmer qu'aucun projet ne le réclame. Ce qui traîne dans un dossier nommé y reste : un ménage volontaire, déclenché en connaissance de cause, reste à faire.
+  - Le cas devient **visible** au lieu d'être silencieux : un clip dont le fichier cuit a disparu affiche `BAKE?` en ambre et dit dans son infobulle qu'il joue sa source. Il reste « cuit », parce que l'automation retirée doit rester récupérable — décuire la rend, puis on recuit.
+
+- **Glisser des MP3 depuis l'explorateur les importe.** Le dépôt est accepté **partout dans la fenêtre** : un MP3 lâché ici ne peut aller nulle part ailleurs, et exiger de viser le panneau n'ajouterait que des échecs. Le panneau s'allume pendant le survol pour dire où ça atterrit, et l'import fait déjà le tri — il descend dans les dossiers et ne retient que les MP3.
+  - Le pont natif est appelé sous protection : `getCurrentWebview()` lève quand il n'existe pas, et emportait tout le rendu — une fenêtre blanche pour une intégration facultative. Sans pont, on perd le dépôt, et rien d'autre.
+
+- **`Delete` retire le clip sous la souris.** C'est le pointeur qui désigne, pas la sélection : on regarde déjà le clip dont on veut se débarrasser, et la croix de sa barre demande de viser quatorze pixels. `Backspace` fait la même chose, pour les claviers qui n'ont que lui. Jamais pendant une saisie — effacer un caractère dans un champ ne doit pas emporter un clip — et jamais avec un modificateur, `Ctrl+Backspace` appartenant à l'édition de texte.
+
+- **Le compteur de BPM s'attrape sur toute sa surface.** Le point et son étiquette sont peints par-dessus la zone de préhension, et une forme SVG capte le pointeur par défaut : ils l'interceptaient précisément là où l'on vise. La main n'apparaissait que dans les interstices. Rendus transparents au pointeur, ils laissent passer — vérifié : le centre du badge, le chiffre et le disque renvoient tous la surface de préhension, curseur `grab`.
+
+- **Clic droit sur la règle : le tempo se tape.** Le glissé ne déplaçait le nœud que dans le temps; sa valeur ne se réglait que dans l'éditeur de grille, alors qu'on lit le chiffre juste là. La saisie se pose sur le nœud qu'elle règle. Elle passe par le **même chemin** que l'éditeur de grille — un nœud de tempo *est* le BPM du morceau —, donc mêmes contrôles et même règle qui efface la correction quand on retape la valeur de l'analyse. Une saisie qui ne veut rien dire laisse le tempo tel quel, et quitter le champ abandonne comme `Échap`.
+
+- **Le tri « In Use » suit l'ordre du mix.** Un simple oui/non rangeait les morceaux utilisés dans un tas informe; ils sortent maintenant dans l'ordre où on les entend, le premier clip de chaque morceau faisant foi. Les inutilisés restent en queue quel que soit le sens — une liste dont la fin change de contenu selon le sens se relit mal.
+
+- **Le crayon gagne une période de huit temps**, pour un balayage qui respire là où quatre donnaient encore un motif.
+  - En le testant, un défaut plus ancien est tombé : **un long trait à la période la plus courte était refusé**. L'interface bornait la forme *dessinée* à 2048 nœuds, puis ajoutait le nœud de fermeture et les deux ancres de repos — 2051 arrivaient contre une limite serveur de 2048, et le trait mourait sur un message. Les deux côtés nomment désormais la même réserve : l'un borne ce qu'il dessine, l'autre ce qu'il reçoit.
+
+- **Les poignées de l'égaliseur, `V` et `P` dans l'aide de `VIEW`** : voir plus bas pour les poignées; l'aide rappelle maintenant que les deux touches posent un nœud à la tête de lecture, sur la piste choisie.
+
+
 - **Une recommandation de performance waveform est formalisée.** `waveform_performance_recommendation.md` documente l'état actuel, le rôle du cache SQLite déjà présent et la direction retenue : cache multi-résolution, sélection selon le viewport, canvas 2D et virtualisation des clips hors champ. C'est une décision de conception seulement; aucun rendu existant n'est modifié par cette entrée.
+
+## 2026-07-30
+
+- **Les poignées de l'égaliseur suivent enfin le curseur.** Le graphe est un SVG en `width: 100 %` avec un `viewBox` fixe de 580 unités : sa largeur à l'écran n'est presque jamais celle de son système de coordonnées. Le glissé lisait `clientX − rect.left`, donc des **pixels d'écran**, et les donnait à un dessin qui attend des **unités de viewBox**. Mesuré à la largeur réelle de la fenêtre : la main parcourt 200 px, la poignée en parcourt 179 — vingt et un pixels de retard, croissants avec la distance. D'où l'élastique.
+  - La conversion vit dans une fonction nommée et testée, dont l'invariant est celui qui compte : la fraction parcourue à l'écran est la fraction parcourue dans le dessin, à n'importe quelle largeur. Un élément replié rend l'origine plutôt qu'un point infini.
+
+- **« Restore Automatic » ne touche plus la base, et « Save Correction » devient « Save ».** Le bouton écrivait sur-le-champ, ce qui n'a pas de sens dans une fenêtre qui a un bouton d'enregistrement : tant qu'on n'enregistre pas, rien ne doit changer. Il remet maintenant les champs aux valeurs de l'analyse, et c'est tout.
+  - **C'est l'enregistrement qui reconnaît qu'il n'y a plus rien à retenir.** Écrire exactement ce que l'analyse avait trouvé n'est pas une correction : la base efface alors le réglage manuel au lieu d'en garder un doublon, et la mention repasse de `EDITED` à `EDIT`. La règle vit côté base, en un seul endroit — « Restore Automatic » et taper ces mêmes valeurs à la main sont le même geste et doivent finir au même endroit.
+  - Un écart de deux millièmes de BPM reste une correction : le seuil ne doit pas avaler un réglage réellement posé. Un test le vérifie dans les deux sens.
+  - La commande `reset_track_beatgrid` disparaît avec son gestionnaire : une seule porte d'écriture, celle de `Save`.
+
+- **Les extrémités du filtre ont été vérifiées, et il n'y a rien à y gagner.** La question était de savoir si la course sert à filtrer des fréquences qu'on n'entend pas. Mesures : le passe-bas ouvre à 18 kHz, mais **2,2 % de sa course seulement** vit au-dessus de 16 kHz — à 5 % de course il est déjà à 13,8 kHz. Le ramener à 16 kHz gagnerait 2,2 % de granularité, au prix de changer le son de toutes les courbes déjà dessinées. Le passe-haut, lui, part de 50 Hz : sa première octave est en plein grave, tout sauf inaudible.
+  - Le vrai plafond de granularité est ailleurs, et il est net : la bande fait **43 px** de haut pour ±1, soit **0,35 octave par pixel**. Près de l'ouverture, un pixel saute presque 4 kHz. C'est la hauteur de la bande qui limite, pas la plage de fréquences.
+  - À noter aussi : la valeur zéro est un vrai contournement, et le filtre est dosé en fondu par la valeur elle-même. Les premiers pixels sont donc doublement doux — cinq pour cent de course ne mélangent que cinq pour cent de signal filtré. La zone fine près du neutre existe déjà, par conception.
 
 ## 2026-07-29
 

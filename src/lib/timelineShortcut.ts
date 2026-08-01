@@ -99,6 +99,28 @@ export function resolveViewShortcut(
   }
 }
 
+/**
+ * Si cette frappe demande de supprimer le clip sous la souris.
+ *
+ * `Delete` et `Backspace` : le premier est le geste attendu sur un clavier
+ * complet, le second sur un portable qui n'a que lui. Aucun modificateur —
+ * `Ctrl+Delete` et compagnie appartiennent à l'édition de texte, et une
+ * suppression déclenchée par un raccourci voisin serait un mauvais réveil.
+ *
+ * La même garde que les autres raccourcis : jamais pendant une saisie, faute de
+ * quoi effacer un caractère dans un champ emporterait un clip.
+ */
+export function isDeleteShortcut(
+  key: string,
+  modifiers: { shift: boolean; ctrl: boolean; alt: boolean; meta: boolean },
+  targetTagName?: string,
+  isContentEditable = false,
+): boolean {
+  if (isTextEntryTarget(targetTagName, isContentEditable)) return false;
+  if (modifiers.shift || modifiers.ctrl || modifiers.alt || modifiers.meta) return false;
+  return key === "Delete" || key === "Backspace";
+}
+
 export function shouldCaptureTimelineZoom(
   code: string,
   targetTagName?: string,

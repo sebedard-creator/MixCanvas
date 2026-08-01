@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   MAX_SHAPE_NODES,
+  SHAPE_EDGE_NODES,
   SHAPE_KINDS,
   SHAPE_PERIODS,
   panShapeNodes,
@@ -170,6 +171,43 @@ describe("panShapeNodes", () => {
     for (const node of panShapeNodes(0, 8, 5, "sine", 1)) {
       expect(node.value).toBeGreaterThanOrEqual(-1);
       expect(node.value).toBeLessThanOrEqual(1);
+    }
+  });
+});
+
+describe("the eight-beat period", () => {
+  it("sweeps one cycle over two bars", () => {
+    // Le cran le plus long : deux mesures par cycle, pour un balayage qui
+    // respire là où quatre temps donnaient encore un motif.
+    const points = shapePoints(0, 8, "sine", 8);
+    // La forme est resserrée d'un centième de temps à chaque bout, pour laisser
+    // la place aux ancres de repos : elle ne part donc pas exactement de zéro.
+    expect(points[0].beat).toBeCloseTo(0.01, 6);
+    expect(points[points.length - 1].beat).toBeLessThanOrEqual(8);
+    // Une seule remontée par le zéro dans le sens montant : un cycle, pas deux.
+    let risingZeros = 0;
+    for (let i = 1; i < points.length; i++) {
+      if (points[i - 1].unit < 0 && points[i].unit >= 0) risingZeros += 1;
+    }
+    expect(risingZeros).toBe(1);
+  });
+
+  it("stays inside the node budget over a long stroke", () => {
+    // Le plafond protège la base : un trait de deux cents mesures ne doit pas
+    // écrire plus de nœuds qu'on n'en accepte, quelle que soit la période.
+    // Ce qui compte est ce que le **serveur** reçoit : la forme, son nœud de
+    // fermeture et les deux ancres. Le budget interne les ignorait, et un long
+    // trait à la période la plus courte se faisait refuser.
+    for (const kind of SHAPE_KINDS) {
+      for (const period of SHAPE_PERIODS) {
+        for (const span of [100, 400, 800, 4_000]) {
+          const budget = MAX_SHAPE_NODES + SHAPE_EDGE_NODES;
+          expect(volumeShapeNodes(0, span, -4, -20, kind, period).length)
+            .toBeLessThanOrEqual(budget);
+          expect(panShapeNodes(0, span, 0.8, kind, period).length)
+            .toBeLessThanOrEqual(budget);
+        }
+      }
     }
   });
 });

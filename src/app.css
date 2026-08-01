@@ -134,6 +134,24 @@ button:disabled{
     0 8px 24px rgba(0, 0, 0, 0.45);
 }
 
+/* Un fichier venu du bureau survole la fenêtre : le panneau dit où il
+   atterrira. Le dépôt est accepté partout — un MP3 lâché ici ne peut aller
+   nulle part ailleurs, et exiger de viser juste n'ajouterait que des échecs —
+   mais il faut bien montrer la destination.
+
+   Chaque bord est nommé un par un : `.library-panel` pose `border-top-color`
+   et `border-bottom-color` après son `border`, si bien qu'un simple
+   `border-color` ici se faisait reprendre sur deux côtés sur quatre. */
+.library-panel.library-panel--drop{
+  border-color: #38bdf8;
+  border-top-color: #7dd3fc;
+  border-bottom-color: #0284c7;
+  box-shadow:
+    inset 0 0 0 1px rgba(56, 189, 248, 0.45),
+    0 0 22px rgba(56, 189, 248, 0.35),
+    0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
 .library-header{
   display: flex;
   align-items: center;
@@ -1023,6 +1041,67 @@ button:disabled{
   fill: transparent;
   stroke: transparent;
   cursor: grab;
+}
+
+/* Le point et son étiquette sont peints **par-dessus** la surface de
+   préhension, et une forme SVG capte le pointeur par défaut : ils
+   l'interceptaient donc précisément là où l'on vise. La main n'apparaissait que
+   dans les interstices, et un appui sur le chiffre ne prenait pas.
+   Rendus transparents au pointeur, ils laissent passer — et toute la bande,
+   compteur compris, devient une prise. */
+/* La saisie du tempo, posée sur le nœud qu'elle règle. Au-dessus de la règle
+   plutôt que dedans : trente-quatre pixels de haut n'accueillent pas un champ,
+   et la faire déborder vaut mieux que la comprimer. */
+.tempo-edit-popover{
+  position: absolute;
+  z-index: 40;
+  top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  transform: translateX(-50%);
+  border: 1px solid #0284c7;
+  border-radius: 6px;
+  background: #0a192f;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
+  color: #e6f2fb;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.tempo-edit-popover label{
+  max-width: 160px;
+  overflow: hidden;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-overflow: ellipsis;
+  opacity: 0.7;
+}
+
+.tempo-edit-popover input{
+  width: 72px;
+  padding: 3px 5px;
+  border: 1px solid #38bdf8;
+  border-radius: 4px;
+  background: #04101d;
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.tempo-edit-popover span{
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  opacity: 0.55;
+}
+
+.timeline-tempo-curve circle,
+.timeline-tempo-curve .tempo-text-badge{
+  pointer-events: none;
 }
 
 .timeline-tempo-curve .timeline-tempo-drag-surface:active{
@@ -4516,6 +4595,16 @@ body,
   box-shadow:
     inset 0 1px 1px rgba(255, 255, 255, 0.35),
     0 0 6px rgba(139, 92, 246, 0.5);
+}
+
+/* Cuit, mais le fichier n'est plus là : le clip joue sa source. L'ambre dit
+   « quelque chose ne va pas » sans crier à l'erreur — rien n'est perdu, et
+   l'automation se récupère en décuisant. */
+.clip-bake-btn.is-missing.is-active{
+  border-color: #b45309;
+  border-top-color: #fbbf24;
+  background: linear-gradient(180deg, #f59e0b 0%, #b45309 100%);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.35);
 }
 
 .clip-bake-btn.is-active:hover:not(:disabled){

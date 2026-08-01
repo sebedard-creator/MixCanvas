@@ -23,6 +23,7 @@ function clip(id: number, lane: number, startBeat: number, endBeat: number): Tim
     stem: "full",
     hasStems: false,
   isBaked: false,
+  bakeIsMissing: false,
     isMissing: false,
     needsAnalysis: false,
     waveform: null,

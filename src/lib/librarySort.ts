@@ -28,9 +28,20 @@ function compareOptionalNumber(left: number | null, right: number | null, direct
   return (left - right) * direction;
 }
 
+/**
+ * Trie la bibliothèque.
+ *
+ * `timelineOrder` donne, pour un morceau posé sur la timeline, son rang dans
+ * l'ordre où on l'entend — et rien pour les autres. Un simple « oui/non »
+ * rangeait les morceaux utilisés dans un tas informe : ce qu'on veut voir,
+ * c'est le mix dans l'ordre. Les absents suivent la même règle que les autres
+ * valeurs manquantes du fichier — ils passent en dernier, quel que soit le sens
+ * du tri, parce qu'une liste dont la queue change de contenu selon le sens se
+ * relit mal.
+ */
 export function sortLibraryTracks(
   tracks: readonly LibraryTrack[],
-  inUseTrackIds: ReadonlySet<number>,
+  timelineOrder: ReadonlyMap<number, number>,
   sort: LibrarySort,
 ): LibraryTrack[] {
   const direction = sort.direction === "ascending" ? 1 : -1;
@@ -48,7 +59,11 @@ export function sortLibraryTracks(
         comparison = compareOptionalNumber(left.bpm, right.bpm, direction);
         break;
       case "inUse":
-        comparison = (Number(inUseTrackIds.has(left.id)) - Number(inUseTrackIds.has(right.id))) * direction;
+        comparison = compareOptionalNumber(
+          timelineOrder.get(left.id) ?? null,
+          timelineOrder.get(right.id) ?? null,
+          direction,
+        );
         break;
     }
 

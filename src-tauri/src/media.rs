@@ -209,7 +209,7 @@ fn retargeted(source: &Path, root: &Path, from: &str, to: &str) -> Option<PathBu
     Some(root.join(to).join(relative))
 }
 
-/// Efface les fichiers vers lesquels **plus aucune ligne ne pointe**.
+/// Efface les fichiers oubliés dans `Scratch`, et **seulement** là.
 ///
 /// C'est un test plus fort que « inutilisé dans la séquence », et volontairement
 /// : un stem coûte deux minutes de calcul, et une suppression qui se trompe au
@@ -217,8 +217,18 @@ fn retargeted(source: &Path, root: &Path, from: &str, to: &str) -> Option<PathBu
 /// n'est plus possible — les perd pour de bon. Si aucune ligne ne le désigne,
 /// en revanche, rien ne pourra jamais le rouvrir. C'est vrai par construction.
 ///
-/// Ne descend que dans la racine des médias : un fichier hors d'elle n'a pas
-/// été écrit par le programme, et n'est pas à lui.
+/// **Les dossiers de projets nommés ne sont jamais touchés.** La première
+/// version balayait tout ce que la base ne désignait pas, en s'appuyant sur
+/// l'idée que « si aucune ligne ne le désigne, rien ne pourra jamais le
+/// rouvrir ». C'est faux : un projet enregistré porte ses propres références,
+/// sur le disque, hors de la base. Vider la timeline suffisait à faire
+/// disparaître les lignes, et la fermeture emportait alors un fichier cuit dont
+/// le projet avait besoin — il se rouvrait « cuit » sans plus rien jouer.
+///
+/// `Scratch` est le seul dossier dont on puisse affirmer qu'aucun projet ne le
+/// réclame : c'est celui d'une session qui n'a pas de nom. Ce qui traîne dans
+/// un dossier nommé y reste, et un ménage volontaire — que l'utilisateur
+/// déclenche en connaissance de cause — reste à faire.
 pub fn sweep_orphans(connection: &Connection, root: &Path) -> Result<Vec<PathBuf>, String> {
     if !root.is_dir() {
         return Ok(Vec::new());
@@ -240,6 +250,9 @@ pub fn sweep_orphans(connection: &Connection, root: &Path) -> Result<Vec<PathBuf
 
     let mut removed = Vec::new();
     for project in read_dir(root) {
+        if project.file_name().and_then(|name| name.to_str()) != Some(SCRATCH_PROJECT) {
+            continue;
+        }
         for kind in read_dir(&project) {
             for file in read_dir(&kind) {
                 if !file.is_file() || referenced.contains(&comparable(&file)) {
@@ -407,11 +420,41 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// Le balayage efface un fichier dont un **projet enregistré** a besoin.
+    ///
+    /// C'est le défaut rapporté : un projet rouvert se dit cuit sans jouer son
+    /// fichier. La prémisse du balayage — « si aucune ligne ne le désigne, rien
+    /// ne pourra jamais le rouvrir » — est fausse dès qu'un projet sur le
+    /// disque porte lui aussi des références. Vider la timeline suffit à faire
+    /// disparaître les lignes, et la fermeture emporte alors le fichier.
+    #[test]
+    fn the_sweep_must_not_take_a_saved_project_s_media() {
+        let root = scratch_root("saved");
+        let folder = project_media_folder(&root, "Soirée", "bakes").expect("folder");
+        let baked = folder.join("clip-1-42.wav");
+        fs::write(&baked, b"audio").expect("bake should be written");
+
+        // La session a été vidée : plus une seule ligne ne désigne ce fichier.
+        // Le projet « Soirée », lui, existe toujours sur le disque et le
+        // réclamera à la prochaine ouverture.
+        let connection = memory_db();
+
+        let removed = sweep_orphans(&connection, &root).expect("the sweep should run");
+
+        assert!(
+            baked.is_file(),
+            "le fichier d'un projet nommé a été effacé — le projet ne le retrouvera plus"
+        );
+        assert!(removed.is_empty());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// Le balayage n'efface que ce vers quoi plus rien ne pointe.
     #[test]
     fn the_sweep_only_takes_what_nothing_refers_to() {
         let root = scratch_root("sweep");
-        let folder = project_media_folder(&root, "Soirée", "stems").expect("folder");
+        let folder = project_media_folder(&root, SCRATCH_PROJECT, "stems").expect("folder");
         let kept = folder.join("used.wav");
         let orphan = folder.join("forgotten.wav");
         fs::write(&kept, b"audio").expect("kept should be written");

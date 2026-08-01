@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { BeatgridEditor } from "./components/BeatgridEditor";
@@ -120,6 +121,8 @@ function App() {
      plusieurs minutes sans retour visible passe pour un gel. */
   const [bounceProgress, setBounceProgress] = useState<number | null>(null);
   const [stemProgress, setStemProgress] = useState<number | null>(null);
+  /** Vrai pendant qu'un fichier venu du bureau survole la fenêtre. */
+  const [fileDropActive, setFileDropActive] = useState(false);
   /**
    * Ce que le rendu hors ligne en cours est en train de faire.
    *
@@ -476,6 +479,56 @@ function App() {
     }
   }, [analyzeLibraryTracks]);
 
+  /* L'import est lu par une référence : l'écouteur natif se pose une fois, et
+     ne se démonte pas à chaque fois que la bibliothèque change. */
+  const importLibraryPathsRef = useRef(importLibraryPaths);
+  importLibraryPathsRef.current = importLibraryPaths;
+
+  /**
+   * Les fichiers lâchés depuis l'explorateur entrent dans la bibliothèque.
+   *
+   * Le dépôt est accepté **partout dans la fenêtre**, pas seulement sur le
+   * panneau : un MP3 lâché ici ne peut aller nulle part ailleurs, et exiger de
+   * viser juste n'ajouterait que des échecs. Le panneau s'allume pendant le
+   * survol pour dire où ça atterrit.
+   *
+   * Le tri est fait par l'import : il descend dans les dossiers et ne retient
+   * que les MP3, donc un dossier entier — ou un mélange — se lâche tel quel.
+   */
+  useEffect(() => {
+    // `getCurrentWebview()` lève quand le pont natif n'est pas là — dans un
+    // navigateur ordinaire, pendant le développement de l'interface. Non
+    // protégé, il emportait tout le rendu : une fenêtre blanche pour une
+    // intégration facultative. Sans pont, on perd le dépôt de fichiers, et
+    // rien d'autre.
+    let stop: (() => void) | null = null;
+    let cancelled = false;
+    try {
+      void getCurrentWebview()
+        .onDragDropEvent((event) => {
+          if (event.payload.type === "enter" || event.payload.type === "over") {
+            setFileDropActive(true);
+            return;
+          }
+          setFileDropActive(false);
+          if (event.payload.type === "drop") {
+            void importLibraryPathsRef.current(event.payload.paths);
+          }
+        })
+        .then((unlisten) => {
+          if (cancelled) unlisten();
+          else stop = unlisten;
+        })
+        .catch(() => {});
+    } catch {
+      // Pas de pont : pas de dépôt de fichiers.
+    }
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, []);
+
   const addMp3Files = useCallback(async () => {
     setError(null);
 
@@ -588,21 +641,20 @@ function App() {
     [refreshTimeline],
   );
 
-  const resetBeatgridCorrection = useCallback(async (track: LibraryTrack) => {
-    setGridBusy(true);
-    setError(null);
-
-    try {
-      const tracks = await invoke<LibraryTrack[]>("reset_track_beatgrid", { id: track.id });
-      setLibrary(tracks);
-      await refreshTimeline();
-      setLibraryMessage(`${track.fileName} now uses the automatic analysis again.`);
-    } catch (gridError) {
-      setError(errorMessage(gridError));
-    } finally {
-      setGridBusy(false);
-    }
-  }, [refreshTimeline]);
+  /**
+   * Règle le tempo d'un morceau depuis son nœud sur la règle.
+   *
+   * Un nœud de tempo **est** le BPM du morceau posé à cet endroit : l'éditer
+   * revient à corriger sa grille, et cela passe donc par le même chemin que
+   * l'éditeur de grille — mêmes contrôles, même règle qui efface la correction
+   * quand on retape la valeur de l'analyse. Le premier temps ne bouge pas :
+   * on règle le tempo, pas la phase.
+   */
+  const setTrackTempoFromTimeline = useCallback(async (libraryTrackId: number, bpm: number) => {
+    const track = library.find((candidate) => candidate.id === libraryTrackId);
+    if (!track) return;
+    await saveBeatgridCorrection(track, bpm, track.firstBeatMs ?? 0);
+  }, [library, saveBeatgridCorrection]);
 
   const addTimelineClip = useCallback(async (
     trackId: number,
@@ -1281,10 +1333,32 @@ function App() {
   const isPlaying = preview.status === "playing";
   const controlsDisabled = busy || timelinePreparing;
   const timelinePlaybackLocked = timelinePreparing || timelineTransport.status === "playing";
-  const timelineTrackIds = useMemo(
-    () => new Set(timeline.clips.map((clip) => clip.libraryTrackId)),
-    [timeline.clips],
-  );
+  /**
+   * Chaque morceau posé sur la timeline, et son rang dans l'ordre où on
+   * l'entend.
+   *
+   * Un morceau peut avoir plusieurs clips : c'est le **premier** qui compte,
+   * puisque c'est là qu'il entre dans le mix. À temps égal, la voie tranche —
+   * il faut un ordre stable, sinon la liste se réarrange toute seule entre deux
+   * rendus.
+   */
+  const timelineTrackOrder = useMemo(() => {
+    const first = new Map<number, { beat: number; lane: number }>();
+    for (const clip of timeline.clips) {
+      const current = first.get(clip.libraryTrackId);
+      if (
+        !current
+        || clip.visualStartBeat < current.beat
+        || (clip.visualStartBeat === current.beat && clip.lane < current.lane)
+      ) {
+        first.set(clip.libraryTrackId, { beat: clip.visualStartBeat, lane: clip.lane });
+      }
+    }
+    const ranked = [...first.entries()].sort(
+      ([, left], [, right]) => left.beat - right.beat || left.lane - right.lane,
+    );
+    return new Map(ranked.map(([trackId], rank) => [trackId, rank]));
+  }, [timeline.clips]);
 
   useEffect(() => {
     if (!editingTrack || editingTrack.isMissing) {
@@ -1344,6 +1418,7 @@ function App() {
             onBounceMix={bounceMix}
             onTogglePlayback={toggleTimelineTransport}
             onSeek={seekTimeline}
+            onSetTrackTempo={setTrackTempoFromTimeline}
             onSetLaneMuted={setTimelineLaneMuted}
             onSetLaneSolo={setTimelineLaneSolo}
             onSetLimiterEnabled={setTimelineLimiterEnabled}
@@ -1373,11 +1448,12 @@ function App() {
         </div>
 
         <LibraryPanel
+          fileDropActive={fileDropActive}
           tracks={library}
           libraryBusy={libraryBusy || gridBusy || timelinePlaybackLocked}
           analysisBusy={analysisBusy || timelinePlaybackLocked}
           timelineAddBusy={libraryBusy || gridBusy || analysisBusy || timelineBusy || timelinePreparing}
-          timelineTrackIds={timelineTrackIds}
+          timelineTrackOrder={timelineTrackOrder}
           previewDisabled={controlsDisabled}
           previewingTrackId={previewingTrackId}
           activePreviewPath={preview.filePath}
@@ -1424,7 +1500,6 @@ function App() {
             onSave={(bpm, firstBeatMs) =>
               void saveBeatgridCorrection(editingTrack, bpm, firstBeatMs)
             }
-            onReset={() => void resetBeatgridCorrection(editingTrack)}
           />
         </div>
       )}

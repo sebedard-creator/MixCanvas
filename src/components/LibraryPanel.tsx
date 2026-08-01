@@ -39,7 +39,8 @@ interface LibraryPanelProps {
   libraryBusy: boolean;
   analysisBusy: boolean;
   timelineAddBusy: boolean;
-  timelineTrackIds: ReadonlySet<number>;
+  /** Le rang de chaque morceau dans l'ordre où la timeline le fait entendre. */
+  timelineTrackOrder: ReadonlyMap<number, number>;
   previewDisabled: boolean;
   previewingTrackId: number | null;
   activePreviewPath: string | null;
@@ -48,6 +49,8 @@ interface LibraryPanelProps {
   previewDurationMs: number;
   previewPositionMs: number;
   message: string | null;
+  /** Vrai pendant qu'un fichier venu du bureau survole la fenêtre. */
+  fileDropActive: boolean;
   onAddFiles: () => void;
   onAddFolder: () => void;
   onEditGrid: (track: LibraryTrack) => void;
@@ -66,7 +69,7 @@ export function LibraryPanel({
   libraryBusy,
   analysisBusy,
   timelineAddBusy,
-  timelineTrackIds,
+  timelineTrackOrder,
   previewDisabled,
   previewingTrackId,
   activePreviewPath,
@@ -75,6 +78,7 @@ export function LibraryPanel({
   previewDurationMs,
   previewPositionMs,
   message,
+  fileDropActive,
   onAddFiles,
   onAddFolder,
   onEditGrid,
@@ -93,8 +97,8 @@ export function LibraryPanel({
   const [sort, setSort] = useState<LibrarySort>(DEFAULT_SORT);
   const [contextMenu, setContextMenu] = useState<LibraryContextMenu | null>(null);
   const sortedTracks = useMemo(
-    () => sortLibraryTracks(tracks, timelineTrackIds, sort),
-    [sort, timelineTrackIds, tracks],
+    () => sortLibraryTracks(tracks, timelineTrackOrder, sort),
+    [sort, timelineTrackOrder, tracks],
   );
 
   const selectSort = (key: LibrarySortKey) => {
@@ -105,7 +109,8 @@ export function LibraryPanel({
           direction: current.direction === "ascending" ? "descending" : "ascending",
         };
       }
-      return { key, direction: key === "inUse" ? "descending" : "ascending" };
+      // « In Use » part dans l'ordre du mix : c'est ce qu'on vient y chercher.
+      return { key, direction: "ascending" };
     });
   };
 
@@ -192,7 +197,10 @@ export function LibraryPanel({
   };
 
   return (
-    <section className="library-panel" aria-labelledby="library-title">
+    <section
+      className={`library-panel${fileDropActive ? " library-panel--drop" : ""}`}
+      aria-labelledby="library-title"
+    >
       <div className="library-header">
         <div className="library-title-row">
           <h2 id="library-title">LIBRARY</h2>
@@ -258,7 +266,7 @@ export function LibraryPanel({
 
           {sortedTracks.map((track) => {
             const displayName = libraryDisplayName(track);
-            const isInTimeline = timelineTrackIds.has(track.id);
+            const isInTimeline = timelineTrackOrder.has(track.id);
             const isActive = activePreviewPath === track.filePath;
             const isLoading = previewingTrackId === track.id;
             const previewLabel = isActive && isPreviewPlaying ? "Ⅱ" : "▶";

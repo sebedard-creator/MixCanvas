@@ -45,6 +45,14 @@ export interface TimelineClip {
    * commandes qui les règlent n'ont plus rien à régler sous lui.
    */
   isBaked: boolean;
+  /**
+   * Si le fichier cuit a disparu du disque.
+   *
+   * Le clip reste cuit — l'automation retirée doit rester récupérable — mais il
+   * joue sa source. Une touche allumée qui n'applique rien est un mensonge
+   * silencieux; celle-ci le dit.
+   */
+  bakeIsMissing: boolean;
   isMissing: boolean;
   needsAnalysis: boolean;
   waveform: WaveformPeaks | null;

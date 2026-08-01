@@ -38,24 +38,46 @@ describe("sortLibraryTracks", () => {
       track(3, { artist: "Aphex Twin" }),
     ];
 
-    expect(sortLibraryTracks(tracks, new Set(), ascending).map(({ id }) => id)).toEqual([3, 2, 1]);
+    expect(sortLibraryTracks(tracks, new Map(), ascending).map(({ id }) => id)).toEqual([3, 2, 1]);
   });
 
-  it("can put tracks already used by the timeline first", () => {
-    const tracks = [track(1), track(2), track(3)];
-    const sort: LibrarySort = { key: "inUse", direction: "descending" };
+  it("lists the tracks used by the timeline in the order they are heard", () => {
+    // Un simple « oui/non » rangeait les morceaux utilisés dans un tas
+    // informe. Ce qu'on veut voir, c'est le mix dans l'ordre.
+    const tracks = [track(1), track(2), track(3), track(4)];
+    const order = new Map([
+      [3, 0],
+      [1, 1],
+      [4, 2],
+    ]);
 
-    expect(sortLibraryTracks(tracks, new Set([2]), sort).map(({ id }) => id)).toEqual([2, 1, 3]);
+    expect(
+      sortLibraryTracks(tracks, order, { key: "inUse", direction: "ascending" }).map(({ id }) => id),
+    ).toEqual([3, 1, 4, 2]);
+  });
+
+  it("keeps the unused tracks at the end whichever way the order runs", () => {
+    // Une liste dont la queue change de contenu selon le sens se relit mal :
+    // les absents suivent la règle des autres valeurs manquantes.
+    const tracks = [track(1), track(2), track(3)];
+    const order = new Map([
+      [3, 0],
+      [1, 1],
+    ]);
+
+    expect(
+      sortLibraryTracks(tracks, order, { key: "inUse", direction: "descending" }).map(({ id }) => id),
+    ).toEqual([1, 3, 2]);
   });
 
   it("sorts BPM numerically while keeping tracks without a BPM last", () => {
     const tracks = [track(1, { bpm: null }), track(2, { bpm: 128 }), track(3, { bpm: 120 })];
 
     expect(
-      sortLibraryTracks(tracks, new Set(), { key: "bpm", direction: "ascending" }).map(({ id }) => id),
+      sortLibraryTracks(tracks, new Map(), { key: "bpm", direction: "ascending" }).map(({ id }) => id),
     ).toEqual([3, 2, 1]);
     expect(
-      sortLibraryTracks(tracks, new Set(), { key: "bpm", direction: "descending" }).map(({ id }) => id),
+      sortLibraryTracks(tracks, new Map(), { key: "bpm", direction: "descending" }).map(({ id }) => id),
     ).toEqual([2, 3, 1]);
   });
 });
