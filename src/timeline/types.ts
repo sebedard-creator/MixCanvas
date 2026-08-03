@@ -65,6 +65,7 @@ export interface TimelinePanNode {
   /** −1 hard left, 0 centre, +1 hard right. */
   value: number;
   beat: number;
+  drawGroupId: number | null;
 }
 
 export interface TimelineSnapshot {
@@ -77,6 +78,7 @@ export interface TimelineSnapshot {
   volumeNodes: TimelineVolumeNode[];
   panNodes: TimelinePanNode[];
   filterNodes: TimelineFilterNode[];
+  drawGroups: TimelineDrawGroup[];
 }
 
 export interface TimelineVolumeNode {
@@ -84,6 +86,17 @@ export interface TimelineVolumeNode {
   lane: number;
   beat: number;
   gainDb: number | null;
+  drawGroupId: number | null;
+}
+
+export interface TimelineDrawGroup {
+  id: number;
+  kind: "volume" | "pan";
+  lane: number;
+  startBeat: number;
+  endBeat: number;
+  shape: string;
+  period: number;
 }
 
 export interface TimelineFilterNode {

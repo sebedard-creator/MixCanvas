@@ -14,6 +14,7 @@ import {
   formatAnalysisSummary,
   formatImportSummary,
 } from "./lib/formatImportSummary";
+import { createLiveTransport } from "./lib/liveTransport";
 import { UndoRedoHistory } from "./lib/undoRedo";
 import type { LibraryPointerDrag } from "./lib/timelinePointerDrag";
 import { snapTimelineBeat } from "./lib/timelineSnap";
@@ -64,8 +65,9 @@ const EMPTY_TIMELINE: TimelineSnapshot = {
   ],
   clips: [],
   volumeNodes: [],
-  panNodes: [],
-  filterNodes: [],
+    panNodes: [],
+    drawGroups: [],
+    filterNodes: [],
 };
 
 const EMPTY_TIMELINE_TRANSPORT: TimelineTransportSnapshot = {
@@ -89,8 +91,24 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [library, setLibrary] = useState<LibraryTrack[]>([]);
   const [timeline, setTimeline] = useState<TimelineSnapshot>(EMPTY_TIMELINE);
+  /**
+   * L'état du transport, dans les deux régimes dont il a besoin.
+   *
+   * `timelineTransport` est celui de React : il ne bouge que lorsqu'un
+   * évènement le fait bouger — jouer, mettre en pause, se déplacer, éditer.
+   * `liveTransport` est celui de la lecture : il avance vingt fois par
+   * seconde, et ce qui en dépend s'y abonne plutôt que de re-rendre.
+   */
   const [timelineTransport, setTimelineTransport] = useState<TimelineTransportSnapshot>(
     EMPTY_TIMELINE_TRANSPORT,
+  );
+  const liveTransport = useRef(createLiveTransport(EMPTY_TIMELINE_TRANSPORT)).current;
+  const publishTransport = useCallback(
+    (snapshot: TimelineTransportSnapshot) => {
+      liveTransport.publish(snapshot);
+      setTimelineTransport(snapshot);
+    },
+    [liveTransport],
   );
   const [libraryBusy, setLibraryBusy] = useState(false);
   const [timelineBusy, setTimelineBusy] = useState(false);
@@ -203,7 +221,7 @@ function App() {
         snapshot: target,
       });
       setTimeline(restored);
-      setTimelineTransport(
+      publishTransport(
         await invoke<TimelineTransportSnapshot>("timeline_transport_snapshot"),
       );
     } catch (restoreError) {
@@ -337,7 +355,7 @@ function App() {
         if (!cancelled) {
           setLibrary(tracks);
           setTimeline(timelineSnapshot);
-          setTimelineTransport(transportSnapshot);
+          publishTransport(transportSnapshot);
           const outdatedIds = tracks
             .filter(
               (track) =>
@@ -394,7 +412,7 @@ function App() {
         const snapshot = await invoke<PreviewSnapshot>(command);
         setPreview(snapshot);
         if (command === "play_preview") {
-          setTimelineTransport(
+          publishTransport(
             await invoke<TimelineTransportSnapshot>("timeline_transport_snapshot"),
           );
         }
@@ -584,7 +602,7 @@ function App() {
         }
 
         setPreview(snapshot);
-        setTimelineTransport(
+        publishTransport(
           await invoke<TimelineTransportSnapshot>("timeline_transport_snapshot"),
         );
       } catch (previewError) {
@@ -754,7 +772,7 @@ function App() {
       history.current.clear();
       syncHistoryFlags();
       setLibrary(await invoke<LibraryTrack[]>("list_library_tracks"));
-      setTimelineTransport(
+      publishTransport(
         await invoke<TimelineTransportSnapshot>("timeline_transport_snapshot"),
       );
       setLibraryMessage(`Project loaded from ${path}`);
@@ -771,10 +789,12 @@ function App() {
     startBeat: number,
     endBeat: number,
     nodes: [number, number][],
+    shape: "step" | "sine" | "triangle",
+    period: number,
   ) => {
     await runTimelineEdit(
       () => invoke<TimelineSnapshot>("draw_timeline_volume_shape", {
-        lane, startBeat, endBeat, nodes,
+        lane, startBeat, endBeat, nodes, shape, period,
       }),
       refreshTimeline,
     );
@@ -785,11 +805,20 @@ function App() {
     startBeat: number,
     endBeat: number,
     nodes: [number, number][],
+    shape: "step" | "sine" | "triangle",
+    period: number,
   ) => {
     await runTimelineEdit(
       () => invoke<TimelineSnapshot>("draw_timeline_pan_shape", {
-        lane, startBeat, endBeat, nodes,
+        lane, startBeat, endBeat, nodes, shape, period,
       }),
+      refreshTimeline,
+    );
+  }, [refreshTimeline, runTimelineEdit]);
+
+  const deleteTimelineDrawGroup = useCallback(async (groupId: number) => {
+    await runTimelineEdit(
+      () => invoke<TimelineSnapshot>("delete_timeline_draw_group", { groupId }),
       refreshTimeline,
     );
   }, [refreshTimeline, runTimelineEdit]);
@@ -904,7 +933,7 @@ function App() {
         () => invoke<TimelineSnapshot>("clear_timeline"),
       );
       if (cleared) {
-        setTimelineTransport(
+        publishTransport(
           await invoke<TimelineTransportSnapshot>("timeline_transport_snapshot"),
         );
       }
@@ -924,7 +953,7 @@ function App() {
     }
     try {
       const command = timelineTransport.status === "playing" ? "pause_timeline" : "play_timeline";
-      setTimelineTransport(await invoke<TimelineTransportSnapshot>(command));
+      publishTransport(await invoke<TimelineTransportSnapshot>(command));
       if (isStarting) {
         setPreview(await invoke<PreviewSnapshot>("preview_snapshot"));
       }
@@ -955,13 +984,13 @@ function App() {
       setTimelinePreparing(true);
     }
     try {
-      setTimelineTransport(
+      publishTransport(
         await invoke<TimelineTransportSnapshot>("seek_timeline", { positionBeat }),
       );
       if (shouldStart) {
         // `play_timeline` libère la sortie, donc rend le miniplayer muet de
         // lui-même. L'instantané qui suit remet l'interface d'accord avec ça.
-        setTimelineTransport(await invoke<TimelineTransportSnapshot>("play_timeline"));
+        publishTransport(await invoke<TimelineTransportSnapshot>("play_timeline"));
         setPreview(await invoke<PreviewSnapshot>("preview_snapshot"));
       }
     } catch (transportError) {
@@ -1196,14 +1225,24 @@ function App() {
       return undefined;
     }
 
+    /* Publiée, et non mise dans l'état : la position avance vingt fois par
+       seconde, et ce qui la suit s'y est abonné pour l'écrire directement
+       dans le DOM. Seul un changement de régime — la lecture qui s'arrête
+       d'elle-même au bout du mix — vaut un rendu. */
     const interval = window.setInterval(() => {
       void invoke<TimelineTransportSnapshot>("timeline_transport_snapshot")
-        .then(setTimelineTransport)
+        .then((snapshot) => {
+          if (snapshot.status === liveTransport.read().status) {
+            liveTransport.publish(snapshot);
+            return;
+          }
+          publishTransport(snapshot);
+        })
         .catch((transportError) => setError(errorMessage(transportError)));
     }, 50);
 
     return () => window.clearInterval(interval);
-  }, [timelineTransport.status]);
+  }, [liveTransport, publishTransport, timelineTransport.status]);
 
   // Declared before the keyboard effect that reads it: a `const` referenced
   // from a dependency array is evaluated during render, not after it.
@@ -1211,7 +1250,9 @@ function App() {
 
   const splitTimelineClipAtPlayhead = useCallback(async () => {
     if (editingClipEq || editingTrackId) return;
-    const playheadBeat = timelineTransport.positionBeat;
+    // Lue au moment du geste, et non à celui du dernier rendu : c'est là que
+    // la tête de lecture est vraiment.
+    const playheadBeat = liveTransport.read().positionBeat;
     const targetClip = clipToSplit(
       timelineRef.current.clips,
       selectedLaneRef.current,
@@ -1233,7 +1274,7 @@ function App() {
     } finally {
       setTimelineBusy(false);
     }
-  }, [backfillLibraryWaveforms, editingClipEq, editingTrackId, runTimelineEdit, timelineTransport.positionBeat]);
+  }, [backfillLibraryWaveforms, editingClipEq, editingTrackId, liveTransport, runTimelineEdit]);
 
   useEffect(() => {
     const capturesTimelineSpace = (event: KeyboardEvent) => {
@@ -1268,13 +1309,13 @@ function App() {
           case "volume":
             void addTimelineVolumeNode(
               lane,
-              snapTimelineBeat(timelineTransport.positionBeat),
+              snapTimelineBeat(liveTransport.read().positionBeat),
             );
             break;
           case "pan":
             void addTimelinePanNode(
               lane,
-              snapTimelineBeat(timelineTransport.positionBeat),
+              snapTimelineBeat(liveTransport.read().positionBeat),
             );
             break;
         }
@@ -1325,8 +1366,8 @@ function App() {
     addTimelineVolumeNode,
     setTimelineLaneMuted,
     setTimelineLaneSolo,
+    liveTransport,
     splitTimelineClipAtPlayhead,
-    timelineTransport.positionBeat,
     toggleTimelineTransport,
   ]);
 
@@ -1375,7 +1416,7 @@ function App() {
         });
         if (!isCurrent) return;
         setPreview(snapshot);
-        setTimelineTransport(
+        publishTransport(
           await invoke<TimelineTransportSnapshot>("timeline_transport_snapshot"),
         );
       } catch (previewError) {
@@ -1398,6 +1439,7 @@ function App() {
           <TimelinePanel
             timeline={timeline}
             transport={timelineTransport}
+            liveTransport={liveTransport}
             busy={timelineBusy || timelinePreparing}
             preparing={timelinePreparing}
             libraryTracks={library}
@@ -1435,6 +1477,7 @@ function App() {
             onDeletePanNode={deleteTimelinePanNode}
             onDrawVolumeShape={drawTimelineVolumeShape}
             onDrawPanShape={drawTimelinePanShape}
+            onDeleteDrawGroup={deleteTimelineDrawGroup}
             onDrawFilterStroke={drawTimelineFilterStroke}
             onMoveVolumeNode={moveTimelineVolumeNode}
             onDeleteVolumeNode={deleteTimelineVolumeNode}
@@ -1470,7 +1513,7 @@ function App() {
              refuse itself when the rotation came back round to a busy track. */
           onAddToTimeline={(track) => void addTimelineClip(
             track.id,
-            snapTimelineBeat(timelineTransport.positionBeat),
+            snapTimelineBeat(liveTransport.read().positionBeat),
           )}
           onTimelineDragMove={moveLibraryPointerDrag}
           onTimelineDrop={dropLibraryPointerDrag}

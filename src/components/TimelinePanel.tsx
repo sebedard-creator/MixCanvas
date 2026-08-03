@@ -5,7 +5,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -78,11 +77,15 @@ import type { LibraryTrack } from "../library/types";
 import {
   clampTimelineZoom,
   minimumTimelineZoom,
+  timelineSeekBeat,
   timelineContentLayout,
   visibleMeasures,
 } from "../lib/timelineZoom";
+import type { LiveTransport } from "../lib/liveTransport";
+import { nodesAcross, visibleBeatRange } from "../lib/automationWindow";
 import type {
   TimelineClip,
+  TimelineDrawGroup,
   TimelineSnapshot,
   TimelineTransportSnapshot,
 } from "../timeline/types";
@@ -155,15 +158,46 @@ const MAX_ZOOM_DELTA_PER_FRAME = 96;
 /** Idle delay after which the viewport follows the playhead again. */
 const MANUAL_SCROLL_RELEASE_MS = 2_500;
 /**
+ * De combien la vue peut glisser avant qu'un rendu React redevienne utile.
+ *
+ * Déplacer la vue ne demande que trois écritures dans le DOM ; ce qui coûte,
+ * c'est reconstruire les marqueurs et les waveforms, et cela ne sert à rien
+ * tant qu'on n'a pas découvert de contenu neuf. Un peu moins que la marge de
+ * 256 px que `waveformWindow` garde de chaque côté, pour que la tranche déjà
+ * construite couvre toujours ce qu'on voit.
+ */
+const VIEW_RENDER_STEP_PX = 192;
+/**
  * How close, on screen, the pointer must be to a filter curve's edge to grab it
  * rather than adjust its depth. A pixel distance keeps the target the same size
  * at every zoom level, where a distance in beats would vanish when zoomed out.
  */
 const FILTER_EDGE_GRAB_PX = 8;
+/** A Draw can retain thousands of DSP points without asking SVG to paint them. */
+const DRAW_VISUAL_POINTS_PER_PIXEL = 0.5;
+
+/**
+ * Keeps a Draw's one visual stroke bounded to what the viewport can actually
+ * resolve. The saved samples remain untouched; this only chooses which points
+ * are useful to send to SVG.
+ */
+function compactDrawPoints<T>(points: readonly T[], maxPoints: number): T[] {
+  if (points.length <= maxPoints) return [...points];
+  const result: T[] = [points[0]];
+  const stride = (points.length - 1) / (maxPoints - 1);
+  for (let index = 1; index < maxPoints - 1; index += 1) {
+    result.push(points[Math.round(index * stride)]);
+  }
+  result.push(points[points.length - 1]);
+  return result;
+}
 
 interface TimelinePanelProps {
   timeline: TimelineSnapshot;
+  /** L'état du transport tel que React le connaît : il ne bouge qu'aux évènements. */
   transport: TimelineTransportSnapshot;
+  /** Le même, tel que la lecture le fait avancer : à s'abonner, pas à rendre. */
+  liveTransport: LiveTransport;
   busy: boolean;
   preparing: boolean;
   libraryTracks?: LibraryTrack[];
@@ -202,11 +236,12 @@ interface TimelinePanelProps {
   onAddPanNode: (lane: number, beat: number) => Promise<void>;
   onMovePanNode: (nodeId: number, beat: number, value: number) => Promise<void>;
   onDeletePanNode: (nodeId: number) => Promise<void>;
-  onDrawVolumeShape: (lane: number, startBeat: number, endBeat: number, nodes: [number, number][]) => Promise<void>;
-  onDrawPanShape: (lane: number, startBeat: number, endBeat: number, nodes: [number, number][]) => Promise<void>;
+  onDrawVolumeShape: (lane: number, startBeat: number, endBeat: number, nodes: [number, number][], shape: ShapeKind, period: ShapePeriod) => Promise<void>;
+  onDrawPanShape: (lane: number, startBeat: number, endBeat: number, nodes: [number, number][], shape: ShapeKind, period: ShapePeriod) => Promise<void>;
   onDrawFilterStroke: (lane: number, nodes: [number, number][]) => Promise<void>;
   onMoveVolumeNode: (nodeId: number, beat: number, gainDb: number | null) => Promise<void>;
   onDeleteVolumeNode: (nodeId: number) => Promise<void>;
+  onDeleteDrawGroup: (groupId: number) => Promise<void>;
   onDrawFilterBubble: (
     lane: number,
     startBeat: number,
@@ -251,6 +286,7 @@ interface VolumeContextMenu {
   lane: number;
   beat: number;
   nodeId: number | null;
+  drawGroups: TimelineDrawGroup[];
 }
 
 interface VolumeNodeDraft {
@@ -321,6 +357,7 @@ function filterNodeY(lane: number, value: number) {
 export function TimelinePanel({
   timeline,
   transport,
+  liveTransport,
   busy,
   preparing,
   libraryTracks = [],
@@ -361,6 +398,7 @@ export function TimelinePanel({
   onDrawFilterStroke,
   onMoveVolumeNode,
   onDeleteVolumeNode,
+  onDeleteDrawGroup,
   onDrawFilterBubble,
   onClearFilterRange,
   onUndo,
@@ -560,7 +598,23 @@ export function TimelinePanel({
     () => tempoCurveGeometry(displayTempoPoints, pixelsPerBeat, contentWidth),
     [contentWidth, displayTempoPoints, pixelsPerBeat],
   );
-  const currentBpm = tempoBpmAtBeat(displayTempoPoints, transport.positionBeat);
+  /* Le BPM sous la tête de lecture, tenu par abonnement plutôt que par rendu :
+     il ne change qu'en franchissant un nœud de tempo, et re-rendre le panneau
+     vingt fois par seconde pour deux décimales qui restent les mêmes serait le
+     plus mauvais marché de l'interface. */
+  const displayTempoPointsRef = useRef(displayTempoPoints);
+  displayTempoPointsRef.current = displayTempoPoints;
+  /* A tempo ramp changes the readout on every transport poll. Updating this
+     one text node directly keeps the rest of the timeline outside React's
+     render cycle while playback is running. */
+  const bpmDisplay = useRef<HTMLSpanElement | null>(null);
+  const writeCurrentBpm = useCallback((bpm: number) => {
+    const text = bpm.toFixed(2);
+    if (bpmDisplay.current && bpmDisplay.current.textContent !== text) {
+      bpmDisplay.current.textContent = text;
+    }
+  }, []);
+  const currentBpmText = tempoBpmAtBeat(displayTempoPoints, transport.positionBeat).toFixed(2);
   const totalTimeMs = Math.round(tempoSecondsAtBeat(displayTempoPoints, projectEndBeat) * 1_000);
   zoomState.current = {
     pixelsPerBeat,
@@ -607,8 +661,83 @@ export function TimelinePanel({
   }, [applyTimelineZoom]);
 
   const timelineBody = useRef<HTMLDivElement | null>(null);
-  const [scrollBeatOffset, setScrollBeatOffset] = useState<number | null>(null);
+  const scrollbarThumb = useRef<HTMLDivElement | null>(null);
   const scrollReleaseTimer = useRef<number | null>(null);
+
+  /**
+   * Où la vue regarde — deux valeurs, parce qu'elles ne coûtent pas la même chose.
+   *
+   * `viewBeat` avance vingt fois par seconde et n'est écrite que dans le DOM :
+   * trois propriétés, aucun rendu. `renderedBeat` est celle du dernier rendu
+   * React ; elle ne bouge que lorsque la vue a assez glissé pour qu'il y ait de
+   * nouveaux marqueurs et de nouvelles tranches de waveform à construire. Tout
+   * ce qui coûte cher dépend de la seconde, et elle change rarement.
+   */
+  const livePositionBeat = useRef(transport.positionBeat);
+  const manualScrollBeat = useRef<number | null>(null);
+  const viewBeat = useRef(transport.positionBeat);
+  const [renderedBeat, setRenderedBeat] = useState(transport.positionBeat);
+  const renderedBeatRef = useRef(renderedBeat);
+
+  /* Ce dont le tracé a besoin, réécrit à chaque rendu pour que `paintView`
+     reste une fonction stable qui voit toujours le zoom courant. */
+  const viewGeometry = useRef({
+    pixelsPerBeat,
+    contentWidth,
+    viewportWidth,
+    totalBeats,
+    thumbWidthPercent: 100,
+  });
+
+  /**
+   * Place la vue sans passer par un rendu.
+   *
+   * Deux écritures — le défilement natif du viewport et le curseur de la barre
+   * de navigation — là où l'application re-rendait entièrement.
+   *
+   * Le contenu ne se translate plus : en rendu logiciel, cette transformation
+   * forçait Chromium à repeindre son sous-arbre complet, waveforms comprises.
+   * La marge virtuelle est statique; seul `scrollLeft` avance à l'intérieur.
+   * Un rendu n'est redemandé qu'au franchissement de `VIEW_RENDER_STEP_PX`.
+   */
+  const paintView = useCallback(() => {
+    const geometry = viewGeometry.current;
+    const position = livePositionBeat.current;
+    const displayed = manualScrollBeat.current ?? position;
+    viewBeat.current = displayed;
+
+    const scrollElement = timelineScroll.current;
+    if (scrollElement) {
+      /* La zone musicale reçoit une demi-fenêtre vide à chaque extrémité.
+         Le beat `n` est donc exactement au scrollLeft `n × pixelsPerBeat`;
+         cette écriture ne lit pas la mise en page et ne force pas de reflow. */
+      const targetScroll = geometry.contentWidth > geometry.viewportWidth
+        ? Math.max(0, Math.min(geometry.contentWidth, displayed * geometry.pixelsPerBeat))
+        : 0;
+      scrollElement.scrollLeft = targetScroll;
+    }
+    if (scrollbarThumb.current) {
+      const ratio = geometry.totalBeats > 0
+        ? Math.max(0, Math.min(1, displayed / geometry.totalBeats))
+        : 0;
+      scrollbarThumb.current.style.left = `${ratio * (100 - geometry.thumbWidthPercent)}%`;
+    }
+
+    const driftPx = Math.abs(displayed - renderedBeatRef.current) * geometry.pixelsPerBeat;
+    if (driftPx >= VIEW_RENDER_STEP_PX) {
+      renderedBeatRef.current = displayed;
+      setRenderedBeat(displayed);
+    }
+  }, []);
+
+  /* Le transport avance : on repeint, on ne re-rend pas. */
+  useEffect(() => {
+    return liveTransport.subscribe((snapshot) => {
+      livePositionBeat.current = snapshot.positionBeat;
+      paintView();
+      writeCurrentBpm(tempoBpmAtBeat(displayTempoPointsRef.current, snapshot.positionBeat));
+    });
+  }, [liveTransport, paintView, writeCurrentBpm]);
 
   const clearScrollReleaseTimer = () => {
     if (scrollReleaseTimer.current !== null) {
@@ -627,40 +756,114 @@ export function TimelinePanel({
     clearScrollReleaseTimer();
     scrollReleaseTimer.current = window.setTimeout(() => {
       scrollReleaseTimer.current = null;
-      setScrollBeatOffset(null);
+      manualScrollBeat.current = null;
+      paintView();
     }, MANUAL_SCROLL_RELEASE_MS);
-  }, []);
+  }, [paintView]);
 
   /** An explicit navigation wins over a manual scroll immediately. */
   const releaseManualScroll = useCallback(() => {
     clearScrollReleaseTimer();
-    setScrollBeatOffset(null);
-  }, []);
+    manualScrollBeat.current = null;
+    paintView();
+  }, [paintView]);
 
   useEffect(() => releaseManualScroll(), [transport.status, releaseManualScroll]);
   useEffect(() => clearScrollReleaseTimer, []);
 
-  const displayBeat = scrollBeatOffset ?? transport.positionBeat;
-
-  const contentLayout = timelineContentLayout(
-    displayBeat,
+  /* Ce que la fenêtre montre du contenu, en pixels de contenu — à la position
+     du **dernier rendu**, et non à celle de l'image en cours. Les waveforms se
+     construisent à partir de là et se donnent leur propre marge : les
+     reconstruire à chaque image reviendrait à re-rendre le panneau vingt fois
+     par seconde, ce que ce découpage existe précisément pour éviter. */
+  const renderedLayout = timelineContentLayout(
+    renderedBeat,
     pixelsPerBeat,
     contentWidth,
     viewportWidth,
   );
+  const visibleContentFromPx = -(renderedLayout.paddingPx + renderedLayout.offsetPx);
+
+  /*
+   * The audio engine owns every clip; React only needs the clips that can be
+   * seen or reached before the next cheap viewport refresh.  Keeping a large
+   * session's off-screen headings, buttons and SVG containers in the DOM made
+   * style/layout scale with the whole mix even after waveform virtualization.
+   */
+  const renderedClips = useMemo(() => {
+    if (contentWidth <= viewportWidth || pixelsPerBeat <= 0) return timeline.clips;
+    const marginPx = viewportWidth + 2 * VIEW_RENDER_STEP_PX;
+    const fromBeat = Math.max(0, (visibleContentFromPx - marginPx) / pixelsPerBeat);
+    const toBeat = (visibleContentFromPx + viewportWidth + marginPx) / pixelsPerBeat;
+    return timeline.clips.filter((clip) => {
+      const draft = clipDrafts[clip.id];
+      const trimmed = clipWithTrim(clip, trimDrafts[clip.id]);
+      const offset = draft ? draft.anchorBeat - clip.anchorBeat : 0;
+      return trimmed.visualEndBeat + offset >= fromBeat && trimmed.visualStartBeat + offset <= toBeat;
+    });
+  }, [
+    clipDrafts,
+    contentWidth,
+    pixelsPerBeat,
+    timeline.clips,
+    trimDrafts,
+    visibleContentFromPx,
+    viewportWidth,
+  ]);
+
+  const clipSequenceNumbers = useMemo(
+    () => new Map(sortedClips.map((clip, index) => [clip.id, index + 1])),
+    [sortedClips],
+  );
+  const libraryTracksById = useMemo(
+    () => new Map(libraryTracks.map((track) => [track.id, track])),
+    [libraryTracks],
+  );
+
   /* Un marqueur par mesure **visible**, pas par mesure du projet : sur un long
      mix, des milliers de marqueurs hors champ étaient mis en page à chaque
-     rendu — le gros du coût qui faisait strober le zoom. */
+     rendu — le gros du coût qui faisait strober le zoom. La fenêtre est élargie
+     d'un pas de chaque côté pour couvrir ce que la vue peut parcourir avant le
+     prochain rendu. */
   const measures = useMemo(() => {
     const labelStride = Math.max(1, Math.ceil(48 / (pixelsPerBeat * 4)));
-    return visibleMeasures(displayBeat, pixelsPerBeat, viewportWidth, totalBeats, labelStride, contentWidth);
-  }, [contentWidth, displayBeat, pixelsPerBeat, totalBeats, viewportWidth]);
+    return visibleMeasures(
+      renderedBeat,
+      pixelsPerBeat,
+      viewportWidth + 2 * VIEW_RENDER_STEP_PX,
+      totalBeats,
+      labelStride,
+      contentWidth,
+    );
+  }, [contentWidth, pixelsPerBeat, renderedBeat, totalBeats, viewportWidth]);
 
   const visibleBeats = pixelsPerBeat > 0 && viewportWidth > 0 ? viewportWidth / pixelsPerBeat : MIN_VISIBLE_BEATS;
   const thumbWidthRatio = Math.max(0.08, Math.min(1, visibleBeats / totalBeats));
   const thumbWidthPercent = thumbWidthRatio * 100;
-  const currentScrollRatio = totalBeats > 0 ? Math.max(0, Math.min(1, displayBeat / totalBeats)) : 0;
+
+  /* La géométrie que `paintView` lira à la prochaine image, et le placement
+     initial écrit dans le rendu lui-même — pour que le premier affichage et
+     tout changement de zoom soient justes avant même le premier repeint. */
+  viewGeometry.current = {
+    pixelsPerBeat,
+    contentWidth,
+    viewportWidth,
+    totalBeats,
+    thumbWidthPercent,
+  };
+  const contentNeedsNativeScroll = contentWidth > viewportWidth;
+  const currentScrollRatio = totalBeats > 0 ? Math.max(0, Math.min(1, viewBeat.current / totalBeats)) : 0;
   const thumbLeftPercent = currentScrollRatio * (100 - thumbWidthPercent);
+
+  /* Un zoom change la géométrie sans changer la position : le rendu vient de
+     réécrire les styles à partir de valeurs de rendu, on les remet aussitôt sur
+     la position réelle. Sous `useLayoutEffect`, donc avant que l'écran ne
+     montre quoi que ce soit — aucun scintillement possible. */
+  useLayoutEffect(() => {
+    livePositionBeat.current = liveTransport.read().positionBeat;
+    paintView();
+    writeCurrentBpm(tempoBpmAtBeat(displayTempoPointsRef.current, livePositionBeat.current));
+  }, [contentWidth, liveTransport, paintView, pixelsPerBeat, viewportWidth, writeCurrentBpm]);
 
   const handleScrollbarPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     const track = event.currentTarget;
@@ -719,11 +922,13 @@ export function TimelinePanel({
       if (isHorizontalScrollGesture) {
         // Pro Tools Standard: Shift + Wheel -> Horizontal Timeline Viewport Scroll
         const maxScrollBeat = Math.max(128, totalBeats + 64);
-        setScrollBeatOffset((current) => {
-          const startBeat = current ?? transport.positionBeat;
-          const beatsToMove = (deltaPixels / Math.max(1, zoomState.current.pixelsPerBeat)) * 1.5;
-          return Math.max(0, Math.min(maxScrollBeat, startBeat + beatsToMove));
-        });
+        /* Écrit puis peint, sans passer par un rendu : un geste de molette
+           produit des dizaines d'évènements, et chacun re-rendait le panneau
+           entier. C'est ce qui rendait le défilement horizontal poisseux. */
+        const startBeat = manualScrollBeat.current ?? livePositionBeat.current;
+        const beatsToMove = (deltaPixels / Math.max(1, zoomState.current.pixelsPerBeat)) * 1.5;
+        manualScrollBeat.current = Math.max(0, Math.min(maxScrollBeat, startBeat + beatsToMove));
+        paintView();
         holdManualScroll();
       } else {
         // Molette seule (sans Shift) -> Zoom avant / arrière
@@ -733,7 +938,7 @@ export function TimelinePanel({
 
     element.addEventListener("wheel", handleWheel, { passive: false });
     return () => element.removeEventListener("wheel", handleWheel);
-  }, [holdManualScroll, totalBeats, queueTimelineZoom, transport.positionBeat]);
+  }, [holdManualScroll, paintView, totalBeats, queueTimelineZoom]);
 
   /* L'état de `Ctrl`, suivi au clavier parce que le CSS ne connaît pas les
      modificateurs. Le `blur` remet à zéro : sortir de la fenêtre en le tenant
@@ -837,16 +1042,6 @@ export function TimelinePanel({
     return () => window.removeEventListener("keydown", handleDelete);
   }, [onRemoveClip]);
 
-  useLayoutEffect(() => {
-    // Zoom and transport following belong to the layout. Keep the browser's
-    // independent native scroll offset at zero so it cannot add a second,
-    // compositor-owned displacement to the same image.
-    const element = timelineScroll.current;
-    if (element && element.scrollLeft !== 0) {
-      element.scrollLeft = 0;
-    }
-  });
-
   useEffect(() => {
     if (!libraryPointerDrag) {
       setDropTargetLane(null);
@@ -898,7 +1093,11 @@ export function TimelinePanel({
       return;
     }
     const bounds = event.currentTarget.getBoundingClientRect();
-    const requestedBeat = (event.clientX - bounds.left) / pixelsPerBeat;
+    const requestedBeat = timelineSeekBeat(
+      event.clientX,
+      bounds.left,
+      pixelsPerBeat,
+    );
     releaseManualScroll();
     void onSeek(Math.max(0, Math.min(projectEndBeat, requestedBeat)));
   };
@@ -967,16 +1166,32 @@ export function TimelinePanel({
   const updateSmartCursor = (event: ReactPointerEvent<HTMLDivElement>, clip: TimelineClip) => {
     if (activeTrim.current || activeDrag.current || busy) return;
     const tool = toolAtPointer(event, clip);
-    setHoveredTool(tool ? { clipId: clip.id, tool } : null);
+    /* Rien n'est écrit tant que rien ne change.
+       Le pointeur bouge plus de cent fois par seconde; l'outil, lui, ne change
+       qu'en franchissant une frontière. Poser un objet **neuf** à chaque
+       mouvement empêchait React de s'arrêter là : le panneau entier était
+       re-rendu à la fréquence de la souris, et les trois jeux de courbes
+       d'automation étaient reconstruits d'un bout à l'autre du mix à chaque
+       fois. Mesuré, c'était quarante-trois pour cent du fil principal. */
+    setHoveredTool((current) => {
+      if (!tool) return current === null ? current : null;
+      return current && current.clipId === clip.id && current.tool === tool
+        ? current
+        : { clipId: clip.id, tool };
+    });
     // Le bord armé s'allume, ce qui est une seconde information : le curseur
     // dit l'outil, la surbrillance dit **quel** bord partira.
-    setHoveredTrim(
-      tool === "trim-start"
-        ? { clipId: clip.id, edge: "start" }
-        : tool === "trim-end"
-          ? { clipId: clip.id, edge: "end" }
-          : null,
-    );
+    const edge: TrimEdge | null = tool === "trim-start"
+      ? "start"
+      : tool === "trim-end"
+        ? "end"
+        : null;
+    setHoveredTrim((current) => {
+      if (!edge) return current === null ? current : null;
+      return current && current.clipId === clip.id && current.edge === edge
+        ? current
+        : { clipId: clip.id, edge };
+    });
   };
 
   const startClipTrim = (event: ReactPointerEvent<HTMLDivElement>, clip: TimelineClip) => {
@@ -1186,12 +1401,18 @@ export function TimelinePanel({
     const bounds = event.currentTarget.getBoundingClientRect();
     const lane = timelineLaneFromPointer(event.clientY, bounds.top, bounds.height, TIMELINE_LANES.length);
     const beat = Math.max(0, Math.round((event.clientX - bounds.left) / pixelsPerBeat * 4) / 4);
+    // Both Pan and Volume can occupy the same time range. Keep every matching
+    // Draw in the menu instead of guessing which visible curve was intended.
+    const drawGroups = timeline.drawGroups
+      .filter((group) => group.lane === lane && beat >= group.startBeat && beat <= group.endBeat)
+      .sort((left, right) => right.id - left.id);
     setVolumeContextMenu({
       clientX: Math.min(event.clientX, window.innerWidth - 175),
       clientY: Math.min(event.clientY, window.innerHeight - 46),
       lane,
       beat,
       nodeId: null,
+      drawGroups,
     });
   };
 
@@ -1674,7 +1895,7 @@ export function TimelinePanel({
         drawPeriod,
       ).map((node) => [node.beat, node.gainDb] as [number, number]);
       if (nodes.length > 0) {
-        void onDrawVolumeShape(stroke.lane, stroke.startBeat, endBeat, nodes);
+        void onDrawVolumeShape(stroke.lane, stroke.startBeat, endBeat, nodes, drawShape, drawPeriod);
       }
     }
 
@@ -1688,7 +1909,7 @@ export function TimelinePanel({
         panValueAtBeat(timeline.panNodes, stroke.lane, stroke.startBeat),
       ).map((node) => [node.beat, node.value] as [number, number]);
       if (nodes.length > 0) {
-        void onDrawPanShape(stroke.lane, stroke.startBeat, endBeat, nodes);
+        void onDrawPanShape(stroke.lane, stroke.startBeat, endBeat, nodes, drawShape, drawPeriod);
       }
     }
   };
@@ -1754,40 +1975,103 @@ export function TimelinePanel({
     );
   };
 
-  const automationPaths = TIMELINE_LANES.map((lane) => {
+  /* Les trois jeux de courbes ne dépendent que des nœuds, des brouillons en
+     cours et du zoom — jamais du survol ni de la tête de lecture. Sans mémo,
+     chaque rendu les redessinait d'un bout à l'autre du mix : sur une timeline
+     large de soixante-dix mille pixels, c'est le calcul le plus cher du
+     panneau, et il était refait pour un curseur qui change de forme.
+
+     Et même mémorisés, ils n'ont aucune raison de couvrir tout le mix : la
+     même correction que pour les waveforms, ici sur la position du dernier
+     rendu. Les extrémités restent ancrées à 0 et à la largeur totale — un
+     segment plat de plus ne coûte rien, et cela garde la courbe identique là
+     où on la regarde. */
+  const curveWindow = visibleBeatRange(
+    renderedBeat,
+    pixelsPerBeat,
+    viewportWidth,
+    VIEW_RENDER_STEP_PX,
+  );
+  const { fromBeat: curveFromBeat, toBeat: curveToBeat } = curveWindow;
+  const automationPaths = useMemo(() => TIMELINE_LANES.map((lane) => {
     const preview = previewVolumeNodes(lane);
     const low = preview ? Math.min(shapePreview!.startBeat, shapePreview!.endBeat) : 0;
     const high = preview ? Math.max(shapePreview!.startBeat, shapePreview!.endBeat) : 0;
     const points = timeline.volumeNodes
       .filter((node) => node.lane === lane)
+      .filter((node) => node.drawGroupId === null)
       .filter((node) => !preview || node.beat < low || node.beat > high)
       .map((node) => ({ ...node, ...(volumeDrafts[node.id] ?? {}) }))
       .concat(preview ? preview.map((node, index) => ({
         id: -1_000_000 - index,
         lane,
+        drawGroupId: null,
         beat: node.beat,
         gainDb: node.gainDb,
       })) : [])
       .sort((left, right) => left.beat - right.beat);
-    const effective = points.length > 0
+    const spanning = points.length > 0
       ? points
-      : [{ id: -lane - 1, lane, beat: 0, gainDb: DEFAULT_TRACK_GAIN_DB }];
+      : [{ id: -lane - 1, lane, drawGroupId: null, beat: 0, gainDb: DEFAULT_TRACK_GAIN_DB }];
+    const effective = nodesAcross(spanning, curveFromBeat, curveToBeat);
     const first = effective[0];
     const last = effective[effective.length - 1];
     return `M 0 ${volumeNodeY(lane, first.gainDb)} ${effective.map((node) => `L ${node.beat * pixelsPerBeat} ${volumeNodeY(lane, node.gainDb)}`).join(" ")} L ${contentWidth} ${volumeNodeY(lane, last.gainDb)}`;
-  });
+  }), [
+    contentWidth,
+    curveFromBeat,
+    curveToBeat,
+    drawPeriod,
+    drawShape,
+    pixelsPerBeat,
+    shapePreview,
+    showVolumeAutomation,
+    timeline.volumeNodes,
+    volumeDrafts,
+  ]);
 
-  const panPaths = TIMELINE_LANES.map((lane) => {
+  /* A Draw has one SVG path of its own. The audio table can retain many
+     samples for a smooth envelope without turning the timeline into the same
+     number of DOM-visible points or one enormous lane-wide path. */
+  const drawVisualPointLimit = Math.max(32, Math.ceil(viewportWidth * DRAW_VISUAL_POINTS_PER_PIXEL));
+  const volumeDrawPaths = useMemo(() => timeline.drawGroups
+    .filter((group) => group.kind === "volume")
+    .filter((group) => group.endBeat >= curveFromBeat && group.startBeat <= curveToBeat)
+    .flatMap((group) => {
+      const nodes = timeline.volumeNodes
+        .filter((node) => node.drawGroupId === group.id)
+        .sort((left, right) => left.beat - right.beat);
+      if (nodes.length === 0) return [];
+      const visible = compactDrawPoints(
+        nodesAcross(nodes, curveFromBeat, curveToBeat),
+        drawVisualPointLimit,
+      );
+      return [{
+        id: group.id,
+        path: `M ${visible.map((node) => `${node.beat * pixelsPerBeat} ${volumeNodeY(group.lane, node.gainDb)}`).join(" L ")}`,
+      }];
+    }), [
+    curveFromBeat,
+    curveToBeat,
+    drawVisualPointLimit,
+    pixelsPerBeat,
+    timeline.drawGroups,
+    timeline.volumeNodes,
+  ]);
+
+  const panPaths = useMemo(() => TIMELINE_LANES.map((lane) => {
     const preview = previewPanNodes(lane);
     const low = preview ? Math.min(shapePreview!.startBeat, shapePreview!.endBeat) : 0;
     const high = preview ? Math.max(shapePreview!.startBeat, shapePreview!.endBeat) : 0;
     const points = timeline.panNodes
       .filter((node) => node.lane === lane)
+      .filter((node) => node.drawGroupId === null)
       .filter((node) => !preview || node.beat < low || node.beat > high)
       .map((node) => ({ ...node, ...(panDrafts[node.id] ?? {}) }))
       .concat(preview ? preview.map((node, index) => ({
         id: -2_000_000 - index,
         lane,
+        drawGroupId: null,
         beat: node.beat,
         value: node.value,
       })) : [])
@@ -1797,20 +2081,61 @@ export function TimelinePanel({
     if (points.length === 0) {
       return `M 0 ${panCentreY(lane)} L ${contentWidth} ${panCentreY(lane)}`;
     }
-    const first = points[0];
-    const last = points[points.length - 1];
-    return `M 0 ${panNodeY(lane, first.value)} ${points
+    const drawn = nodesAcross(points, curveFromBeat, curveToBeat);
+    const first = drawn[0];
+    const last = drawn[drawn.length - 1];
+    return `M 0 ${panNodeY(lane, first.value)} ${drawn
       .map((node) => `L ${node.beat * pixelsPerBeat} ${panNodeY(lane, node.value)}`)
       .join(" ")} L ${contentWidth} ${panNodeY(lane, last.value)}`;
-  });
+  }), [
+    contentWidth,
+    curveFromBeat,
+    curveToBeat,
+    drawPeriod,
+    drawShape,
+    panDrafts,
+    pixelsPerBeat,
+    shapePreview,
+    showPanAutomation,
+    timeline.panNodes,
+  ]);
 
-  const filterPaths = TIMELINE_LANES.map((lane) => {
-    const points = filterPointsForLane(lane);
+  const panDrawPaths = useMemo(() => timeline.drawGroups
+    .filter((group) => group.kind === "pan")
+    .filter((group) => group.endBeat >= curveFromBeat && group.startBeat <= curveToBeat)
+    .flatMap((group) => {
+      const nodes = timeline.panNodes
+        .filter((node) => node.drawGroupId === group.id)
+        .sort((left, right) => left.beat - right.beat);
+      if (nodes.length === 0) return [];
+      const visible = compactDrawPoints(
+        nodesAcross(nodes, curveFromBeat, curveToBeat),
+        drawVisualPointLimit,
+      );
+      return [{
+        id: group.id,
+        path: `M ${visible.map((node) => `${node.beat * pixelsPerBeat} ${panNodeY(group.lane, node.value)}`).join(" L ")}`,
+      }];
+    }), [
+    curveFromBeat,
+    curveToBeat,
+    drawVisualPointLimit,
+    pixelsPerBeat,
+    timeline.drawGroups,
+    timeline.panNodes,
+  ]);
+
+  const filterPaths = useMemo(() => TIMELINE_LANES.map((lane) => {
+    const spanning = filterPointsForLane(lane);
+    /* Le test « y a-t-il quelque chose à montrer » porte sur **toute** la voie,
+       pas sur la tranche : autrement une bulle hors champ éteindrait la forme,
+       et elle réapparaîtrait d'un coup en entrant dans la vue. */
+    const drawn = nodesAcross(spanning, curveFromBeat, curveToBeat);
     const bubblePath = (direction: "high" | "low") => {
-      const hasActive = points.some((point) => (direction === "high" ? point.value > 0.01 : point.value < -0.01));
+      const hasActive = spanning.some((point) => (direction === "high" ? point.value > 0.01 : point.value < -0.01));
       if (!hasActive) return "";
       const segments = [`M 0 ${filterNodeY(lane, 0)}`];
-      for (const point of points) {
+      for (const point of drawn) {
         const value = direction === "high" ? Math.max(0, point.value) : Math.min(0, point.value);
         segments.push(`L ${point.beat * pixelsPerBeat} ${filterNodeY(lane, value)}`);
       }
@@ -1818,7 +2143,15 @@ export function TimelinePanel({
       return segments.join(" ");
     };
     return { high: bubblePath("high"), low: bubblePath("low") };
-  });
+  }), [
+    contentWidth,
+    curveFromBeat,
+    curveToBeat,
+    filterBubbleDraft,
+    filterStroke,
+    pixelsPerBeat,
+    timeline.filterNodes,
+  ]);
 
   return (
     <section className="timeline-panel" aria-label="Timeline">
@@ -2020,11 +2353,7 @@ export function TimelinePanel({
         </div>
 
         <div className="vu-meter-column">
-          <StereoVuMeter
-            leftLevel={transport.meterLeft}
-            rightLevel={transport.meterRight}
-            overload={transport.meterOverload}
-          />
+          <StereoVuMeter liveTransport={liveTransport} />
           {/* Sous le VU-mètre, dans la place que `BOUNCE MIX` occupe à côté :
               au-dessus, ce décompte poussait la plaque vers le bas et
               l'empêchait de partir de la même ligne que le reste. */}
@@ -2089,7 +2418,7 @@ export function TimelinePanel({
               <div className="bpm-header-row">
                 <span className="bpm-label-text">BPM</span>
               </div>
-              <span className="bpm-value-display">{currentBpm.toFixed(2)}</span>
+              <span className="bpm-value-display" ref={bpmDisplay}>{currentBpmText}</span>
             </div>
             {/* Un projet est un instantané transportable de la session; la
                 base reste l'état de travail enregistré au fil de l'eau. */}
@@ -2210,9 +2539,10 @@ export function TimelinePanel({
             className="timeline-content timeline-content--following"
             style={{
               width: contentWidth,
-              "--timeline-follow-padding": `${contentLayout.paddingPx}px`,
-              "--timeline-follow-offset": `${contentLayout.offsetPx}px`,
-            } as CSSProperties}
+              boxSizing: contentNeedsNativeScroll ? "content-box" : "border-box",
+              paddingInline: contentNeedsNativeScroll ? viewportWidth / 2 : 0,
+              marginLeft: contentNeedsNativeScroll ? 0 : Math.max(0, (viewportWidth - contentWidth) / 2),
+            }}
           >
           <div className="timeline-ruler" onClick={handleTimelineSeek}>
             <svg
@@ -2337,10 +2667,10 @@ export function TimelinePanel({
                 >
                   <div
                     className={`timeline-filter-lane${freehandArmed ? " is-freehand" : ""}`}
-                    style={{
-                      "--beat-width": `${pixelsPerBeat}px`,
-                      "--measure-width": `${pixelsPerBeat * 4}px`,
-                    } as CSSProperties}
+                    /* Le repère de mesure, puis le dégradé vertical. Voir
+                       `.timeline-lane` : une propriété ordinaire à la place
+                       d'une propriété personnalisée. */
+                    style={{ backgroundSize: `${pixelsPerBeat * 4}px 100%, 100% 100%` }}
                     data-lane={lane}
                     /* `Ctrl` au moment du clic choisit le geste, et lui seul :
                        une fois le trait commencé, le relâcher en cours de
@@ -2378,10 +2708,10 @@ export function TimelinePanel({
                   />
                   <div
                     className={`timeline-lane${busy ? " timeline-lane--busy" : ""}${dropTargetLane === lane ? " timeline-lane--drop-target" : ""}${pixelsPerBeat < 1 ? " timeline-lane--compressed" : ""}${isAudible ? "" : " timeline-lane--inaudible"}`}
-                    style={{
-                      "--beat-width": `${pixelsPerBeat}px`,
-                      "--measure-width": `${pixelsPerBeat * 4}px`,
-                    } as CSSProperties}
+                    /* Une mesure par tuile. `--beat-width` disparaît avec :
+                       aucune règle ne la lisait, et elle invalidait la voie
+                       entière à chaque zoom pour rien. */
+                    style={{ backgroundSize: `${pixelsPerBeat * 4}px 100%` }}
                     data-lane={lane}
                     onClick={handleTimelineSeek}
                     onPointerMove={moveShapeStroke}
@@ -2403,7 +2733,8 @@ export function TimelinePanel({
               preserveAspectRatio="none"
               aria-hidden="true"
             >
-              {automationPaths.map((path, lane) => <path d={path} key={lane} />)}
+              {automationPaths.map((path, lane) => <path d={path} key={`manual-${lane}`} />)}
+              {volumeDrawPaths.map((draw) => <path d={draw.path} key={`draw-${draw.id}`} />)}
             </svg>}
 
             {showPanAutomation && <svg
@@ -2414,7 +2745,8 @@ export function TimelinePanel({
               preserveAspectRatio="none"
               aria-hidden="true"
             >
-              {panPaths.map((path, lane) => <path d={path} key={lane} />)}
+              {panPaths.map((path, lane) => <path d={path} key={`manual-${lane}`} />)}
+              {panDrawPaths.map((draw) => <path d={draw.path} key={`draw-${draw.id}`} />)}
             </svg>}
 
             <svg
@@ -2433,7 +2765,7 @@ export function TimelinePanel({
               ))}
             </svg>
 
-            {showPanAutomation && timeline.panNodes.map((node) => {
+            {showPanAutomation && timeline.panNodes.filter((node) => node.drawGroupId === null).map((node) => {
               const draft = panDrafts[node.id];
               const beat = draft?.beat ?? node.beat;
               const value = draft?.value ?? node.value;
@@ -2453,6 +2785,7 @@ export function TimelinePanel({
                       lane: node.lane,
                       beat,
                       nodeId: node.id,
+                      drawGroups: [],
                     });
                   }}
                   onPointerDown={(event) => {
@@ -2477,7 +2810,7 @@ export function TimelinePanel({
               );
             })}
 
-            {showVolumeAutomation && timeline.volumeNodes.map((node) => {
+            {showVolumeAutomation && timeline.volumeNodes.filter((node) => node.drawGroupId === null).map((node) => {
               const draft = volumeDrafts[node.id];
               const beat = draft?.beat ?? node.beat;
               const gainDb = draft?.gainDb === undefined ? node.gainDb : draft.gainDb;
@@ -2497,6 +2830,7 @@ export function TimelinePanel({
                       lane: node.lane,
                       beat,
                       nodeId: node.id,
+                      drawGroups: [],
                     });
                   }}
                   onPointerDown={(event) => {
@@ -2577,7 +2911,7 @@ export function TimelinePanel({
               </div>
             )}
 
-            {timeline.clips.map((clip) => {
+            {renderedClips.map((clip) => {
               const draft = clipDrafts[clip.id];
               const anchorBeat = draft?.anchorBeat ?? clip.anchorBeat;
               const lane = draft?.lane ?? clip.lane;
@@ -2591,8 +2925,8 @@ export function TimelinePanel({
               const liveDurationBeats = live.visualEndBeat - live.visualStartBeat;
               const clipWidth = Math.max(0, liveDurationBeats * pixelsPerBeat);
               const trimEdge = hoveredTrim?.clipId === clip.id ? hoveredTrim.edge : null;
-              const seqIndex = sortedClips.findIndex((candidate) => candidate.id === clip.id) + 1;
-              const track = libraryTracks.find((candidate) => candidate.id === clip.libraryTrackId);
+              const seqIndex = clipSequenceNumbers.get(clip.id) ?? 1;
+              const track = libraryTracksById.get(clip.libraryTrackId);
               const trackDisplayName = track ? libraryDisplayName(track) : clip.fileName;
               const clipLabel = `${trackDisplayName} - #${seqIndex}`;
               const canBeKey = canBeSidechainKey(clip, timeline.clips);
@@ -2618,12 +2952,17 @@ export function TimelinePanel({
                 <div
                   className={classNames}
                   key={clip.id}
+                  /* L'ancre est placée sur l'ancre, et non par une propriété
+                     personnalisée posée ici. Un seul descendant la lisait —
+                     `.clip-anchor`, un `span` — mais la poser sur le clip
+                     invalidait le style calculé de **tout** ce qu'il contient,
+                     waveform comprise, à chaque cran de zoom. Troisième
+                     occurrence du même défaut; voir `.timeline-lane`. */
                   style={{
                     left: visualStartBeat * pixelsPerBeat,
                     width: clipWidth,
                     top: `calc(${lane * (100 / TIMELINE_LANES.length)}% + (100% / 9) + 7px)`,
-                    "--anchor-offset": `${clip.preRollBeats * pixelsPerBeat}px`,
-                  } as CSSProperties}
+                  }}
                   title={`${clipLabel} · track ${String.fromCharCode(65 + lane)} · first downbeat on bar ${anchorBeat / BEATS_PER_MEASURE + 1}`}
                   /* An edge belongs to the trim tool; anywhere else moves the
                      clip. Asking the trim first is what keeps the two gestures
@@ -2784,23 +3123,28 @@ export function TimelinePanel({
                     trimStartBeats={live.trimStartBeats}
                     trimEndBeats={live.trimEndBeats}
                     durationBeats={liveDurationBeats}
+                    /* La fenêtre, ramenée dans les coordonnées du dessin : le
+                       clip commence à `visualStartBeat`, et le dessin huit
+                       pixels plus loin — c'est l'encart de `.clip-waveform`. */
+                    visibleFromPx={visibleContentFromPx - visualStartBeat * pixelsPerBeat - 8}
+                    visibleWidthPx={viewportWidth}
                   />
-                  <span className="clip-anchor" aria-hidden="true" />
+                  <span
+                    className="clip-anchor"
+                    style={{ left: clip.preRollBeats * pixelsPerBeat }}
+                    aria-hidden="true"
+                  />
                 </div>
               );
             })}
           </div>
-          {timeline.clips.length > 0 && (
-            <div
-              className="timeline-playhead"
-              style={{ left: transport.positionBeat * pixelsPerBeat }}
-              aria-hidden="true"
-            >
-              <span />
-            </div>
-          )}
           </div>
         </div>
+        {timeline.clips.length > 0 && (
+          <div className="timeline-playhead timeline-playhead--fixed" aria-hidden="true">
+            <span />
+          </div>
+        )}
       </div>
 
       {/* Photorealistic TE Horizontal Timeline Scrollbar */}
@@ -2811,6 +3155,7 @@ export function TimelinePanel({
       >
         <div className="timeline-scrollbar-track">
           <div
+            ref={scrollbarThumb}
             className="timeline-scrollbar-thumb"
             style={{
               width: `${thumbWidthPercent}%`,
@@ -2846,6 +3191,14 @@ export function TimelinePanel({
         >
           {volumeContextMenu.nodeId === null ? (
             <>
+              {volumeContextMenu.drawGroups.map((group) => (
+                <button key={group.id} type="button" role="menuitem" className="is-destructive" disabled={busy} onClick={() => {
+                  void onDeleteDrawGroup(group.id);
+                  setVolumeContextMenu(null);
+                }}>
+                  {volumeContextMenu.drawGroups.length === 1 ? "Delete Draw" : `Delete ${group.kind === "pan" ? "Pan" : "Volume"} Draw`}
+                </button>
+              ))}
               <button
                 type="button"
                 role="menuitem"

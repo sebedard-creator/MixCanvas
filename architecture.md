@@ -6,7 +6,7 @@ Ce document vivant décrit la mécanique sous le capot de MixCanvas : les respon
 
 Il ne sert pas à décrire l'apparence de l'interface ni à imposer prématurément un langage ou un framework. Toute décision qui modifie le fonctionnement interne doit être reflétée ici. Chaque modification matérielle du projet doit également être inscrite dans `changelog.md` le jour où elle est faite.
 
-Dernière mise à jour : 2026-07-29
+Dernière mise à jour : 2026-08-03
 
 ## Vision du produit
 
@@ -159,13 +159,160 @@ Ces dossiers sont exclus de Git. `pnpm-lock.yaml`, `Cargo.lock` et `rust-toolcha
 
 Le transport musical est la source de vérité du playhead. Les actions Play, Pause et Seek agissent d'abord sur sa position en beats; le moteur audio reçoit ensuite le seek correspondant. Les snapshots de l'interface ne réécrivent jamais le transport depuis l'horloge interne du lecteur, qui peut être momentanément imprécise autour d'un seek ou d'une pause. Le playhead reste physiquement au centre de la fenêtre tant que le contenu déborde de celle-ci; la timeline possède alors une marge virtuelle de demi-fenêtre et défile autour de lui. Dès que le projet entier tient dans la fenêtre — au zoom extérieur maximal — ce décalage cesserait d'avoir un sens et repousserait la moitié du mix hors de l'écran : le contenu est alors centré, encadré de deux marges égales, ce qui est précisément l'objet d'un zoom arrière complet.
 
+Un clic de seek est converti depuis le rectangle de la règle ou de la voie réellement cliquée. Ce rectangle est déjà déplacé par le `scrollLeft` courant et déjà après la marge virtuelle : `x local / pixelsParBeat` est donc directement le beat demandé. La marge ne doit jamais être soustraite une seconde fois, sans quoi les clics d'une timeline centrée sont artificiellement ramenés vers le début du projet.
+
 La borne de zoom extérieure s'arrête volontairement un cran avant l'ajustement parfait : le projet occupe une fraction de la largeur, si bien qu'atteindre la limite se lit comme une limite plutôt que comme une commande bloquée, et que les deux extrémités du mix sont visibles d'un coup d'œil. Cela garantit un playhead continu, stable et aligné avec l'axe musical de la timeline.
 
-Le zoom de la timeline est ancré au playhead. Les événements de molette sont regroupés en une seule variation bornée par image affichée, ce qui évite les valeurs d'échelle transitoires lors d'une rafale de micro-événements. La largeur musicale et la position `left` qui place le beat courant au centre sont dérivées du même état React et publiées dans le même commit DOM. Le viewport conserve un `overflow-x: hidden` et son `scrollLeft` natif reste à zéro. Une translation GPU n'est volontairement pas utilisée : WebView2 pouvait composer ce calque avant le nouveau layout de ses enfants. Pour la même raison, le zoom ne possède ni aperçu intermédiaire par `scaleX`, ni conteneur forcé en calque par `will-change` : grille, clips, courbes, waveforms et playhead n'existent qu'à une seule échelle validée par image.
+Le zoom de la timeline est ancré au playhead. Les événements de molette sont regroupés en une seule variation bornée par image affichée, ce qui évite les valeurs d'échelle transitoires lors d'une rafale de micro-événements. La largeur musicale et la translation qui place le beat courant au centre sont dérivées du même état et publiées dans le même commit DOM.
 
-Une variante de compilation diagnostique `disable-gpu` existe sous Windows. Avant la création du premier WebView, elle ajoute `--disable-gpu` à `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`, ce qui demande à WebView2 de désactiver son accélération matérielle. Elle préserve les éventuels autres arguments WebView2 déjà présents et n'est combinée avec `embed-resources` que pour produire un exécutable de test portable clairement identifié. Le test comparatif du 2026-07-29 est concluant sur la machine de développement : le même projet et les mêmes commandes de zoom produisent le flash avec l'accélération matérielle et n'en produisent plus dans la build `NOGPU`. Le défaut appartient donc à la composition GPU de WebView2 ou à son interaction avec le pilote, et non aux coordonnées calculées par MixCanvas. La feature demeure distincte tant que l'impact du rendu logiciel sur la charge CPU, les waveforms et la fluidité générale n'a pas été mesuré.
+Le suivi de lecture passe par le **défilement natif écrit sans lecture**. La surface musicale reçoit une demi-largeur de viewport vide avant et après le projet; écrire `scrollLeft = beat × pixelsPerBeat` garde donc ce beat sous la ligne centrale. Le playhead n'appartient plus à cette surface : c'est une superposition fixe au-dessus du viewport. La trace du 2 août a montré que translater le conteneur complet en rendu logiciel repeignait `timeline-content` sur une zone non bornée, jusqu'à 15,7 ms pour une seule opération. Le défilement conserve le centrage sans déplacer ce sous-arbre de clips, courbes et waveforms à chaque tick.
 
-## État de référence technique — audit du 2026-07-28
+Le viewport `.timeline-scroll` est une frontière explicite de layout et de peinture (`contain: layout paint`). Il a déjà une hauteur définie et un débordement masqué; cette isolation ne change donc ni sa géométrie ni ce qui est visible, mais interdit à une invalidation de scroll de remonter inutilement jusqu'au document complet en rendu logiciel. Une tentative supplémentaire avec `will-change: scroll-position` n'a pas réduit la rasterisation dans les traces comparables et n'est pas conservée : Chrome possédait déjà sa couche de scroll dédiée.
+
+La trace de validation sur 23,896 s confirme l'effet attendu : `Layerize` passe de 194,8 à **11,6 ms/s**, `Paint` de 178,0 à **93,7 ms/s** et `Layout` de 23,4 à **15,5 ms/s**. Les trois rangées musicales sont encore peintes vingt fois par seconde — le mode logiciel doit copier les pixels exposés par le défilement — mais une passe coûte au plus 3,19 ms et ne porte plus sur une surface infinie. C'est un coût borné, compatible avec le déplacement continu du timeline.
+
+Le zoom ne possède toujours ni aperçu intermédiaire par `scaleX`, ni conteneur forcé en calque par `will-change` : grille, clips, courbes, waveforms et playhead n'existent qu'à une seule échelle validée par image. Le viewport conserve un `overflow-x: hidden`; son `scrollLeft` est l'unique déplacement vivant de la lecture et il n'est jamais lu dans le cycle de rendu.
+
+Les clips audio sont virtualisés côté interface : seule la fenêtre visible, augmentée d'une marge supérieure au seuil de rafraîchissement de vue, possède des titres, boutons et conteneurs de waveform dans le DOM. La timeline audio et son plan de lecture gardent tous les clips : cette sélection ne touche qu'au rendu React. Les numéros de clips et la recherche des morceaux de bibliothèque sont pré-indexés, afin qu'une session longue ne transforme pas chaque rendu en recherche quadratique.
+
+L'afficheur BPM suit le playhead hors du cycle React. Une rampe de tempo peut changer ses deux décimales à chaque poll audio; le texte du readout est donc écrit directement dans son `span`, comme le playhead et les VU-mètres. Un changement de BPM vivant ne doit jamais reconstruire la timeline, ses clips ni ses waveforms.
+
+Les gestes Draw Pan et Volume sont des groupes persistants. Les points précis restent dans les tables d'automation pour le DSP, mais portent un `draw_group_id`; `timeline_draw_groups` conserve la voie, l'étendue, le type (`step`, `sine`, `triangle`) et la période du geste. La timeline les dessine comme **un seul chemin SVG par Draw**, sans poignée intermédiaire, avec un échantillonnage visuel borné par la largeur réelle du viewport. Les points audio originaux ne sont ni supprimés ni modifiés par cette simplification. Les nodes manuels n'ont pas de groupe et restent éditables. Un clic droit dans la plage d'une courbe Draw propose `Delete Draw` — ou les deux suppressions nommées quand Pan et Volume se recouvrent — et efface atomiquement le groupe concerné sans toucher aux nodes manuels. Les groupes suivent un clip déplacé et font partie des instantanés Undo/Redo ainsi que des fichiers de projet.
+
+Le mode de rendu se choisit **au lancement**, et non plus à la compilation. La variante `disable-gpu` a disparu : `RenderMode` lit `--no-gpu`, `--gpu-safe` ou `--gpu` et ajuste `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` avant la création du premier WebView, en préservant les arguments déjà présents. Le dessin logiciel reste le défaut, parce que certains pilotes font déchirer le compositeur matériel de WebView2 pendant un zoom et qu'aucun soin de notre côté n'y change rien — la justesse l'emporte, à un coût que cette interface 2D peut payer. Une seule feature de compilation subsiste, `embed-resources`, qui produit le portable d'un seul fichier.
+
+Un portable ne se construit jamais avec `cargo build` seul : Rust y produit correctement l'exécutable, mais Tauri ne reçoit pas son contexte `build` et l'application peut conserver `devUrl` (`127.0.0.1:1420`) au lieu de charger `frontendDist`. La commande de distribution est `node_modules\\.bin\\tauri.cmd build --no-bundle -f embed-resources`; elle exécute d'abord le build Vite puis embarque `dist` dans l'exécutable.
+
+**Le GPU a ensuite été mis hors de cause par la mesure.** Le relevé du 2026-07-31, inspecteur ouvert sur la machine de développement, donne 535 contre 541 ms de rendu par seconde entre `--gpu-safe` et `--gpu` : moins de deux pour cent d'écart. Le moteur n'était pas le problème, et remettre l'accélération n'aurait rien gagné. Le flash observé le 2026-07-29 était réel, mais il ne représentait pas le coût, seulement un artefact visible; la charge venait d'ailleurs, et la section du 2026-08-02 dit d'où.
+
+## Ce que coûte une image — mesures du 2026-07-31 au 2026-08-02
+
+Trois jours de relevés sur la machine de développement, inspecteur ouvert,
+parce qu'une interface jugée « inacceptable » avant une v1.0 ne se corrige pas
+au raisonnement. La leçon de méthode précède les correctifs : **les deux
+hypothèses formulées sans mesure étaient fausses toutes les deux**, et les cinq
+défauts trouvés l'ont été par le profileur, jamais par déduction.
+
+### Une propriété personnalisée invalide tout son sous-arbre
+
+C'est le mécanisme central, et il s'est présenté **trois fois** sous des formes
+différentes. Changer une propriété personnalisée sur un élément oblige le
+navigateur à recalculer le style de chacun de ses descendants, puisque
+n'importe lequel pourrait la lire. Une propriété ordinaire — `transform`,
+`background-size`, `left` — n'invalide que l'élément qui la porte.
+
+| propriété | posée sur | changeait | coût mesuré |
+|---|---|---|---|
+| `--timeline-follow-offset` | l'ancêtre de toute la timeline | 20 fois/s | **36,4 %** du fil |
+| `--measure-width` | chaque voie, ancêtre de ses clips | à chaque zoom | non isolé |
+| `--anchor-offset` | chaque clip, ancêtre de sa waveform | à chaque zoom | non isolé |
+
+Aucune n'est remplacée par une astuce : la première devient une transformation,
+la deuxième un `background-size` sur une tuile large d'une mesure, la troisième
+un `left` écrit sur l'ancre elle-même — le seul descendant qui la lisait.
+`--beat-width`, écrite sur deux éléments par voie à chaque zoom, n'était lue par
+aucune règle.
+
+**Plus aucune propriété personnalisée n'est écrite depuis React**, et c'est une
+invariante à tenir. Elle se vérifie d'une commande :
+
+```
+grep -rn '"--[a-z-]*":' src/
+```
+
+### Lire la mise en page force le navigateur à la recalculer
+
+Un `useLayoutEffect` sans dépendances vérifiait à chaque rendu que le
+`scrollLeft` natif de la timeline valait bien zéro. Lire `scrollLeft` oblige le
+navigateur à recalculer style et mise en page sur-le-champ, avant de pouvoir
+répondre — et comme le rendu venait d'écrire des styles, il n'avait rien en
+réserve. **188 ms par seconde**, soit un cinquième du fil principal, pour
+vérifier une valeur qui ne bouge presque jamais.
+
+L'`overflow` étant déjà `hidden` des deux côtés, il ne reste qu'un défilement
+provoqué par le navigateur lui-même quand il met un enfant au premier plan, et
+l'évènement `scroll` dit exactement quand cela arrive. Un zoom remet le décalage
+à zéro par une **écriture seule**, qui n'interroge pas la mise en page.
+
+La même vérification exhaustive s'impose ici :
+
+```
+grep -rn "getBoundingClientRect\|offsetWidth\|clientWidth\|scrollLeft" src/
+```
+
+Les lectures situées dans un gestionnaire de pointeur sont saines — une par
+geste, et il faut bien convertir un pointeur en beat. Ce sont celles qui vivent
+sur le chemin de chaque rendu qui coûtent.
+
+### Ne construire que ce qui se voit
+
+Trois structures étaient bâties sur toute la largeur du mix, qui peut atteindre
+soixante-dix mille pixels, pour un écran qui en montre neuf cents.
+
+- **Les waveforms.** Mesuré sur un morceau de six minutes au zoom ordinaire :
+  seize mille colonnes, un million six cent mille caractères de chemin,
+  vingt-six millisecondes par clip et par cran de zoom. Un bloc de largeur fixe
+  glisse par pas de 256 px — deux bords s'alignant chacun pour soi franchissaient
+  la grille à des moments différents, et la tranche changeait deux fois par pas.
+  Le niveau de la pyramide reste choisi sur la largeur **totale** du clip : le
+  choisir sur la tranche donnait un escalier.
+- **Les marqueurs de mesure**, coupés à la fenêtre élargie d'un pas.
+- **Les courbes d'automation** — volume, panoramique, filtre. Le découpage garde
+  **un nœud de chaque côté** de la fenêtre : couper au bord donnerait une pente
+  calculée depuis le bord, et la ligne ne passerait plus où elle passe. Les
+  extrémités restent ancrées à 0 et à la largeur totale, un segment plat ne
+  coûtant rien.
+
+### Le transport hors du cycle de rendu
+
+La position de lecture est interrogée vingt fois par seconde. Tant qu'elle
+vivait dans un `useState`, chacune de ces réponses re-rendait l'application
+entière — pour déplacer deux éléments. Elle passe par `liveTransport`
+(`src/lib/liveTransport.ts`), un émetteur auquel on s'abonne : la translation du
+contenu, la tête de lecture et le curseur de la barre sont écrits directement
+dans le DOM. Un rendu n'est redemandé qu'au franchissement de 192 px, le pas en
+deçà de la marge que les waveforms se gardent.
+
+Effet de bord qui vaut d'être noté : une action déclenchée au clavier lit
+désormais la position **au moment du geste** et non celle du dernier rendu. Elle
+était juste par accident, parce que l'état se rafraîchissait vingt fois par
+seconde; elle l'est maintenant par construction.
+
+### Un objet neuf empêche React de s'arrêter
+
+`updateSmartCursor` écrivait deux objets neufs dans l'état à chaque mouvement du
+pointeur. Le pointeur bouge plus de cent fois par seconde, l'outil ne change
+qu'en franchissant une frontière — mais un objet neuf n'est jamais égal au
+précédent, donc le panneau entier était re-rendu à la fréquence de la souris, et
+les trois jeux de courbes reconstruits avec lui. **43 % du fil principal.** Rien
+n'est écrit tant que rien ne change, et les courbes sont mémorisées.
+
+### Ce que le profileur peut dire, et ce qu'il faut pour l'entendre
+
+Le paquet de production est minifié : le premier poste s'affichait comme
+`(anonymous)`, ce qui ne nomme rien. Un build de diagnostic non minifié le
+nomme, au prix d'un frontend plus lourd :
+
+```
+npx vite build --minify false --sourcemap
+npx tauri build --no-bundle -f embed-resources --config <config vidant beforeBuildCommand>
+```
+
+sans quoi `beforeBuildCommand` refait un frontend minifié par-dessus.
+
+Deux pièges de lecture méritent d'être consignés. **Un nom peut désigner son
+voisin** : le profileur a un jour attribué 43 % à `panNodeY`, trois opérations
+arithmétiques, parce que V8 l'avait inlinée dans la fonction qui l'appelait.
+**Et l'attribution à une position dans le paquet vaut mieux qu'un total** :
+c'est elle, et rien d'autre, qui a trouvé la lecture de `scrollLeft`, invisible
+autrement puisqu'elle ne ressemble pas à du travail.
+
+Enfin, les totaux ne se comparent qu'entre scénarios semblables. Plusieurs
+relevés de cette série ont été faits sur des sessions différentes et ne
+permettent aucune conclusion — c'est la limite qu'il a fallu reconnaître avant
+de pouvoir avancer.
+
+## État de référence technique — audit du 2026-08-03
 
 Le projet porte maintenant le nom **MixCanvas**. Il s'est auparavant appelé
 EZ-DJ, puis BeatForge. Les trois manifestes applicatifs portent toujours la
@@ -177,10 +324,10 @@ L'application demeure organisée en deux moitiés :
 - React 19, TypeScript 7 et Vite 8 pour l'interface;
 - Tauri 2 et Rust 2024 pour la persistance, l'analyse, le transport et tout le
   chemin audio;
-- SQLite embarqué, en schéma **24**, pour la session courante;
+- SQLite embarqué, en schéma **26**, pour la session courante;
 - JSON versionné, au format `mixcanvas-project` version **1**, pour les fichiers
   `.mixcanvas`;
-- cinquante commandes Tauri enregistrées comme frontière IPC.
+- cinquante-trois commandes Tauri enregistrées comme frontière IPC.
 
 Les responsabilités principales sont les suivantes :
 
@@ -247,7 +394,7 @@ Le second flux vertical est implémenté :
 
 L'exploration des dossiers, le décodage des métadonnées et l'écriture en lot s'exécutent dans une tâche bloquante dédiée afin de ne pas immobiliser le thread principal de l'interface. Une seule importation peut modifier la bibliothèque à la fois.
 
-Sous Windows, la base est enregistrée dans le dossier de données applicatives associé à l'identifiant `ca.mixcanvas.app`, sous le nom `library.sqlite3`. Les dépendances de compilation restent dans le dépôt; cette base constitue une donnée utilisateur produite à l'exécution.
+La base est enregistrée sous le nom `library.sqlite3` dans `MixCanvas Files`, le dossier posé **à côté de l'exécutable** qui reçoit tout ce que le programme écrit. Un exécutable placé là où il n'a pas le droit d'écrire se replie sur le dossier de données applicatives de l'identifiant `ca.mixcanvas.app`, parce que refuser de démarrer serait pire. Les dépendances de compilation restent dans le dépôt; cette base constitue une donnée utilisateur produite à l'exécution.
 
 ### Jalon 0.0.3 — Analyse BPM et beatgrid
 
@@ -533,6 +680,8 @@ Le quinzième flux vertical introduit la première composante visuelle « studio
 7. React transforme le niveau linéaire en échelle VU de −20 à +3 dB, avec `0 VU` calibré à 0,35 du niveau float32 maximal;
 8. deux rangées de grandes LED circulaires horizontales flottent directement sur le panneau de l'en-tête, sans boîtier ni cadre : leurs lampes suivent la même échelle VU non linéaire, de vert à orange puis rouge, et un voyant circulaire `OL` séparé signale la surcharge. Les niveaux sont publiés même si Rodio rapporte transitoirement un état de lecture ambigu, afin que l'affichage reste fidèle au signal master produit;
 9. le meter est strictement en lecture seule : il n'applique aucun gain, aucune normalisation et aucun traitement au signal observé;
+
+Les LED du VU changent d'état directement et sans ombre portée dynamique. La lecture les actualise fréquemment; `box-shadow` ne peut pas être composé par Chromium et une trace le signalait encore comme animation à chaque changement de diode, même après retrait de la transition explicite. La couleur et le relief de la lentille suffisent à lire le niveau, sans transformer le VU en source continue de peinture et de layerisation.
 10. aucune dépendance, donnée persistée ou migration SQLite n'est ajoutée.
 
 Le style crème, bois sombre, laiton et aiguille rouge sert de prototype au futur langage visuel. Le reste de l'interface demeure inchangé afin d'évaluer ce choix avant de propager une esthétique vintage aux transports, contrôles et panneaux.
@@ -678,11 +827,11 @@ La bibliothèque indexe les fichiers sans les dupliquer. Pour chaque fichier, el
 
 Un fichier déplacé ou manquant doit être signalé et pouvoir être relié à son nouvel emplacement.
 
-Le schéma SQLite conserve l'identifiant interne, le chemin original, une clé de chemin normalisée, le nom de fichier, l'artiste et le titre ID3 optionnels, la durée, la fréquence d'échantillonnage, le nombre de canaux, le BPM, la confiance, le premier beat, le nombre de beats, l'état de l'analyse, une erreur éventuelle et la date d'ajout. La table `track_beats` conserve chaque position en millisecondes avec une clé étrangère vers le morceau. Le schéma 5 ajoute `track_waveforms`, initialement composée de quatre blocs min/max stéréo. Le schéma 6 élargit la contrainte de `timeline_clips.lane` de la seule piste 0 aux pistes 0 à 2. Le schéma 7 ajoute `timeline_lanes` et ses états booléens Mute/Solo pour les trois pistes. Le schéma 8 ne crée aucune nouvelle colonne : il constitue une migration de données qui recale les anciennes ancres sur les mesures 4/4. Le schéma 9 ajoute la version du cache d'analyse. Le schéma 10 remplace les anciennes waveforms par six blocs min/max/RMS stéréo haute définition avec suppression en cascade. Le schéma 11 ajoute les Volume Nodes persistants des trois pistes. Le schéma 12 ajoute `artist`, `title` et le marqueur `id3_scanned` pour le rattrapage sûr des entrées existantes. Le schéma 13 ajoute `timeline_clips.tempo_anchor_beat`, initialisé à l'ancienne ancre de chaque clip afin de séparer la cible BPM de sa position audio. Le schéma 14 ajoute `timeline_filter_nodes` et ses valeurs bipolaires de filtre par lane. Le schéma 15 ajoute `timeline_clips.eq_settings`, l'égaliseur par clip sérialisé en JSON. Le schéma 16 ajoute `timeline_clips.trim_start_beats` et `trim_end_beats`, qui permettent à deux sous-clips issus d'une scission de référencer le même MP3 sans le dupliquer. Le schéma 17 ajoute `project_settings.limiter_enabled`. Le schéma 18 ajoute `project_settings.compressor_enabled`. Le schéma 19 ajoute `timeline_clips.is_sidechain_key`. Le schéma 20 supprime `project_settings.ducking_enabled`, que le schéma 19 avait introduit avant que l'interrupteur global ne se révèle redondant : les migrations forment un journal, on n'en réécrit pas les entrées passées. Le schéma 21 ajoute l'automation de panoramique par piste. Le schéma 22 introduit d'abord des stems rattachés au morceau et le sélecteur de stem du clip. Le schéma 23 remplace cette première géométrie par `clip_stems`, car seule la fenêtre réellement utilisée par chaque clip est séparée; `source_from_ms` conserve son origine dans le fichier. Le schéma 24 ajoute aux stems leurs six blocs de waveform stéréo min/max/RMS.
+Le schéma SQLite conserve l'identifiant interne, le chemin original, une clé de chemin normalisée, le nom de fichier, l'artiste et le titre ID3 optionnels, la durée, la fréquence d'échantillonnage, le nombre de canaux, le BPM, la confiance, le premier beat, le nombre de beats, l'état de l'analyse, une erreur éventuelle et la date d'ajout. La table `track_beats` conserve chaque position en millisecondes avec une clé étrangère vers le morceau. Le schéma 5 ajoute `track_waveforms`, initialement composée de quatre blocs min/max stéréo. Le schéma 6 élargit la contrainte de `timeline_clips.lane` de la seule piste 0 aux pistes 0 à 2. Le schéma 7 ajoute `timeline_lanes` et ses états booléens Mute/Solo pour les trois pistes. Le schéma 8 ne crée aucune nouvelle colonne : il constitue une migration de données qui recale les anciennes ancres sur les mesures 4/4. Le schéma 9 ajoute la version du cache d'analyse. Le schéma 10 remplace les anciennes waveforms par six blocs min/max/RMS stéréo haute définition avec suppression en cascade. Le schéma 11 ajoute les Volume Nodes persistants des trois pistes. Le schéma 12 ajoute `artist`, `title` et le marqueur `id3_scanned` pour le rattrapage sûr des entrées existantes. Le schéma 13 ajoute `timeline_clips.tempo_anchor_beat`, initialisé à l'ancienne ancre de chaque clip afin de séparer la cible BPM de sa position audio. Le schéma 14 ajoute `timeline_filter_nodes` et ses valeurs bipolaires de filtre par lane. Le schéma 15 ajoute `timeline_clips.eq_settings`, l'égaliseur par clip sérialisé en JSON. Le schéma 16 ajoute `timeline_clips.trim_start_beats` et `trim_end_beats`, qui permettent à deux sous-clips issus d'une scission de référencer le même MP3 sans le dupliquer. Le schéma 17 ajoute `project_settings.limiter_enabled`. Le schéma 18 ajoute `project_settings.compressor_enabled`. Le schéma 19 ajoute `timeline_clips.is_sidechain_key`. Le schéma 20 supprime `project_settings.ducking_enabled`, que le schéma 19 avait introduit avant que l'interrupteur global ne se révèle redondant : les migrations forment un journal, on n'en réécrit pas les entrées passées. Le schéma 21 ajoute l'automation de panoramique par piste. Le schéma 22 introduit d'abord des stems rattachés au morceau et le sélecteur de stem du clip. Le schéma 23 remplace cette première géométrie par `clip_stems`, car seule la fenêtre réellement utilisée par chaque clip est séparée; `source_from_ms` conserve son origine dans le fichier. Le schéma 24 ajoute aux stems leurs six blocs de waveform stéréo min/max/RMS. Le schéma 25 ajoute `clip_bakes`, la cuisson d'un clip : le fichier rendu, son origine dans la source, ses six blocs de waveform, et surtout la colonne `removed`, qui conserve telle quelle l'automation retirée au moment de la cuisson. C'est elle qui rend l'opération réversible; sans elle, cuire un effet serait un aller simple, et un bouton sans retour finit par ne plus être cliqué. Le schéma 26 ajoute `timeline_draw_groups` et rattache les points de Volume/Pan générés par un geste Draw avec `draw_group_id`; le moteur conserve ainsi tous les échantillons audio tandis que l'interface peut représenter et supprimer le geste comme une seule courbe.
 
 `CURRENT_DATABASE_SCHEMA` estampille toujours `LATEST_SCHEMA_VERSION`, car il est également rejoué après une migration afin de vérifier la présence des tables et des index. Une valeur périmée à cet endroit ramènerait la base à une version antérieure et rejouerait les dernières migrations à chaque démarrage. Les colonnes ajoutées par `ensure_column` portent les mêmes contraintes `CHECK` que le schéma neuf, afin qu'une base migrée et une base créée de zéro acceptent exactement les mêmes valeurs.
 
-`PRAGMA user_version` versionne le schéma afin que les futures modifications puissent être migrées explicitement. Le jalon 0.0.3 migre automatiquement le schéma 1 vers le schéma 2; le jalon 0.0.4 migre ensuite le schéma 2 vers le schéma 3; le jalon 0.0.5 migre le schéma 3 vers le schéma 4; le jalon 0.0.7 migre le schéma 4 vers le schéma 5; le jalon 0.0.8 migre le schéma 5 vers le schéma 6; le jalon 0.0.9 migre le schéma 6 vers le schéma 7; le jalon 0.0.10 migre le schéma 7 vers le schéma 8; le jalon 0.0.11 migre le schéma 8 vers le schéma 9; le jalon 0.0.13 migre le schéma 9 vers le schéma 10; le jalon 0.0.16 migre le schéma 10 vers le schéma 11; le jalon 0.0.17 migre le schéma 11 vers le schéma 12; le jalon 0.0.18 migre le schéma 12 vers le schéma 13; le jalon 0.0.19 migre le schéma 13 vers le schéma 14, puis 14 vers 15 et 15 vers 16. Les schémas 17 et 18 ajoutent les interrupteurs `limiter_enabled` et `compressor_enabled`, le schéma 19 la colonne `is_sidechain_key`, et le schéma 20 retire `ducking_enabled`. Les schémas 21 à 24 ajoutent successivement le panoramique, les stems, leur portée par clip et leurs waveforms. Les migrations peuvent être enchaînées depuis le schéma 1 et conservent les entrées, leurs analyses, leurs corrections, leurs clips, leurs états de piste et leurs automations. Seul le cache waveform reproductible est invalidé au passage vers le schéma 10.
+`PRAGMA user_version` versionne le schéma afin que les futures modifications puissent être migrées explicitement. Le jalon 0.0.3 migre automatiquement le schéma 1 vers le schéma 2; le jalon 0.0.4 migre ensuite le schéma 2 vers le schéma 3; le jalon 0.0.5 migre le schéma 3 vers le schéma 4; le jalon 0.0.7 migre le schéma 4 vers le schéma 5; le jalon 0.0.8 migre le schéma 5 vers le schéma 6; le jalon 0.0.9 migre le schéma 6 vers le schéma 7; le jalon 0.0.10 migre le schéma 7 vers le schéma 8; le jalon 0.0.11 migre le schéma 8 vers le schéma 9; le jalon 0.0.13 migre le schéma 9 vers le schéma 10; le jalon 0.0.16 migre le schéma 10 vers le schéma 11; le jalon 0.0.17 migre le schéma 11 vers le schéma 12; le jalon 0.0.18 migre le schéma 12 vers le schéma 13; le jalon 0.0.19 migre le schéma 13 vers le schéma 14, puis 14 vers 15 et 15 vers 16. Les schémas 17 et 18 ajoutent les interrupteurs `limiter_enabled` et `compressor_enabled`, le schéma 19 la colonne `is_sidechain_key`, et le schéma 20 retire `ducking_enabled`. Les schémas 21 à 25 ajoutent successivement le panoramique, les stems, leur portée par clip, leurs waveforms et la cuisson réversible d'un clip; le schéma 26 ajoute les groupes Draw persistants. Les migrations peuvent être enchaînées depuis le schéma 1 et conservent les entrées, leurs analyses, leurs corrections, leurs clips, leurs états de piste et leurs automations. Seul le cache waveform reproductible est invalidé au passage vers le schéma 10.
 
 Le jalon 0.0.2 signale les fichiers manquants et permet de retirer leur référence. La fonction de reliaison vers un nouvel emplacement demeure à ajouter lorsque le format de projet utilisera lui aussi ces identifiants.
 

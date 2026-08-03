@@ -45,6 +45,15 @@ const WSOLA_CORRELATION_STRIDE: usize = 8;
 /// Elle était naguère déduite de la correction à faire — ±21 images pour sept
 /// battements d'écart —, ce qui rendait le recalage impossible par construction.
 const WSOLA_MAX_SEARCH_FRAMES: usize = 512;
+/// Pas de la passe grossière, en images, et de combien elle allège la fenêtre
+/// de comparaison.
+///
+/// La corrélation d'un son musical est lisse à l'échelle de la période qu'on
+/// cherche : un point sur seize suffit à reconnaître la bonne bosse, et un
+/// point sur quatre de la fenêtre suffit à la noter. Les passes fines qui
+/// suivent retrouvent le sommet exact.
+const WSOLA_COARSE_OFFSET_STEP: usize = 16;
+const WSOLA_COARSE_DECIMATION: usize = 4;
 const SOURCE_BACKTRACK_FRAMES: usize = 4_096;
 const MAX_PROJECT_SECONDS: f64 = 4.0 * 60.0 * 60.0;
 const MIN_STRETCH_RATIO: f64 = 0.5;
@@ -1170,9 +1179,25 @@ fn best_wsola_offset(
         reference_energy += reference * reference;
     }
 
-    let mut best_offset = 0_isize;
-    let mut best_score = f64::NEG_INFINITY;
-    let mut score_offset = |offset: isize| {
+    // L'énergie de la référence pour la passe grossière, qui ne lit qu'un point
+    // sur quatre de la série ci-dessus : la comparaison doit porter sur le même
+    // sous-ensemble des deux côtés, sinon la normalisation ment.
+    let coarse_reference_energy: f64 = reference_samples
+        .iter()
+        .step_by(WSOLA_COARSE_DECIMATION)
+        .map(|value| value * value)
+        .sum();
+
+    // Recherche grossière puis fine, plutôt qu'un balayage plein.
+    //
+    // Le rayon doit couvrir une période du grave — c'est ce qui rend le
+    // recalage possible — mais il n'a jamais fallu **noter** mille candidats à
+    // pleine résolution pour le trouver. En le faisant, chaque grain coûtait
+    // cent trente-cinq mille interpolations : sur le fil audio, avec deux clips
+    // étirés qui se superposent, cela suffit à faire craquer la sortie. La
+    // corrélation est lisse à cette échelle : une passe à gros pas trouve la
+    // bonne bosse, deux passes serrées trouvent son sommet.
+    let mut score_offset = |offset: isize, decimation: usize| {
         let candidate_position = nominal_position + offset as f64;
         if candidate_position < 0.0 {
             return f64::NEG_INFINITY;
@@ -1180,11 +1205,8 @@ fn best_wsola_offset(
         let mut correlation = 0.0_f64;
         let mut candidate_energy = 0.0_f64;
 
-        for (index, frame) in (0..WSOLA_CORRELATION_FRAMES)
-            .step_by(WSOLA_CORRELATION_STRIDE)
-            .enumerate()
-        {
-            let frame = frame as f64;
+        for index in (0..CORRELATION_SAMPLES).step_by(decimation) {
+            let frame = (index * WSOLA_CORRELATION_STRIDE) as f64;
             let candidate = 0.5
                 * f64::from(
                     sample_at(candidate_position + frame, 0)
@@ -1194,6 +1216,11 @@ fn best_wsola_offset(
             candidate_energy += candidate * candidate;
         }
 
+        let reference_energy = if decimation == 1 {
+            reference_energy
+        } else {
+            coarse_reference_energy
+        };
         let normalization = (reference_energy * candidate_energy).sqrt();
         let similarity = if normalization > 1.0e-12 {
             correlation / normalization
@@ -1204,25 +1231,38 @@ fn best_wsola_offset(
         similarity - distance * distance * 0.025
     };
 
-    for offset in (-radius..=radius).step_by(4) {
-        let score = score_offset(offset);
+    let mut best_offset = 0_isize;
+    let mut best_score = f64::NEG_INFINITY;
+    for offset in (-radius..=radius).step_by(WSOLA_COARSE_OFFSET_STEP) {
+        let score = score_offset(offset, WSOLA_COARSE_DECIMATION);
         if score > best_score {
             best_score = score;
             best_offset = offset;
         }
     }
 
-    let refine_start = (best_offset - 3).max(-radius);
-    let refine_end = (best_offset + 3).min(radius);
-    for offset in refine_start..=refine_end {
-        let score = score_offset(offset);
-        if score > best_score {
-            best_score = score;
-            best_offset = offset;
+    // Les deux passes suivantes reprennent à pleine résolution : la grossière a
+    // dit *quelle* bosse, elles disent où en est le sommet. Le voisinage couvre
+    // un pas entier de chaque côté, pour que la bonne réponse reste atteignable
+    // quand la grossière s'est arrêtée juste à côté.
+    let mut refine = |centre: isize, span: isize, step: usize, best: &mut (isize, f64)| {
+        let from = (centre - span).max(-radius);
+        let to = (centre + span).min(radius);
+        for offset in (from..=to).step_by(step) {
+            let score = score_offset(offset, 1);
+            if score > best.1 {
+                *best = (offset, score);
+            }
         }
-    }
+    };
 
-    best_offset
+    // Le score grossier et le score fin ne sont pas comparables — ils ne
+    // portent pas sur le même nombre de points. La finesse repart donc d'un
+    // score neuf.
+    let mut best = (best_offset, f64::NEG_INFINITY);
+    refine(best_offset, WSOLA_COARSE_OFFSET_STEP as isize, 4, &mut best);
+    refine(best.0, 3, 1, &mut best);
+    best.0
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2439,10 +2479,10 @@ mod tests {
         FilterAutomation, FilterFramePoint, LaneAutomation, METER_PUBLISH_FRAMES, MasterColour,
         MasterCompressor, MasterDynamics, MasterLimiter, OUTPUT_CEILING, OVERLOAD_THRESHOLD,
         PanAutomation, PanFramePoint, PlacedClip, SidechainDucker, TimelineMixSource,
-        TimelinePlaybackEngine, VolumeAutomation, VolumeFramePoint, best_wsola_offset,
-        cubic_interpolate, equal_power_pan, filter_cutoff_hz, filter_makeup_gain,
-        playback_signature, prepare_timeline, sidechain_pan_weight, smooth_crossfade,
-        stretch_duration_ratio, vu_envelope,
+        TimelinePlaybackEngine, VolumeAutomation, VolumeFramePoint, WSOLA_MAX_SEARCH_FRAMES,
+        best_wsola_offset, cubic_interpolate, equal_power_pan, filter_cutoff_hz,
+        filter_makeup_gain, playback_signature, prepare_timeline, sidechain_pan_weight,
+        smooth_crossfade, stretch_duration_ratio, vu_envelope,
     };
     use crate::{
         tempo::{TempoMap, TempoPoint},
@@ -3582,6 +3622,44 @@ mod tests {
         }
     }
 
+    /// Ce qu'un grain coûte au fil audio, compté et borné.
+    ///
+    /// La correction du time-stretch avait rendu le rayon de recherche toujours
+    /// maximal — juste — mais en notant chaque candidat à pleine résolution :
+    /// cent trente-cinq mille interpolations par grain, dix-huit fois le coût
+    /// d'avant. Un clip passait; deux clips étirés qui se superposent faisaient
+    /// craquer la sortie. Rien ne mesurait ce coût, donc rien ne l'a signalé.
+    ///
+    /// Le plafond est celui d'une recherche hiérarchique avec de la marge. Il
+    /// n'est pas là pour être joli : il est là pour tomber si quelqu'un rend la
+    /// recherche exhaustive une seconde fois.
+    #[test]
+    fn one_grain_of_search_stays_within_its_budget() {
+        use std::cell::Cell;
+
+        let calls = Cell::new(0_usize);
+        let offset = best_wsola_offset(0.0, 4_096.0, WSOLA_MAX_SEARCH_FRAMES, |position, _| {
+            calls.set(calls.get() + 1);
+            (position * 0.01).sin() as f32
+        });
+
+        let per_grain = calls.get();
+        assert!(
+            per_grain < 30_000,
+            "{per_grain} interpolations par grain : à vingt-et-un grains par seconde et par              clip, deux clips superposés dépasseraient ce que le fil audio peut tenir"
+        );
+        // Et la recherche cherche encore : un plafond qu'on tiendrait en ne
+        // faisant rien ne prouverait rien.
+        assert!(
+            per_grain > 2_000,
+            "la recherche ne regarde plus assez de candidats"
+        );
+        assert!(
+            offset.unsigned_abs() <= WSOLA_MAX_SEARCH_FRAMES,
+            "le décalage sort du rayon annoncé"
+        );
+    }
+
     #[test]
     fn source_tempo_is_converted_to_the_project_tempo() {
         for (source_bpm, project_bpm) in [(125.0, 120.0), (120.0, 125.0)] {
@@ -4022,6 +4100,7 @@ mod tests {
                 lane: 0,
                 beat: 8.0,
                 gain_db: Some(-6.0),
+                draw_group_id: None,
             }],
             pan_nodes: Vec::new(),
             filter_nodes: Vec::new(),

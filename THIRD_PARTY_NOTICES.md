@@ -41,3 +41,34 @@ Sources:
 
 - https://github.com/CPJKU/beat_this
 - https://github.com/danigb/beat-this-rs
+
+## Open-Unmix
+
+The vocal separation model is derived from Open-Unmix (UMX-HQ), distributed
+under the MIT License on the terms reproduced above.
+
+Copyright (c) 2019 Inria and the Open-Unmix contributors
+
+Bundled model file:
+
+- `open-unmix-vocals-fp16.onnx` — SHA-256
+  `a1ed651a83f3b0ba39b728f11e877ec586c86b51b6ecb25a26d7c2878cfaf496`
+
+Source: https://github.com/sigsep/open-unmix-pytorch
+
+## ONNX Runtime
+
+The models above are executed by ONNX Runtime, whose Windows binaries are
+bundled with the program. It is distributed under the MIT License on the terms
+reproduced above.
+
+Copyright (c) Microsoft Corporation
+
+Bundled binaries:
+
+- `onnxruntime.dll` — SHA-256
+  `e7eedec6a6f26dc39dc948276a75ef6d2bee3fff944d874ceed0bbd3b97bff40`
+- `onnxruntime_providers_shared.dll` — SHA-256
+  `265c8daf29637cb259cac8be9f08f2cd45f3883f0f0e4949cbfddd5b4cbec3b6`
+
+Source: https://github.com/microsoft/onnxruntime

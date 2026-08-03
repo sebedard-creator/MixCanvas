@@ -107,6 +107,25 @@ export function scrollLeftFollowingBeat(
 }
 
 /**
+ * Converts a pointer coordinate inside the ruler or a lane into a timeline
+ * beat. The click handler lives on a child of `.timeline-content` (the ruler
+ * or a lane), whose client rectangle already includes both the virtual side
+ * space and the current native scroll offset. Its local x coordinate is
+ * therefore the musical x coordinate exactly; subtracting virtual padding a
+ * second time wrongly sent most clicks back to beat zero.
+ */
+export function timelineSeekBeat(
+  clientX: number,
+  targetLeft: number,
+  pixelsPerBeat: number,
+): number {
+  if (!Number.isFinite(clientX) || !Number.isFinite(targetLeft) || !Number.isFinite(pixelsPerBeat) || pixelsPerBeat <= 0) {
+    return 0;
+  }
+  return (clientX - targetLeft) / pixelsPerBeat;
+}
+
+/**
  * Les mesures dont le marqueur vaut la peine d'exister : celles qu'on voit.
  *
  * Il y en avait une par mesure du projet **entier** — des milliers sur un long

@@ -5,6 +5,7 @@ import {
   minimumTimelineZoom,
   scrollLeftCenteringBeat,
   scrollLeftFollowingBeat,
+  timelineSeekBeat,
   TIMELINE_FIT_RATIO,
   timelineContentLayout,
   visibleMeasures,
@@ -108,6 +109,18 @@ describe("timeline zoom anchoring", () => {
     expect(scrollLeftFollowingBeat(0, 5, 400)).toBe(0);
     expect(scrollLeftFollowingBeat(130, 5, 400)).toBe(650);
     expect(scrollLeftFollowingBeat(999, 5, 400)).toBe(2_000);
+  });
+});
+
+describe("timeline click seeking", () => {
+  it("uses the lane's local coordinate in an overflowing, centred timeline", () => {
+    // At beat 100, `scrollLeft` is 500 px and virtual padding is 450 px, so
+    // the lane starts at -50 px in the viewport. Its local x 500 is beat 100.
+    expect(timelineSeekBeat(450, -50, 5)).toBe(100);
+  });
+
+  it("uses ordinary local coordinates while the full project fits", () => {
+    expect(timelineSeekBeat(300, 100, 5)).toBe(40);
   });
 });
 

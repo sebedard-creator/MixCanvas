@@ -43,6 +43,13 @@ src-tauri/resources/models/*
 # Journaux d'export ONNX : volumineux, propres à une machine.
 scripts/export-logs/
 
+# Traces de l'inspecteur Chromium. Elles ont porté toute la campagne de
+# performances de fin juillet et sont précieuses le temps d'une comparaison —
+# mais elles pèsent une centaine de mégaoctets pour une poignée de secondes,
+# et elles ne valent que pour la machine et le scénario qui les ont produites.
+# Ce qu'on en retient appartient au changelog, pas au dépôt.
+Trace-*.json.gz
+
 # Bibliothèques ONNX Runtime : récupérées à part, embarquées dans le paquet
 # de release, jamais versionnées ici.
 src-tauri/resources/*.dll

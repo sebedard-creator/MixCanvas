@@ -308,8 +308,7 @@ fn beat_analysis_resources(app: &tauri::AppHandle) -> Result<BeatModelPaths, Str
     }
 
     #[cfg(feature = "embed-resources")]
-    if let Ok(data) = app.path().app_data_dir() {
-        let folder = data.join("resources");
+    if let Some(folder) = unpacked_resources_folder(app) {
         unpack_embedded_resources(&folder)?;
         let mel = folder.join("models").join(MEL_MODEL);
         let beats = folder.join("models").join(BEAT_MODEL);
@@ -365,8 +364,7 @@ fn separation_resources(
     // Rien à côté de l'exécutable : le portable d'un seul fichier dépose ce
     // qu'il porte, puis se sert dedans.
     #[cfg(feature = "embed-resources")]
-    if let Ok(data) = app.path().app_data_dir() {
-        let folder = data.join("resources");
+    if let Some(folder) = unpacked_resources_folder(app) {
         unpack_embedded_resources(&folder)?;
         let runtime = folder.join(RUNTIME);
         let model = folder.join("models").join(MODEL);
@@ -915,19 +913,27 @@ fn delete_timeline_volume_node(
 /// Les nœuds arrivent calculés par l'interface : la géométrie d'une forme est
 /// la même des deux côtés, et la dupliquer en Rust ferait diverger ce qu'on
 /// voit de ce qu'on entend. Le serveur borne et valide, il ne redessine pas.
+// Même raison que `draw_timeline_filter_bubble` : six paramètres de domaine,
+// sous la limite, plus les trois états gérés que Tauri injecte. Ce sont ces
+// derniers qui font passer le compte à neuf.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn draw_timeline_volume_shape(
     lane: i64,
     start_beat: f64,
     end_beat: f64,
     nodes: Vec<(f64, f64)>,
+    shape: String,
+    period: f64,
     library_state: State<'_, LibraryState>,
     playback_state: State<'_, TimelinePlaybackState>,
     transport_state: State<'_, TimelineTransportState>,
 ) -> Result<TimelineSnapshot, String> {
     let previous_timing = timeline_timing(&library_state)?;
     let snapshot = with_timeline(&library_state, |connection| {
-        timeline::draw_volume_shape(connection, lane, start_beat, end_beat, &nodes)
+        timeline::draw_volume_shape(
+            connection, lane, start_beat, end_beat, &nodes, &shape, period,
+        )
     })?;
     refresh_live_timeline_after_edit(
         &library_state,
@@ -938,19 +944,25 @@ fn draw_timeline_volume_shape(
     Ok(snapshot)
 }
 
+// Même raison que `draw_timeline_filter_bubble`.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn draw_timeline_pan_shape(
     lane: i64,
     start_beat: f64,
     end_beat: f64,
     nodes: Vec<(f64, f64)>,
+    shape: String,
+    period: f64,
     library_state: State<'_, LibraryState>,
     playback_state: State<'_, TimelinePlaybackState>,
     transport_state: State<'_, TimelineTransportState>,
 ) -> Result<TimelineSnapshot, String> {
     let previous_timing = timeline_timing(&library_state)?;
     let snapshot = with_timeline(&library_state, |connection| {
-        timeline::draw_pan_shape(connection, lane, start_beat, end_beat, &nodes)
+        timeline::draw_pan_shape(
+            connection, lane, start_beat, end_beat, &nodes, &shape, period,
+        )
     })?;
     refresh_live_timeline_after_edit(
         &library_state,
@@ -1056,6 +1068,26 @@ fn delete_timeline_pan_node(
     let previous_timing = timeline_timing(&library_state)?;
     let snapshot = with_timeline(&library_state, |connection| {
         timeline::delete_pan_node(connection, node_id)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn delete_timeline_draw_group(
+    group_id: i64,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::delete_draw_group(connection, group_id)
     })?;
     refresh_live_timeline_after_edit(
         &library_state,
@@ -1690,25 +1722,49 @@ fn adopt_legacy_library(data_directory: &Path, database_path: &Path) -> io::Resu
     if database_path.exists() {
         return Ok(());
     }
-    let Some(parent) = data_directory.parent() else {
+    let Some(target_directory) = database_path.parent() else {
         return Ok(());
     };
 
-    for identifier in LEGACY_IDENTIFIERS {
-        let legacy_directory = parent.join(identifier);
-        if !legacy_directory.join("library.sqlite3").is_file() {
+    // Les endroits où une bibliothèque a pu être écrite, du plus récent au plus
+    // ancien : le dossier de données de la version courante — celui d'où l'on
+    // vient de déménager — puis ceux des deux noms précédents du programme.
+    let mut candidates = vec![data_directory.to_path_buf()];
+    if let Some(parent) = data_directory.parent() {
+        candidates.extend(LEGACY_IDENTIFIERS.iter().map(|id| parent.join(id)));
+    }
+
+    for legacy_directory in candidates {
+        if legacy_directory == target_directory
+            || !legacy_directory.join("library.sqlite3").is_file()
+        {
             continue;
         }
         for name in DATABASE_FILES {
             let source = legacy_directory.join(name);
             if source.is_file() {
-                fs::copy(&source, data_directory.join(name))?;
+                fs::copy(&source, target_directory.join(name))?;
             }
         }
-        // Le premier trouvé gagne : c'est le plus récent des deux.
+        // Le premier trouvé gagne : c'est le plus récent.
         return Ok(());
     }
     Ok(())
+}
+
+/// Où déballer ce que l'exécutable porte en lui.
+///
+/// Le même dossier que tout le reste — à côté du programme —, et non les
+/// données applicatives : un portable dont trente-cinq mégaoctets de modèles
+/// dorment dans un répertoire caché n'est pas portable, et personne ne sait
+/// quoi effacer pour repartir à neuf.
+#[cfg(feature = "embed-resources")]
+fn unpacked_resources_folder(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let data = app.path().app_data_dir().ok()?;
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
+    Some(media::media_root(beside.as_deref(), &data).join("resources"))
 }
 
 /// Comment WebView2 doit peindre l'interface.
@@ -1847,22 +1903,43 @@ pub fn run() {
             })?;
             fs::create_dir_all(&data_directory)?;
 
-            let database_path = data_directory.join("library.sqlite3");
-            adopt_legacy_library(&data_directory, &database_path)?;
-            let library = LibraryStore::open(&database_path).map_err(io::Error::other)?;
-            app.manage(Arc::new(Mutex::new(library)));
-
-            // À côté de l'exécutable si on a le droit d'y écrire, dans les
-            // données applicatives sinon. Le choix est fait une fois : le
-            // refaire à chaque écriture ferait un test disque par stem.
+            // **Tout** ce que le programme écrit vit dans un seul dossier, à
+            // côté de l'exécutable : la base, les ressources déballées, les
+            // stems et les cuissons. Un portable qui cache sa base dans les
+            // données applicatives n'est pas portable — on l'emporte sans sa
+            // bibliothèque, et on ne sait pas quoi effacer pour repartir à
+            // neuf. Le repli sur les données applicatives reste, pour un
+            // exécutable posé là où il n'a pas le droit d'écrire.
             let beside = std::env::current_exe()
                 .ok()
                 .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
             let root = media::media_root(beside.as_deref(), &data_directory);
+            fs::create_dir_all(&root)?;
+
+            let database_path = root.join("library.sqlite3");
+            adopt_legacy_library(&data_directory, &database_path)?;
+            let library = LibraryStore::open(&database_path).map_err(io::Error::other)?;
+            app.manage(Arc::new(Mutex::new(library)));
+
             app.manage(Arc::new(Mutex::new(MediaLocation {
                 root,
                 project: media::SCRATCH_PROJECT.to_owned(),
             })));
+
+            // L'inspecteur, seulement s'il est demandé.
+            //
+            // Mesurer le rendu demande de le mesurer **sur la machine qui
+            // rame** : une build de debug n'a pas les mêmes coûts, et un banc
+            // d'essai écrit ailleurs m'a déjà induit en erreur. Ouvert à la
+            // demande plutôt que par un raccourci clavier, pour que ce soit
+            // reproductible et que ça ne surprenne personne.
+            if std::env::args()
+                .skip(1)
+                .any(|argument| argument == "--devtools")
+                && let Some(window) = app.get_webview_window("main")
+            {
+                window.open_devtools();
+            }
 
             Ok(())
         })
@@ -1903,6 +1980,7 @@ pub fn run() {
             add_timeline_pan_node,
             move_timeline_pan_node,
             delete_timeline_pan_node,
+            delete_timeline_draw_group,
             draw_timeline_filter_bubble,
             draw_timeline_filter_stroke,
             set_timeline_clip_stem,

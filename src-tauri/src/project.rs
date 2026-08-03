@@ -44,6 +44,8 @@ pub struct ProjectFile {
     volume_nodes: Vec<ProjectVolumeNode>,
     #[serde(default)]
     pan_nodes: Vec<ProjectPanNode>,
+    #[serde(default)]
+    draw_groups: Vec<ProjectDrawGroup>,
     filter_nodes: Vec<ProjectFilterNode>,
 }
 
@@ -162,6 +164,8 @@ struct ProjectVolumeNode {
     lane: i64,
     beat: f64,
     gain_db: Option<f64>,
+    #[serde(default)]
+    draw_group_id: Option<i64>,
 }
 
 /// `serde(default)` sur le champ : un projet écrit avant le panoramique se
@@ -172,6 +176,22 @@ struct ProjectPanNode {
     lane: i64,
     beat: f64,
     value: f64,
+    #[serde(default)]
+    draw_group_id: Option<i64>,
+}
+
+/// Draw metadata is small, while its exact curve lives in the dense nodes.
+/// Keeping both makes a saved project play identically and remain editable.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectDrawGroup {
+    id: i64,
+    kind: String,
+    lane: i64,
+    start_beat: f64,
+    end_beat: f64,
+    shape: String,
+    period: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -324,7 +344,7 @@ pub fn collect(connection: &Connection) -> Result<ProjectFile, String> {
     }
 
     let mut volume_statement = connection
-        .prepare("SELECT lane, beat, gain_db FROM timeline_volume_nodes ORDER BY lane, beat")
+        .prepare("SELECT lane, beat, gain_db, draw_group_id FROM timeline_volume_nodes ORDER BY lane, beat")
         .map_err(database_read_error)?;
     let volume_nodes = volume_statement
         .query_map([], |row| {
@@ -332,6 +352,7 @@ pub fn collect(connection: &Connection) -> Result<ProjectFile, String> {
                 lane: row.get(0)?,
                 beat: row.get(1)?,
                 gain_db: row.get(2)?,
+                draw_group_id: row.get(3)?,
             })
         })
         .map_err(database_read_error)?
@@ -340,7 +361,9 @@ pub fn collect(connection: &Connection) -> Result<ProjectFile, String> {
     drop(volume_statement);
 
     let mut pan_statement = connection
-        .prepare("SELECT lane, beat, value FROM timeline_pan_nodes ORDER BY lane, beat")
+        .prepare(
+            "SELECT lane, beat, value, draw_group_id FROM timeline_pan_nodes ORDER BY lane, beat",
+        )
         .map_err(database_read_error)?;
     let pan_nodes = pan_statement
         .query_map([], |row| {
@@ -348,12 +371,36 @@ pub fn collect(connection: &Connection) -> Result<ProjectFile, String> {
                 lane: row.get(0)?,
                 beat: row.get(1)?,
                 value: row.get(2)?,
+                draw_group_id: row.get(3)?,
             })
         })
         .map_err(database_read_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(database_read_error)?;
     drop(pan_statement);
+
+    let mut draw_group_statement = connection
+        .prepare(
+            "SELECT id, kind, lane, start_beat, end_beat, shape, period
+             FROM timeline_draw_groups ORDER BY id",
+        )
+        .map_err(database_read_error)?;
+    let draw_groups = draw_group_statement
+        .query_map([], |row| {
+            Ok(ProjectDrawGroup {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                lane: row.get(2)?,
+                start_beat: row.get(3)?,
+                end_beat: row.get(4)?,
+                shape: row.get(5)?,
+                period: row.get(6)?,
+            })
+        })
+        .map_err(database_read_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(database_read_error)?;
+    drop(draw_group_statement);
 
     let mut filter_statement = connection
         .prepare("SELECT lane, beat, value, tension FROM timeline_filter_nodes ORDER BY lane, beat")
@@ -383,6 +430,7 @@ pub fn collect(connection: &Connection) -> Result<ProjectFile, String> {
         clips,
         volume_nodes,
         pan_nodes,
+        draw_groups,
         filter_nodes,
     })
 }
@@ -565,6 +613,7 @@ pub fn apply(connection: &mut Connection, project: &ProjectFile) -> Result<(), S
             "DELETE FROM timeline_clips;
              DELETE FROM timeline_volume_nodes;
              DELETE FROM timeline_pan_nodes;
+             DELETE FROM timeline_draw_groups;
              DELETE FROM timeline_filter_nodes;",
         )
         .map_err(database_write_error)?;
@@ -661,11 +710,31 @@ pub fn apply(connection: &mut Connection, project: &ProjectFile) -> Result<(), S
         }
     }
 
+    for group in &project.draw_groups {
+        transaction
+            .execute(
+                "INSERT INTO timeline_draw_groups
+                 (id, kind, lane, start_beat, end_beat, shape, period)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    group.id,
+                    group.kind,
+                    group.lane,
+                    group.start_beat,
+                    group.end_beat,
+                    group.shape,
+                    group.period,
+                ],
+            )
+            .map_err(database_write_error)?;
+    }
+
     for node in &project.volume_nodes {
         transaction
             .execute(
-                "INSERT INTO timeline_volume_nodes (lane, beat, gain_db) VALUES (?1, ?2, ?3)",
-                params![node.lane, node.beat, node.gain_db],
+                "INSERT INTO timeline_volume_nodes (lane, beat, gain_db, draw_group_id)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![node.lane, node.beat, node.gain_db, node.draw_group_id],
             )
             .map_err(database_write_error)?;
     }
@@ -673,8 +742,9 @@ pub fn apply(connection: &mut Connection, project: &ProjectFile) -> Result<(), S
     for node in &project.pan_nodes {
         transaction
             .execute(
-                "INSERT INTO timeline_pan_nodes (lane, beat, value) VALUES (?1, ?2, ?3)",
-                params![node.lane, node.beat, node.value],
+                "INSERT INTO timeline_pan_nodes (lane, beat, value, draw_group_id)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![node.lane, node.beat, node.value, node.draw_group_id],
             )
             .map_err(database_write_error)?;
     }
@@ -909,6 +979,25 @@ mod tests {
         crate::timeline::add_clip(&mut origin.connection, track_id, Some(8.0), Some(1))
             .expect("a clip should be added");
         crate::timeline::set_lane_muted(&origin.connection, 2, true).expect("lane should mute");
+        origin
+            .connection
+            .execute(
+                "INSERT INTO timeline_draw_groups
+                 (id, kind, lane, start_beat, end_beat, shape, period)
+                 VALUES (42, 'volume', 1, 16.0, 18.0, 'sine', 2.0)",
+                [],
+            )
+            .expect("the Draw metadata should be recorded");
+        for (beat, gain_db) in [(16.0, -6.0), (16.5, -14.0), (17.0, -6.0), (18.0, -6.0)] {
+            origin
+                .connection
+                .execute(
+                    "INSERT INTO timeline_volume_nodes (lane, beat, gain_db, draw_group_id)
+                     VALUES (1, ?1, ?2, 42)",
+                    params![beat, gain_db],
+                )
+                .expect("the Draw DSP sample should be recorded");
+        }
 
         let file = collect(&origin.connection).expect("the session should be collected");
         let text = serde_json::to_string(&file).expect("the project should serialize");
@@ -934,6 +1023,23 @@ mod tests {
                 .iter()
                 .any(|lane| lane.lane == 2 && lane.is_muted),
             "lane states should survive"
+        );
+        assert_eq!(
+            restored.draw_groups.len(),
+            1,
+            "the Draw record should survive"
+        );
+        assert_eq!(restored.draw_groups[0].id, 42);
+        assert_eq!(restored.draw_groups[0].shape, "sine");
+        assert_eq!(restored.draw_groups[0].period, 2.0);
+        assert_eq!(
+            restored
+                .volume_nodes
+                .iter()
+                .filter(|node| node.draw_group_id == Some(42))
+                .count(),
+            4,
+            "all exact Draw samples should remain linked after a project round trip"
         );
 
         scrub(&[origin_path, target_path, fake_mp3]);

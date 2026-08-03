@@ -993,6 +993,10 @@ button:disabled{
    */
   overflow-x: hidden;
   overflow-y: hidden;
+  /* Le viewport de timeline a déjà une taille propre et rogne déjà son
+     contenu. Le confiner empêche un changement de scroll de propager son
+     invalidation de peinture jusqu'au document entier en rendu logiciel. */
+  contain: layout paint;
   overflow-anchor: none;
   border-top: 1px solid #252a36;
   scrollbar-color: #3c4352 #11141b;
@@ -1142,6 +1146,14 @@ button:disabled{
   --grid-downbeat: rgba(155, 135, 255, 0.34);
   --grid-beat: rgba(122, 130, 146, 0.11);
   background-image: var(--timeline-grid);
+  /* La largeur d'une mesure est écrite par le composant en `background-size`,
+     qui est une propriété **ordinaire** : elle n'invalide que cet élément. Elle
+     passait avant par `--measure-width`, une propriété personnalisée posée sur
+     cette même voie — donc sur l'ancêtre de tous ses clips, de toutes ses
+     waveforms et de tous ses nœuds, dont le style calculé était refait en
+     entier à chaque cran de zoom. C'est exactement le défaut corrigé le 31
+     juillet à la racine de la timeline, retrouvé un étage plus bas. */
+  background-repeat: repeat-x;
 }
 
 /* La mesure en 4/4 : le premier temps marqué, les trois autres pâles.
@@ -1157,29 +1169,34 @@ button:disabled{
  * géométrie était juste, le rendu ne l'était pas.
  *
  * Les quatre traits sont donc placés en fractions **de la période elle-même**
- * plutôt qu'en multiples de `--beat-width` : les deux valent le même nombre,
- * mais seule la première façon garantit qu'ils tombent aux quarts exacts de ce
- * qui est répété. */
+ * plutôt qu'en multiples d'une largeur de temps calculée à part : les deux
+ * valent le même nombre, mais seule la première façon garantit qu'ils tombent
+ * aux quarts exacts de ce qui est répété. */
 .timeline-lane{
+  /* Une seule tuile large d'une mesure, répétée par `background-size`, plutôt
+     qu'un dégradé répétitif dont la période dépendait d'une propriété
+     personnalisée. Les quarts restent des quarts **de la tuile** : la garantie
+     décrite ci-dessus tient, et la période ne coûte plus une invalidation de
+     toute la voie à chaque zoom. */
   --timeline-grid:
-    repeating-linear-gradient(
+    linear-gradient(
       90deg,
       var(--grid-downbeat) 0,
       var(--grid-downbeat) 1px,
       transparent 1px,
-      transparent calc(var(--measure-width) / 4),
-      var(--grid-beat) calc(var(--measure-width) / 4),
-      var(--grid-beat) calc(var(--measure-width) / 4 + 1px),
-      transparent calc(var(--measure-width) / 4 + 1px),
-      transparent calc(var(--measure-width) / 2),
-      var(--grid-beat) calc(var(--measure-width) / 2),
-      var(--grid-beat) calc(var(--measure-width) / 2 + 1px),
-      transparent calc(var(--measure-width) / 2 + 1px),
-      transparent calc(var(--measure-width) * 3 / 4),
-      var(--grid-beat) calc(var(--measure-width) * 3 / 4),
-      var(--grid-beat) calc(var(--measure-width) * 3 / 4 + 1px),
-      transparent calc(var(--measure-width) * 3 / 4 + 1px),
-      transparent var(--measure-width)
+      transparent 25%,
+      var(--grid-beat) 25%,
+      var(--grid-beat) calc(25% + 1px),
+      transparent calc(25% + 1px),
+      transparent 50%,
+      var(--grid-beat) 50%,
+      var(--grid-beat) calc(50% + 1px),
+      transparent calc(50% + 1px),
+      transparent 75%,
+      var(--grid-beat) 75%,
+      var(--grid-beat) calc(75% + 1px),
+      transparent calc(75% + 1px),
+      transparent 100%
     );
 }
 
@@ -1408,10 +1425,15 @@ button:disabled{
   background: rgba(239, 68, 68, 0.12);
 }
 
+/* Le dessin ne couvre plus toute la largeur du clip : il est posé à l'endroit
+   de sa tranche visible, dont la position et la largeur sont écrites par le
+   composant. `left` et `width` viennent donc de lui; seuls le haut, le bas et
+   la hauteur restent ici. */
 .clip-waveform{
   position: absolute;
-  inset: var(--clip-heading-height, 18px) 8px 6px;
-  width: calc(100% - 16px);
+  top: var(--clip-heading-height, 18px);
+  bottom: 6px;
+  left: 8px;
   height: calc(100% - var(--clip-heading-height, 18px) - 6px);
   opacity: 1;
   overflow: visible;
@@ -1446,7 +1468,8 @@ button:disabled{
   z-index: 2;
   top: var(--clip-heading-height, 18px);
   bottom: 0;
-  left: var(--anchor-offset);
+  /* Le décalage est écrit ici par le composant : voir `.timeline-lane` pour
+     pourquoi il ne passe plus par une propriété personnalisée du clip. */
   width: 2px;
   background: #dc2626;
   box-shadow: 0 0 6px rgba(220, 38, 38, 0.4);
@@ -1910,16 +1933,25 @@ body,
   min-height: 330px;
 }
 
-/* Le placement appartient au même layout que la largeur et les coordonnées de
-   tous les enfants. Une transformation composite pouvait être publiée par
-   WebView2 avec la texture de l'image précédente : pendant une frame, le
-   playhead, la grille, les clips et les courbes ne représentaient alors plus
-   le même zoom. `left` et `margin-inline` coûtent un layout, mais garantissent
-   une seule géométrie peinte. */
-.timeline-content--following{
-  margin-inline: var(--timeline-follow-padding);
-  left: var(--timeline-follow-offset);
-}
+/* Le placement est écrit en `transform` par le composant, dans le même rendu
+   que la largeur et les coordonnées de tous les enfants — il n'y a donc rien
+   ici.
+ *
+ * Il passait par deux propriétés personnalisées posées sur cet élément, qui
+ * est l'ancêtre de toute la timeline. **Changer une propriété personnalisée
+ * invalide le style calculé de tout le sous-arbre** : chaque clip, chaque
+ * waveform, chaque nœud, chaque marqueur était recalculé vingt fois par
+ * seconde. Mesuré sur la machine : trente-six pour cent du temps en recalcul
+ * de style, plus huit pour cent de mise en page que `left` et `margin-inline`
+ * entraînaient — quarante-quatre pour cent du total sur deux lignes.
+ *
+ * Le commentaire d'origine craignait qu'une transformation soit publiée avec
+ * la texture de l'image précédente, désaccordant le playhead et la grille
+ * pendant un zoom. Ce défaut existait bel et bien, mais il venait d'un
+ * mécanisme qui écrivait la transformation **hors** de React, en concurrence
+ * avec son rendu. Écrite dans le rendu, comme ici, elle est publiée dans le
+ * même commit que tout le reste : l'atomicité est la même qu'avec `left`,
+ * sans le layout ni l'invalidation. */
 
 .timeline-tracks{
   height: calc(100% - 34px);
@@ -3022,6 +3054,14 @@ body,
   pointer-events: none;
 }
 
+/* La tête vit au-dessus du viewport, pas dans la surface qui défile. Le signal
+   visuel reste donc exactement au centre pendant Play, sans translation du
+   grand sous-arbre de clips, de courbes et de waveforms. */
+.timeline-playhead--fixed{
+  left: 50%;
+  transform: translateX(-50%);
+}
+
 .timeline-playhead span{
   position: absolute;
   top: 0;
@@ -3331,12 +3371,11 @@ body,
        la chargerait pour rien. Un repère par mesure suffit à savoir où l'on
        dessine, et il tombe exactement sur celui des voies au-dessus : même
        période, même origine. */
-    repeating-linear-gradient(
+    linear-gradient(
       90deg,
       rgba(15, 36, 66, 0.26) 0,
       rgba(15, 36, 66, 0.26) 1px,
-      transparent 1px,
-      transparent var(--measure-width)
+      transparent 1px
     ),
     linear-gradient(
       180deg,
@@ -3345,8 +3384,15 @@ body,
       rgba(255, 255, 255, 0.3) 50%,
       rgba(220, 38, 38, 0.03) 52%,
       rgba(220, 38, 38, 0.16) 100%
-    ),
-    #c4cbd4;
+    );
+  /* La couleur à part, et non en fin de raccourci : là, elle formait une
+     troisième couche sans image, et les deux valeurs de `background-size`
+     étaient recyclées pour la remplir. Deux couches déclarées, deux valeurs. */
+  background-color: #c4cbd4;
+  /* Le repère de mesure est une tuile répétée horizontalement; le dégradé
+     vertical couvre la bande entière. Leurs largeurs sont écrites par le
+     composant, pour la raison donnée sur `.timeline-lane`. */
+  background-repeat: repeat-x, no-repeat;
   cursor: ns-resize;
   touch-action: none;
 }
@@ -4325,9 +4371,12 @@ body,
   border: 0;
   border-radius: 2px;
   background: linear-gradient(180deg, #232833 0%, #171b22 100%);
-  transition:
-    background 30ms linear,
-    box-shadow 30ms linear;
+  /* Le niveau arrive jusqu'à vingt fois par seconde. Animer `box-shadow` sur
+     chaque diode allumée force Chromium à repeindre et à re-layeriser le
+     panneau à chaque étape intermédiaire, parce que cette propriété ne peut
+     pas être composée. La trace du 2026-08-02 en a trouvé 297 occurrences.
+     Une LED de console doit indiquer le niveau présent, pas une valeur vieille
+     de 30 ms : le changement direct garde le même dessin et est plus fidèle. */
 }
 
 /* Three states rather than a gradient: too quiet, where it should sit, and
@@ -4336,22 +4385,17 @@ body,
 /* Cold blue: the mix is not using the headroom it has. */
 .led-vu-segment--low.is-active{
   background: linear-gradient(180deg, #7fb6f0 0%, #3d7fd0 55%, #26599b 100%);
-  box-shadow: 0 0 4px rgba(61, 127, 208, 0.55);
 }
 
 /* Amber: the working range, and where the bar spends its time. */
 .led-vu-segment--safe.is-active{
   background: linear-gradient(180deg, #ffd07a 0%, #f5a524 55%, #d4820a 100%);
-  box-shadow: 0 0 5px rgba(245, 165, 36, 0.6);
 }
 
 /* A single red lens at the very end. Red only ever means distortion here: a
    meter whose top third is red teaches its user to ignore it. */
 .led-vu-segment--clip.is-active{
   background: linear-gradient(180deg, #ff8b7d 0%, #e5342a 50%, #b81c14 100%);
-  box-shadow:
-    0 0 6px rgba(224, 47, 36, 0.85),
-    0 0 12px rgba(220, 38, 38, 0.5);
 }
 
 /* The overload lamp keeps its own small plate at the end of the window, raised

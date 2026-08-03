@@ -70,7 +70,19 @@ Les manifestes portent `0.0.17`, mais le développement a dépassé cette numér
 - séparation locale voix/instrumental par Open-Unmix et ONNX Runtime;
 - compresseur de collage master, teinte de console et saturation commutés par le bouton `COMP`;
 - compression sidechain : un clip devient la clé, se tait là où il en recouvre d'autres et y impose son pompage;
-- bouton `CLEAR TIMELINE` qui vide la timeline sans toucher à la bibliothèque.
+- bouton `CLEAR TIMELINE` qui vide la timeline sans toucher à la bibliothèque;
+- glisser-déposer de MP3 depuis l'explorateur directement dans la bibliothèque;
+- outil contextuel sur les clips : le curseur annonce ce que le clic fera selon
+  l'endroit survolé, et `Delete` retire le clip sous le pointeur;
+- `BAKE` : rendu d'un clip seul avec ses effets, réversible, qui retire son
+  automation et la restitue au dégel;
+- `AUTOPLAY` : un clic dans la timeline lance la lecture, ou ne fait que
+  déplacer le playhead lorsqu'on place des clips à l'oreille;
+- réglage du BPM d'un nœud de tempo par clic droit, et repère `EDITED` sur un
+  BPM corrigé à la main;
+- tri « In Use » de la bibliothèque suivant l'ordre réel dans la timeline;
+- dessin logiciel par défaut, avec les drapeaux `--gpu` et `--gpu-safe` pour
+  activer l'accélération sur une machine qui y gagne (voir ci-dessous).
 
 Le moteur ne rend pas la timeline complète et ne décode pas une chanson complète avant Play. Chaque ancre turquoise devient une cible du tempo global égale au BPM source de son clip; le BPM évolue linéairement entre deux cibles et demeure constant après la dernière. Chaque clip ouvre son MP3 seulement lorsqu'il devient actif et conserve une fenêtre PCM bornée autour de la position courante. La source audio convertit continuellement la position temporelle en beat de projet, puis en position source. Un moteur WSOLA stéréo-lié recherche une waveform corrélée avant chaque raccord, applique un fondu cosinus et conserve la tonalité sans varispeed; l'interpolation cubique remplace l'ancien rééchantillonnage linéaire. La timeline travaille directement à la fréquence réelle du périphérique audio afin d'éviter une double conversion 44,1↔48 kHz. Le transport, les trois pistes et le playhead utilisent la même conversion beat↔temps. Les pistes A/B/C reçoivent leur automation de volume en dB avant d'être sommées dans le bus stéréo float32; leurs états Mute/Solo agissent par masque atomique sans redécodage. Le bus master traverse ensuite le sidechain, le compresseur de collage, la teinte de console et sa saturation, la mesure, puis le limiteur; la borne physique de 0,98 ne sert plus que de dernier recours, et le témoin `OL` est mesuré après le limiteur afin de ne signaler qu'un écrêtage réellement subi. Un ajout ou un déplacement pendant Play remplace uniquement le plan compact de relations temporelles et reprend au même beat musical, sans rendu ni décodage complet. La limite de sécurité actuelle est de quatre heures et les ratios de time-stretch vont de 0,5× à 2×.
 
@@ -78,7 +90,47 @@ Depuis le jalon 0.0.16, le bus master alimente deux enveloppes de mesure indépe
 
 Après une mise à niveau, les ancres de timeline et le schéma sont migrés automatiquement. Les analyses mises en cache portent désormais une version : MixCanvas réanalyse seul les résultats anciens une seule fois, sans demander « Analyser tout ». Une correction manuelle existante demeure volontairement prioritaire.
 
-La base utilisateur est créée sous `%APPDATA%\ca.mixcanvas.app\library.sqlite3` sur Windows. Elle contient uniquement l'index et les métadonnées; les MP3 restent à leur emplacement original.
+Tout ce que MixCanvas écrit vit dans un seul dossier posé **à côté de l'exécutable**, nommé `MixCanvas Files` : la base de la bibliothèque, les ressources extraites de l'exécutable, et les fichiers WAV des stems séparés et des clips cuits. On copie le programme et ce dossier, on a déménagé son installation entière; on efface le dossier, on repart d'une installation neuve. Rien n'est caché dans `%APPDATA%`. Une bibliothèque héritée d'une version antérieure est adoptée au premier lancement, sans réanalyse.
+
+Chaque projet reçoit son propre sous-dossier, nommé d'après lui; une session non enregistrée vit dans `Scratch` jusqu'à ce qu'on la nomme, et ses médias suivent. À la fermeture, les fichiers auxquels plus rien ne renvoie sont supprimés — un fichier encore référencé n'est jamais touché, que la session courante s'en serve ou non.
+
+Seule exception : un exécutable posé là où il n'a pas le droit d'écrire — `Program Files`, un partage en lecture seule — se replie sur le dossier de données applicatives, parce que refuser de démarrer serait pire.
+
+La base contient l'index et les métadonnées; les MP3 de la bibliothèque restent à leur emplacement d'origine.
+
+## Mode de rendu de l'interface
+
+MixCanvas dessine son interface **en logiciel par défaut**, et c'est un choix
+délibéré plutôt qu'un repli. Sur les machines profilées, activer l'accélération
+matérielle n'a produit aucune différence mesurable sur le comportement de la
+timeline, tandis que certains pilotes font déchirer le compositeur matériel de
+WebView2 pendant un zoom. Entre aucun gain et un artefact possible, la justesse
+l'emporte.
+
+Rien de l'audio n'en dépend : lecture, analyse, mixage et bounce sont du Rust
+natif et ne touchent jamais au moteur de rendu du navigateur.
+
+Le mode se choisit **au lancement**, sans recompilation. Le dernier drapeau
+reconnu de la ligne l'emporte.
+
+| Drapeau | Effet |
+|---|---|
+| *(aucun)* ou `--no-gpu` | tout en logiciel — le défaut |
+| `--gpu-safe` | la carte dessine, la composition reste logicielle |
+| `--gpu` | accélération matérielle complète |
+
+```powershell
+.\MixCanvas.exe --gpu-safe
+```
+
+Le dossier `portable` contient un raccourci `.cmd` par mode, qui prend
+automatiquement le build le plus récent posé à côté de lui. `--gpu-safe` est
+l'entre-deux à essayer en premier : il conserve le dessin matériel tout en
+évitant la famille d'artefacts qui vient de la composition.
+
+Si une machine se révèle gagnante avec l'accélération, le drapeau suffit — mais
+il faut le vérifier par une mesure, sur deux enregistrements de gestes
+semblables, et non au ressenti.
 
 ## Prérequis de développement Windows
 
@@ -114,19 +166,25 @@ premier lancement n'est requis.
 .\check.cmd
 ```
 
-État de référence vérifié le 2026-07-28 : TypeScript, 179 tests frontend,
-142 tests Rust, formatage Rust et Clippy passent; quatre tests d'intégration ou
-de mesure longue restent ignorés explicitement. La production frontend Vite se
-construit également. Les détails et les limites connues sont consignés dans
-`handoff.md`.
+État de référence vérifié le 2026-08-03 : TypeScript, **230** tests frontend
+répartis sur 27 fichiers et 168 tests Rust réussis; quatre tests d'intégration
+ou de mesure longue restent ignorés explicitement. La production frontend Vite
+se construit également. `cargo fmt --check` signale toutefois un formatage Rust
+préexistant à appliquer dans `src-tauri/src/timeline.rs`; Clippy n'est pas
+exécuté par `check.cmd` tant que cette étape échoue. Les détails et les limites
+connues sont consignés dans `handoff.md`.
+
+L'application doit être fermée avant de lancer la vérification : l'exécutable
+verrouille la DLL ONNX Runtime qu'il embarque, et l'étape de compilation ne peut
+alors pas la réécrire.
 
 ## Documentation du projet
 
 - `architecture.md` décrit la mécanique interne et les décisions techniques;
 - `changelog.md` consigne quotidiennement les modifications;
 - `handoff.md` résume l'état vérifié du dépôt à la fin de la dernière session;
-- `THIRD_PARTY_NOTICES.md` conserve les licences et empreintes des modèles
-  distribués;
+- `THIRD_PARTY_NOTICES.md` conserve les licences et les empreintes SHA-256 des
+  modèles et des binaires distribués avec le programme;
 - `LICENSE` contient la GNU Affero General Public License version 3.
 
 ## Licence

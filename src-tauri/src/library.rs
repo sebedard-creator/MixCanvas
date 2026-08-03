@@ -133,6 +133,7 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
         lane    INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
         beat    REAL NOT NULL CHECK (beat >= 0.0),
         gain_db REAL CHECK (gain_db IS NULL OR gain_db BETWEEN -60.0 AND 12.0),
+        draw_group_id INTEGER,
         UNIQUE (lane, beat)
     );
 
@@ -144,11 +145,23 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
         lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
         beat  REAL NOT NULL CHECK (beat >= 0.0),
         value REAL NOT NULL CHECK (value BETWEEN -1.0 AND 1.0),
+        draw_group_id INTEGER,
         UNIQUE (lane, beat)
     );
 
     CREATE INDEX IF NOT EXISTS timeline_pan_nodes_lane_beat_idx
         ON timeline_pan_nodes(lane, beat);
+
+    CREATE TABLE IF NOT EXISTS timeline_draw_groups (
+        id         INTEGER PRIMARY KEY,
+        kind       TEXT NOT NULL CHECK (kind IN ('volume', 'pan')),
+        lane       INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
+        start_beat REAL NOT NULL CHECK (start_beat >= 0.0),
+        end_beat   REAL NOT NULL CHECK (end_beat >= start_beat),
+        shape      TEXT NOT NULL,
+        period     REAL NOT NULL CHECK (period > 0.0),
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
 
     CREATE TABLE IF NOT EXISTS timeline_filter_nodes (
         id      INTEGER PRIMARY KEY,
@@ -183,14 +196,14 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
         created_at     INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
-    PRAGMA user_version = 25;
+    PRAGMA user_version = 26;
 "#;
 
 /// Schema version described by `CURRENT_DATABASE_SCHEMA`. The constant and the
 /// `PRAGMA user_version` above must move together: the schema is also replayed
 /// after a migration, so a stale value there would push the database back down
 /// and replay the last migrations on every start.
-const LATEST_SCHEMA_VERSION: i64 = 25;
+const LATEST_SCHEMA_VERSION: i64 = 26;
 
 const MIGRATE_VERSION_1_TO_2: &str = r#"
     BEGIN IMMEDIATE;
@@ -482,7 +495,47 @@ impl LibraryStore {
 
         let mut store = Self { connection };
         store.backfill_id3_metadata()?;
+        store.reclaim_free_pages();
         Ok(store)
+    }
+
+    /// Rend au disque la place que les suppressions ont libérée.
+    ///
+    /// SQLite réutilise ses pages libres mais ne rétrécit jamais le fichier de
+    /// lui-même. Chaque réanalyse réécrit la grille de temps et la waveform du
+    /// morceau, et chaque montée de version d'algorithme les réécrit toutes :
+    /// le fichier monte à son plus haut niveau et y reste. Mesuré sur une
+    /// bibliothèque de vingt-quatre morceaux — **soixante-sept mégaoctets pour
+    /// dix de données vivantes**, cinquante-sept de vide.
+    ///
+    /// Ce n'est pas une fuite : la place se réutilise. Mais un fichier qui
+    /// pèse sept fois ses données se copie, se sauvegarde et s'inspecte sept
+    /// fois trop lentement, et ressemble à un défaut.
+    ///
+    /// Le seuil évite de payer une réécriture à chaque lancement : on ne
+    /// compacte que si le vide dépasse à la fois la moitié du fichier et seize
+    /// mégaoctets. Un échec ne fait rien perdre — la base reste telle quelle —
+    /// donc il n'empêche pas de démarrer.
+    fn reclaim_free_pages(&self) {
+        const MINIMUM_WASTE_BYTES: i64 = 16 * 1024 * 1024;
+
+        let measure = |pragma: &str| -> Option<i64> {
+            self.connection
+                .query_row(&format!("PRAGMA {pragma}"), [], |row| row.get::<_, i64>(0))
+                .ok()
+        };
+        let (Some(page_size), Some(page_count), Some(free_pages)) = (
+            measure("page_size"),
+            measure("page_count"),
+            measure("freelist_count"),
+        ) else {
+            return;
+        };
+        let wasted = page_size.saturating_mul(free_pages);
+        if wasted < MINIMUM_WASTE_BYTES || free_pages * 2 < page_count {
+            return;
+        }
+        let _ = self.connection.execute_batch("VACUUM;");
     }
 
     /// Chemin du fichier d'un morceau, pour les opérations qui doivent relire
@@ -756,6 +809,7 @@ impl LibraryStore {
                  DELETE FROM library_tracks;
                  DELETE FROM timeline_volume_nodes;
                  DELETE FROM timeline_pan_nodes;
+                 DELETE FROM timeline_draw_groups;
                  DELETE FROM timeline_filter_nodes;
                  UPDATE timeline_lanes SET is_muted = 0, is_solo = 0;
                  COMMIT;",
@@ -1475,6 +1529,31 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
                     .map_err(database_write_error)?;
                 version = 25;
             }
+            25 => {
+                ensure_column(
+                    connection,
+                    "timeline_volume_nodes",
+                    "draw_group_id",
+                    "INTEGER",
+                )?;
+                ensure_column(connection, "timeline_pan_nodes", "draw_group_id", "INTEGER")?;
+                connection
+                    .execute_batch(
+                        "CREATE TABLE IF NOT EXISTS timeline_draw_groups (
+                        id INTEGER PRIMARY KEY,
+                        kind TEXT NOT NULL CHECK (kind IN ('volume', 'pan')),
+                        lane INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
+                        start_beat REAL NOT NULL CHECK (start_beat >= 0.0),
+                        end_beat REAL NOT NULL CHECK (end_beat >= start_beat),
+                        shape TEXT NOT NULL,
+                        period REAL NOT NULL CHECK (period > 0.0),
+                        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                    );
+                    PRAGMA user_version = 26;",
+                    )
+                    .map_err(database_write_error)?;
+                version = 26;
+            }
             _ => {
                 let (target_version, migration) = match version {
                     1 => (2, MIGRATE_VERSION_1_TO_2),
@@ -1976,6 +2055,60 @@ mod tests {
     /// Ce que `track` renvoie doit être exactement ce que `list_tracks`
     /// aurait mis dans la liste, sans quoi une rangée publiée en cours de lot
     /// contredirait celle qui arrive à la fin.
+    /// Une base pleine de vide se compacte; une base saine ne se touche pas.
+    #[test]
+    fn reopening_reclaims_a_wasteful_database_and_leaves_a_tidy_one_alone() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-vacuum-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+
+        {
+            let store = LibraryStore::open(&database_path).expect("database should open");
+            // De quoi dépasser largement le seuil, puis tout rendre libre.
+            store
+                .connection
+                .execute_batch(
+                    "CREATE TABLE ballast (id INTEGER PRIMARY KEY, payload BLOB);
+                     INSERT INTO ballast (payload)
+                       WITH RECURSIVE counter(n) AS (
+                         SELECT 1 UNION ALL SELECT n + 1 FROM counter WHERE n < 24000
+                       )
+                       SELECT randomblob(1024) FROM counter;
+                     DELETE FROM ballast;",
+                )
+                .expect("ballast should be written and dropped");
+        }
+
+        let wasteful = std::fs::metadata(&database_path).expect("size").len();
+        assert!(
+            wasteful > 16 * 1024 * 1024,
+            "le lest n'a pas assez gonflé le fichier : {wasteful} octets"
+        );
+
+        drop(LibraryStore::open(&database_path).expect("database should reopen"));
+        let reclaimed = std::fs::metadata(&database_path).expect("size").len();
+        assert!(
+            reclaimed * 2 < wasteful,
+            "le fichier est passé de {wasteful} à {reclaimed} octets : rien n'a été rendu"
+        );
+
+        // Rouvrir une base déjà compacte ne doit rien réécrire.
+        drop(LibraryStore::open(&database_path).expect("database should reopen"));
+        let again = std::fs::metadata(&database_path).expect("size").len();
+        assert_eq!(again, reclaimed, "une base saine a été réécrite pour rien");
+
+        for suffix in ["", "-wal", "-shm"] {
+            let candidate =
+                std::path::PathBuf::from(format!("{}{}", database_path.to_string_lossy(), suffix));
+            let _ = fs::remove_file(candidate);
+        }
+    }
+
     /// Enregistrer les valeurs de l'analyse efface la correction.
     ///
     /// C'est ce qui fait marcher « Restore Automatic » : le bouton se contente

@@ -34,6 +34,7 @@ const CREDITS: Credit[] = [
   { name: "rodio", licence: "MIT / Apache-2.0", role: "Audio playback" },
   { name: "cpal", licence: "Apache-2.0", role: "Audio device access" },
   { name: "Symphonia", licence: "MPL-2.0", role: "MP3 and WAV decoding" },
+  { name: "rubato", licence: "MIT", role: "Sample rate conversion" },
   { name: "rusqlite · SQLite", licence: "MIT · Public domain", role: "Library and project storage" },
   { name: "RustFFT", licence: "MIT / Apache-2.0", role: "Fourier transform behind stem separation" },
   { name: "ort", licence: "MIT / Apache-2.0", role: "ONNX Runtime bindings" },
@@ -157,20 +158,30 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
             </p>
           </section>
 
-          {/* Un drapeau de lancement ne se découvre pas tout seul, et celui-ci
-              décide si l'interface scintille ou non sur une machine donnée. */}
+          {/* Un drapeau de lancement ne se découvre pas tout seul. Celui-ci a
+              longtemps été présenté comme un dépannage d'affichage; il est en
+              réalité un choix mesuré, et le dire ainsi évite qu'on l'active en
+              croyant gagner quelque chose. */}
           <section className="about-block">
-            <h3>If the display flickers</h3>
+            <h3>Why the interface draws in software</h3>
             <p>
-              MixCanvas draws its interface in <strong>software</strong> by default. Some graphics
-              drivers make WebView2's hardware compositor tear during a zoom, and no amount of
-              care on our side fixes that — so correctness wins, at a cost this 2D interface can
-              afford. Audio, analysis and rendering are native Rust and are never affected.
+              MixCanvas draws its interface in <strong>software</strong> by default, and that is a
+              deliberate choice rather than a fallback. On the machines we profiled, turning
+              hardware acceleration on made no measurable difference to how the timeline performs —
+              while some graphics drivers make WebView2's hardware compositor tear during a zoom.
+              Given a choice between no gain and a possible artefact, correctness wins.
+            </p>
+            <p>
+              Nothing about your audio depends on this. Playback, analysis, mixing and bouncing are
+              native Rust and never touch the browser's renderer.
             </p>
             <p className="about-fineprint">
-              Launch with <strong>--gpu</strong> for full hardware acceleration, or{" "}
-              <strong>--gpu-safe</strong> to keep hardware drawing while compositing in software —
-              often the best of both. If either one flickers, go back to launching it plainly.
+              You can still turn it on. Launch with <strong>--gpu-safe</strong> to draw on the
+              graphics card while compositing in software, or <strong>--gpu</strong> for full
+              hardware acceleration. <strong>--no-gpu</strong> names the default explicitly. The
+              last flag on the line wins, and the portable build ships a{" "}
+              <strong>.cmd</strong> shortcut for each. If your machine turns out to gain from it,
+              the flag is all you need — no rebuild.
             </p>
           </section>
 
@@ -183,11 +194,20 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
             {/* On finit toujours par se demander où sont passés ces gigaoctets.
                 Le dire ici évite d'avoir à le chercher. */}
             <p>
-              Separated stems and baked clips are written as WAV files into a{" "}
-              <strong>MixCanvas Files</strong> folder beside the program — or into the
-              application data folder when that location is read-only. Each project gets a
-              folder of its own, named after it; an unsaved session lives in{" "}
+              <strong>Everything MixCanvas writes lives in one folder beside the program</strong>,
+              called <strong>MixCanvas Files</strong>: the library database, the models unpacked
+              from the executable, and the WAV files for separated stems and baked clips. Copy
+              the program and that folder together and you have moved your whole setup; delete
+              the folder and you are back to a fresh install. Nothing is hidden away.
+            </p>
+            <p>
+              Each project gets a folder of its own, named after it; an unsaved session lives in{" "}
               <strong>Scratch</strong> until you name it, and its media follow when you do.
+            </p>
+            <p className="about-fineprint">
+              The one exception: a program placed somewhere it may not write — Program Files, a
+              read-only share — falls back to the application data folder, because refusing to
+              start would be worse.
             </p>
             <p className="about-fineprint">
               On exit, files that nothing refers to any more are deleted. A file that is

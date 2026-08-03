@@ -84,6 +84,7 @@ pub struct TimelineSnapshot {
     pub clips: Vec<TimelineClip>,
     pub volume_nodes: Vec<TimelineVolumeNode>,
     pub pan_nodes: Vec<TimelinePanNode>,
+    pub draw_groups: Vec<TimelineDrawGroup>,
     pub filter_nodes: Vec<TimelineFilterNode>,
 }
 
@@ -94,6 +95,7 @@ pub struct TimelineVolumeNode {
     pub lane: i64,
     pub beat: f64,
     pub gain_db: Option<f64>,
+    pub draw_group_id: Option<i64>,
 }
 
 /// Un point de panoramique. `value` va de −1 (gauche) à +1 (droite), 0 au
@@ -105,6 +107,19 @@ pub struct TimelinePanNode {
     pub lane: i64,
     pub beat: f64,
     pub value: f64,
+    pub draw_group_id: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineDrawGroup {
+    pub id: i64,
+    pub kind: String,
+    pub lane: i64,
+    pub start_beat: f64,
+    pub end_beat: f64,
+    pub shape: String,
+    pub period: f64,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -376,6 +391,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
     let tempo_points = tempo_points_for_clips(project_bpm, &clips)?;
     let volume_nodes = volume_nodes(connection)?;
     let pan_nodes = pan_nodes(connection)?;
+    let draw_groups = draw_groups(connection)?;
     let filter_nodes = filter_nodes(connection)?;
     Ok(TimelineSnapshot {
         project_bpm,
@@ -386,6 +402,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
         clips,
         volume_nodes,
         pan_nodes,
+        draw_groups,
         filter_nodes,
     })
 }
@@ -474,7 +491,7 @@ pub fn set_compressor_enabled(
 fn pan_nodes(connection: &Connection) -> Result<Vec<TimelinePanNode>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT id, lane, beat, value
+            "SELECT id, lane, beat, value, draw_group_id
              FROM timeline_pan_nodes
              ORDER BY lane, beat, id",
         )
@@ -486,6 +503,7 @@ fn pan_nodes(connection: &Connection) -> Result<Vec<TimelinePanNode>, String> {
                 lane: row.get(1)?,
                 beat: row.get(2)?,
                 value: row.get(3)?,
+                draw_group_id: row.get(4)?,
             })
         })
         .map_err(database_read_error)?
@@ -496,7 +514,7 @@ fn pan_nodes(connection: &Connection) -> Result<Vec<TimelinePanNode>, String> {
 fn volume_nodes(connection: &Connection) -> Result<Vec<TimelineVolumeNode>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT id, lane, beat, gain_db
+            "SELECT id, lane, beat, gain_db, draw_group_id
              FROM timeline_volume_nodes
              ORDER BY lane, beat, id",
         )
@@ -508,6 +526,28 @@ fn volume_nodes(connection: &Connection) -> Result<Vec<TimelineVolumeNode>, Stri
                 lane: row.get(1)?,
                 beat: row.get(2)?,
                 gain_db: row.get(3)?,
+                draw_group_id: row.get(4)?,
+            })
+        })
+        .map_err(database_read_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(database_read_error)
+}
+
+fn draw_groups(connection: &Connection) -> Result<Vec<TimelineDrawGroup>, String> {
+    let mut statement = connection
+        .prepare("SELECT id, kind, lane, start_beat, end_beat, shape, period FROM timeline_draw_groups ORDER BY lane, start_beat, id")
+        .map_err(database_read_error)?;
+    statement
+        .query_map([], |row| {
+            Ok(TimelineDrawGroup {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                lane: row.get(2)?,
+                start_beat: row.get(3)?,
+                end_beat: row.get(4)?,
+                shape: row.get(5)?,
+                period: row.get(6)?,
             })
         })
         .map_err(database_read_error)?
@@ -1057,6 +1097,35 @@ fn move_clip_automation_nodes(
     Ok(())
 }
 
+/// Updates the compact Draw record once the dense automation samples belonging
+/// to a clip have moved.  Its bounds stay useful for hit-testing `Delete Draw`.
+fn move_clip_draw_groups(
+    transaction: &Transaction<'_>,
+    kind: &str,
+    old_lane: i64,
+    new_lane: i64,
+    visual_start_beat: f64,
+    visual_end_beat: f64,
+    beat_delta: f64,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            "UPDATE timeline_draw_groups
+             SET lane = ?2, start_beat = start_beat + ?3, end_beat = end_beat + ?3
+             WHERE kind = ?1 AND lane = ?4 AND start_beat >= ?5 AND end_beat <= ?6",
+            params![
+                kind,
+                new_lane,
+                beat_delta,
+                old_lane,
+                visual_start_beat - 0.125_001,
+                visual_end_beat + 0.125_001
+            ],
+        )
+        .map_err(database_write_error)?;
+    Ok(())
+}
+
 pub fn move_clip(
     connection: &mut Connection,
     clip_id: i64,
@@ -1154,6 +1223,17 @@ pub fn move_clip(
         move_clip_automation_nodes(
             &transaction,
             table,
+            current_lane,
+            requested_lane,
+            old_geometry.visual_start_beat,
+            old_geometry.visual_end_beat,
+            new_geometry.visual_start_beat - old_geometry.visual_start_beat,
+        )?;
+    }
+    for kind in ["volume", "pan"] {
+        move_clip_draw_groups(
+            &transaction,
+            kind,
             current_lane,
             requested_lane,
             old_geometry.visual_start_beat,
@@ -1474,6 +1554,7 @@ pub fn clear_timeline(connection: &Connection) -> Result<TimelineSnapshot, Strin
              DELETE FROM timeline_clips;
              DELETE FROM timeline_volume_nodes;
              DELETE FROM timeline_pan_nodes;
+             DELETE FROM timeline_draw_groups;
              DELETE FROM timeline_filter_nodes;
              UPDATE timeline_lanes SET is_muted = 0, is_solo = 0;
              COMMIT;",
@@ -1625,18 +1706,74 @@ pub fn delete_pan_node(connection: &Connection, node_id: i64) -> Result<Timeline
     snapshot(connection)
 }
 
+pub fn delete_draw_group(
+    connection: &mut Connection,
+    group_id: i64,
+) -> Result<TimelineSnapshot, String> {
+    let transaction = connection.transaction().map_err(database_write_error)?;
+    transaction
+        .execute(
+            "DELETE FROM timeline_volume_nodes WHERE draw_group_id = ?1",
+            [group_id],
+        )
+        .map_err(database_write_error)?;
+    transaction
+        .execute(
+            "DELETE FROM timeline_pan_nodes WHERE draw_group_id = ?1",
+            [group_id],
+        )
+        .map_err(database_write_error)?;
+    let changed = transaction
+        .execute("DELETE FROM timeline_draw_groups WHERE id = ?1", [group_id])
+        .map_err(database_write_error)?;
+    if changed == 0 {
+        return Err("This Draw no longer exists.".to_owned());
+    }
+    transaction.commit().map_err(database_write_error)?;
+    snapshot(connection)
+}
+
 /// Écrit une forme d'automation de volume, en remplaçant ce qui occupait
 /// l'étendue couverte.
 ///
 /// L'ancienne plage et la nouvelle partent dans la même transaction : une forme
 /// à demi effacée ne doit jamais s'entendre, et un trait interrompu ne doit pas
 /// laisser derrière lui la queue de ce qu'il remplaçait.
+fn validate_draw_metadata(shape: &str, period: f64) -> Result<(), String> {
+    if !matches!(shape, "step" | "sine" | "triangle") {
+        return Err("That Draw shape is not supported.".to_owned());
+    }
+    if !period.is_finite() || !(0.25..=16.0).contains(&period) {
+        return Err("That Draw period is outside the supported range.".to_owned());
+    }
+    Ok(())
+}
+
+/// A later stroke can erase every sample of an earlier one. Drop only empty
+/// records; a partially overwritten Draw retains its remaining audio samples.
+fn prune_empty_draw_groups(transaction: &Transaction<'_>) -> Result<(), String> {
+    transaction
+        .execute(
+            "DELETE FROM timeline_draw_groups
+             WHERE id NOT IN (
+               SELECT DISTINCT draw_group_id FROM timeline_volume_nodes WHERE draw_group_id IS NOT NULL
+               UNION
+               SELECT DISTINCT draw_group_id FROM timeline_pan_nodes WHERE draw_group_id IS NOT NULL
+             )",
+            [],
+        )
+        .map_err(database_write_error)?;
+    Ok(())
+}
+
 pub fn draw_volume_shape(
     connection: &mut Connection,
     lane: i64,
     start_beat: f64,
     end_beat: f64,
     nodes: &[(f64, f64)],
+    shape: &str,
+    period: f64,
 ) -> Result<TimelineSnapshot, String> {
     validate_lane(lane)?;
     let from = validate_volume_beat(start_beat.min(end_beat))?;
@@ -1647,6 +1784,7 @@ pub fn draw_volume_shape(
     for (_, gain_db) in nodes {
         validate_gain_db(Some(*gain_db))?;
     }
+    validate_draw_metadata(shape, period)?;
 
     let transaction = connection.transaction().map_err(database_write_error)?;
     transaction
@@ -1655,17 +1793,26 @@ pub fn draw_volume_shape(
             params![lane, from, to],
         )
         .map_err(database_write_error)?;
+    prune_empty_draw_groups(&transaction)?;
+    transaction
+        .execute(
+            "INSERT INTO timeline_draw_groups (kind, lane, start_beat, end_beat, shape, period)
+         VALUES ('volume', ?1, ?2, ?3, ?4, ?5)",
+            params![lane, from, to, shape, period],
+        )
+        .map_err(database_write_error)?;
+    let draw_group_id = transaction.last_insert_rowid();
     {
         let mut insert = transaction
             .prepare(
-                "INSERT INTO timeline_volume_nodes (lane, beat, gain_db)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT(lane, beat) DO UPDATE SET gain_db = excluded.gain_db",
+                "INSERT INTO timeline_volume_nodes (lane, beat, gain_db, draw_group_id)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(lane, beat) DO UPDATE SET gain_db = excluded.gain_db, draw_group_id = excluded.draw_group_id",
             )
             .map_err(database_write_error)?;
         for (beat, gain_db) in nodes {
             insert
-                .execute(params![lane, beat, gain_db])
+                .execute(params![lane, beat, gain_db, draw_group_id])
                 .map_err(database_write_error)?;
         }
     }
@@ -1680,6 +1827,8 @@ pub fn draw_pan_shape(
     start_beat: f64,
     end_beat: f64,
     nodes: &[(f64, f64)],
+    shape: &str,
+    period: f64,
 ) -> Result<TimelineSnapshot, String> {
     validate_lane(lane)?;
     let from = validate_pan_beat(start_beat.min(end_beat))?;
@@ -1692,6 +1841,7 @@ pub fn draw_pan_shape(
             return Err("A Pan Node has to sit between hard left and hard right.".to_owned());
         }
     }
+    validate_draw_metadata(shape, period)?;
 
     let transaction = connection.transaction().map_err(database_write_error)?;
     transaction
@@ -1700,17 +1850,26 @@ pub fn draw_pan_shape(
             params![lane, from, to],
         )
         .map_err(database_write_error)?;
+    prune_empty_draw_groups(&transaction)?;
+    transaction
+        .execute(
+            "INSERT INTO timeline_draw_groups (kind, lane, start_beat, end_beat, shape, period)
+         VALUES ('pan', ?1, ?2, ?3, ?4, ?5)",
+            params![lane, from, to, shape, period],
+        )
+        .map_err(database_write_error)?;
+    let draw_group_id = transaction.last_insert_rowid();
     {
         let mut insert = transaction
             .prepare(
-                "INSERT INTO timeline_pan_nodes (lane, beat, value)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT(lane, beat) DO UPDATE SET value = excluded.value",
+                "INSERT INTO timeline_pan_nodes (lane, beat, value, draw_group_id)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(lane, beat) DO UPDATE SET value = excluded.value, draw_group_id = excluded.draw_group_id",
             )
             .map_err(database_write_error)?;
         for (beat, value) in nodes {
             insert
-                .execute(params![lane, beat, value])
+                .execute(params![lane, beat, value, draw_group_id])
                 .map_err(database_write_error)?;
         }
     }
@@ -2060,25 +2219,60 @@ pub fn restore_snapshot(
     transaction
         .execute("DELETE FROM timeline_volume_nodes", [])
         .map_err(database_write_error)?;
+    transaction
+        .execute("DELETE FROM timeline_pan_nodes", [])
+        .map_err(database_write_error)?;
+    transaction
+        .execute("DELETE FROM timeline_draw_groups", [])
+        .map_err(database_write_error)?;
+    for group in &target.draw_groups {
+        transaction
+            .execute(
+                "INSERT INTO timeline_draw_groups
+                 (id, kind, lane, start_beat, end_beat, shape, period)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    group.id,
+                    group.kind,
+                    group.lane,
+                    group.start_beat,
+                    group.end_beat,
+                    group.shape,
+                    group.period,
+                ],
+            )
+            .map_err(database_write_error)?;
+    }
     for node in &target.volume_nodes {
         transaction
             .execute(
-                "INSERT INTO timeline_volume_nodes (id, lane, beat, gain_db) VALUES (?1, ?2, ?3, ?4)",
-                params![node.id, node.lane, node.beat, node.gain_db],
+                "INSERT INTO timeline_volume_nodes (id, lane, beat, gain_db, draw_group_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    node.id,
+                    node.lane,
+                    node.beat,
+                    node.gain_db,
+                    node.draw_group_id
+                ],
             )
             .map_err(database_write_error)?;
     }
 
     // Le panoramique fait partie de l'état restauré au même titre que le
     // volume : l'oublier ici laisserait un Undo réécrire tout sauf lui.
-    transaction
-        .execute("DELETE FROM timeline_pan_nodes", [])
-        .map_err(database_write_error)?;
     for node in &target.pan_nodes {
         transaction
             .execute(
-                "INSERT INTO timeline_pan_nodes (id, lane, beat, value) VALUES (?1, ?2, ?3, ?4)",
-                params![node.id, node.lane, node.beat, node.value],
+                "INSERT INTO timeline_pan_nodes (id, lane, beat, value, draw_group_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    node.id,
+                    node.lane,
+                    node.beat,
+                    node.value,
+                    node.draw_group_id
+                ],
             )
             .map_err(database_write_error)?;
     }
@@ -2102,6 +2296,19 @@ pub fn restore_snapshot(
 
 fn validate_restored_snapshot(target: &TimelineSnapshot) -> Result<(), String> {
     validate_bpm(target.project_bpm)?;
+
+    for group in &target.draw_groups {
+        validate_lane(group.lane)?;
+        validate_restored_beat(group.start_beat)?;
+        validate_restored_beat(group.end_beat)?;
+        if group.end_beat < group.start_beat {
+            return Err("This history entry holds an inverted Draw range.".to_owned());
+        }
+        if !matches!(group.kind.as_str(), "volume" | "pan") {
+            return Err("This history entry holds an unknown Draw kind.".to_owned());
+        }
+        validate_draw_metadata(&group.shape, group.period)?;
+    }
 
     for lane in &target.lanes {
         validate_lane(lane.lane)?;
@@ -3130,6 +3337,7 @@ mod tests {
             clips: Vec::new(),
             volume_nodes: Vec::new(),
             pan_nodes: Vec::new(),
+            draw_groups: Vec::new(),
             filter_nodes: Vec::new(),
         };
         assert_eq!(audible_lane_mask(&snapshot), 0b101);
@@ -4184,11 +4392,16 @@ mod tests {
                 drawn[0].0,
                 drawn[drawn.len() - 1].0,
                 &drawn,
+                "sine",
+                1.0,
             )
             .expect("the stroke should be written");
             // Les douze du trait, plus les deux ancres du dépôt, que le trait
             // ne recouvre pas.
             assert_eq!(painted.pan_nodes.len(), drawn.len() + 2);
+            assert_eq!(painted.draw_groups.len(), 1);
+            assert_eq!(painted.draw_groups[0].shape, "sine");
+            assert_eq!(painted.draw_groups[0].period, 1.0);
 
             let moved = move_clip(&mut store.connection, clip, 24.0, 1)
                 .expect("a clip holding a drawn shape should still move");
@@ -4201,6 +4414,8 @@ mod tests {
                 - start;
 
             assert_eq!(moved.pan_nodes.len(), drawn.len() + 2);
+            assert_eq!(moved.draw_groups.len(), 1);
+            assert_eq!(moved.draw_groups[0].lane, 1);
             for (beat, _) in &drawn {
                 assert!(
                     moved
@@ -4210,6 +4425,16 @@ mod tests {
                     "the node drawn at {beat} should have kept its exact place in the shape"
                 );
             }
+
+            let after_delete =
+                super::delete_draw_group(&mut store.connection, moved.draw_groups[0].id)
+                    .expect("the whole Draw should be removable in one action");
+            assert!(after_delete.draw_groups.is_empty());
+            assert_eq!(
+                after_delete.pan_nodes.len(),
+                2,
+                "manual clip anchors stay behind"
+            );
         }
 
         fs::remove_file(&fake_mp3).expect("fake MP3 should be removed");

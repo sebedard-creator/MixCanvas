@@ -1,4 +1,3 @@
-import type { CSSProperties } from "react";
 
 import { formatDuration } from "../lib/formatDuration";
 
@@ -60,7 +59,6 @@ export function MiniPreview({
           disabled={disabled || durationMs <= 0}
           onChange={(event) => onSeek(Number(event.currentTarget.value))}
           aria-label={`Seek in ${fileName}`}
-          style={{ "--seek-progress": `${progress}%` } as CSSProperties}
         />
       </div>
       <time>{formatDuration(positionMs)} / {formatDuration(durationMs)}</time>
