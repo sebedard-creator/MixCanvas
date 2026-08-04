@@ -1,237 +1,199 @@
 # MixCanvas
 
-**A DJ mix editor for people who would rather build a set than perform one.**
+**Build DJ mixes with the precision of a timeline and the feel of a studio.**
 
-MixCanvas is free, open source software for Windows. You drop tracks onto a
-musical timeline, line them up, draw what they do, and hear the result straight
-away. Nothing is rendered in advance: the audio engine, written in Rust, works
-it all out during playback.
+MixCanvas is a free, open-source Windows application for creating complete DJ
+mixes before the party starts. Import your own MP3s, correct the beatgrid when
+needed, arrange tracks on a musical timeline, shape transitions with automation,
+and play or export the finished mix.
 
-Decks reward the right gesture at the right moment. MixCanvas offers the
-opposite — you can go back to a transition, take it again, compare, until it is
-the one you meant.
+It is deliberately focused: no streaming service, no account, no cloud library,
+and no VST plugin ecosystem. Your music, your files, your computer.
 
-**Nothing leaves your machine.** The program makes no network request of any
-kind. Beat detection and vocal separation run locally.
+## Why MixCanvas
 
----
+Traditional DJ software is made for performing in the moment. MixCanvas is made
+for refining a mix over time. Move a transition, hear it again, draw the change
+you want, and keep editing while the timeline plays.
 
-## The timeline
+- Three stereo tracks on one beat-based timeline.
+- Automatic BPM and downbeat analysis, with practical manual correction.
+- Pitch-preserving time-stretching and a global tempo curve for beatmatched
+  transitions.
+- Local audio processing in 32-bit floating point.
+- No subscriptions, no telemetry, and no network connection required.
 
-Three stereo tracks, a ruler in bars and beats, continuous zoom on the wheel.
-Tracks come in from the library by dragging, or with a click that takes the
-first lane actually free at the playhead.
+![MixCanvas Timeline: three stereo tracks, tempo curve, automation, waveforms, and Library](assets/screenshots/timeline.png)
 
-A clip moves horizontally to change when it plays and vertically to change
-lane — **including during playback**, without a gap. Its first downbeat snaps to
-four-beat bars on its own, and the pre-roll, whatever comes before the track's
-first beat, stays visible rather than clipped.
+*The full mix at a glance: musical timeline, visual transitions, live transport,
+and Library in one workspace.*
 
-The cursor tells you what a click will do from where you hover: move in the
-middle, trim near an edge. `B` splits a clip into two independent halves,
-`Delete` removes the one under the pointer, and right-clicking its name opens
-its menu.
+## Core workflow
 
-Removing a clip **takes with it the automation that only existed for it** — but
-not a neighbour's, where one shares the same span.
+1. Add MP3s to the Library.
+2. MixCanvas reads ID3 artist/title data, creates a waveform, and analyses BPM,
+   beatgrid, and first downbeat in the background.
+3. Preview a track, correct it in the Beatgrid Editor if required, then drag it
+   onto the Timeline.
+4. Arrange, beatmatch, automate, play, save, and bounce the finished mix.
 
-## Tempo
+## Library and beatgrid
 
-Every clip puts a **tempo target** on the global curve — the turquoise node —
-which you can drag along the ruler. Between two targets the tempo moves **in
-whole-beat steps**: it holds for the length of a beat and only changes at the
-boundary, where the transient covers it. A tempo change mid-beat is audible; on
-the beat, it is not.
+- Import individual MP3 files, whole folders, or drag MP3s in from Explorer.
+- Library display uses Artist – Track Title when metadata is available.
+- Sort by BPM, artist, title, or timeline use; used tracks receive a visual
+  overlay to prevent accidental duplicate additions.
+- Per-track preview player with seekable waveform/progress control.
+- Local automatic BPM, beat, downbeat, and waveform analysis.
+- Beatgrid Editor with preview playback, manual BPM, half/double tempo tools,
+  Tap 1 downbeat capture, Snap to Beat, and restoration of the automatic result.
+- Manual corrections remain yours: re-analysis does not overwrite them.
 
-Right-clicking a node sets **the speed this clip plays at here**. That is not
-the track's BPM: the track keeps whatever the analysis says, and the clip is
-stretched towards the target instead. *Follow track* gives it its native speed
-back.
+![Beatgrid Editor: manual BPM, Tap 1, Snap to Beat, first downbeat, and re-analysis controls](assets/screenshots/beatgrid-editor.png)
 
-Stretching preserves pitch — no varispeed. A stereo-linked WSOLA engine looks
-for a correlated waveform before each splice and applies a cosine crossfade,
-within a range of 0.5× to 2×.
+*When automatic analysis needs help, the Beatgrid Editor makes the correction
+audible, guided, and repeatable.*
 
-## Finding the beat
+## Musical timeline
 
-On import, every track goes through **Beat This!**, a neural beat tracker, run
-locally. Its events are then fitted to a rigid grid — a DJ needs a constant
-clock, not a list of musical events — and the first downbeat is placed where the
-kick actually enters, so an ambient intro does not push the grid off.
+- Three stereo lanes: A, B, and C.
+- Drag-and-drop placement or one-click insertion into the next free lane.
+- Beat/bar snapping keeps downbeats aligned while clips move horizontally or
+  vertically — even during playback.
+- Continuous zoom, full-project zoom-out, centered playhead follow, click-to-seek,
+  and a horizontal navigator.
+- Drag clips, trim either edge, split a clip, remove it, or undo/redo up to
+  fifty edits.
+- Floating Mute and Solo controls per lane.
+- Global tempo map with draggable tempo targets and gradual ramps between them.
+- Every clip follows the project tempo through pitch-preserving stereo-linked
+  time-stretching, rather than varispeed, across a safe 0.5×–2× range.
+- Play/Pause transport, Spacebar control, optional Autoplay, and live timeline
+  editing without pre-rendering the entire set.
 
-When the model cannot run, a correlation-based analyser takes over. Either way
-the result is only a starting point: the **Beatgrid Editor** lets you tap the
-tempo, nudge it, halve or double it, set the first downbeat from what you hear —
-and hand everything back to the automatic analysis.
+## Automation and transitions
 
-A manual correction **survives** re-analysis. It represents your work, and the
-program never overwrites it on its own.
+MixCanvas lets you draw transitions directly where they happen.
 
-## Automation
+- Volume automation from −∞ dB to +12 dB.
+- Pan automation with a constant-power pan law.
+- Smart Filter automation: draw high-pass or low-pass sweeps as visual curves,
+  reshape them, and remove them with a right click.
+- **Nodes** are for exact, individual control points: place, move, or delete a
+  specific value at a specific beat.
+- **Draw** is for a complete musical gesture. Drag across a range to create a
+  step, sine, or triangle Volume/Pan movement with its own period and shape.
+  It appears as one clean curve, can be deleted in one action, and does not
+  clutter the timeline with hundreds of visible nodes.
+- Under the hood, Draw still preserves the detailed automation points required
+  by the audio engine. The simplified line is only a clearer way to edit it.
+- Automation that belongs to a moved clip follows that clip, so a beatmatching
+  adjustment does not destroy the transition you already made.
 
-Three lanes per track, drawn straight onto the timeline.
+## Sound and mix tools
 
-**Volume**, from −∞ to +12 dB. **Pan**, at constant power. **Filter**, bipolar:
-upward is a high-pass, downward a low-pass, the middle is bypass.
+- High-definition stereo waveform display with peak and RMS detail, adapted to
+  the current zoom level.
+- Three-band EQ on every clip, adjustable during playback.
+- Sidechain compression: make a clip the key and let it pump overlapping clips.
+- Master Glue Compressor with console colour/saturation.
+- Stereo-linked master limiter and a real post-limiter OL overload lamp.
+- Vintage stereo VU meters driven by the actual output signal.
+- All decoding, time-stretching, automation, mixing, and processing run in
+  float32 at the audio device's native sample rate.
 
-You can place nodes one at a time, or draw a whole shape: `V` and `P` pick the
-lane, `S` the shape — step, sine, triangle — and `D` its period. The filter band
-takes the bubble brush, a symmetrical triangle with `Shift`, and freehand with
-`Ctrl`.
-
-Every curve can be resized by its edges and deleted with a right click.
-
-## Effects
-
-A **three-band EQ per clip**, adjustable while it plays.
-
-On the master bus, in console order: **sidechain compression** — one clip
-becomes the key, goes quiet where it overlaps others and pumps them instead — a
-**glue compressor**, **console colour** with its saturation, metering, then a
-stereo-linked **limiter**. The `OL` lamp is measured *after* the limiter: it
-only lights on clipping you actually suffered.
-
-The analogue VU meter in the middle reads the real float32 output.
-
-## Vocals and instrumental
-
-**Open-Unmix** splits a clip into vocals and instrumental, locally. Each clip
-then chooses what it plays: the whole track, vocals alone, instrumental alone.
-Only the window the clip actually uses is separated, so you do not wait on a
-passage you will never hear.
-
-## Baking a clip
-
-`BAKE` renders a clip **on its own, with its effects**, into a file. The clip
-then plays that file instead of recomputing its chain on every pass, which
-lightens a busy mix.
-
-It is **reversible**: the automation removed at bake time is kept exactly as it
-was and handed back when you thaw. A button with no way back stops being
-pressed.
-
-## Playing, saving, exporting
-
-`Space` starts and stops. A click in the timeline places the playhead, and
-`AUTOPLAY` decides whether that click also starts playback — handy when you are
-placing clips by ear.
-
-Nothing is decoded in advance: each clip opens its file when it becomes active
-and keeps only a window around the current position. Changing a tempo, moving a
-clip or jumping through the mix therefore needs no render.
-
-`SAVE` and `LOAD` write a portable `.mixcanvas` project. **`BOUNCE MIX`**
-exports the whole mix as 16-bit / 44.1 kHz stereo WAV, with TPDF dither.
-
-Undo history holds fifty levels — `Ctrl+Z`, `Ctrl+Y`.
-
----
-
-## Where your files live
-
-**Everything MixCanvas writes lives in one folder beside the program**, called
-`MixCanvas Files`: the library database, the resources unpacked from the
-executable, and the WAV files for separated stems and baked clips.
-
-Copy the program and that folder and you have moved your whole setup. Delete the
-folder and you are back to a fresh install. Nothing is hidden away in
-`%APPDATA%`.
-
-Each project gets a folder of its own; an unsaved session lives in `Scratch`
-until you name it, and its media follow. On exit, files that nothing refers to
-any more are deleted — a file still referenced is never touched.
-
-Your MP3s stay where they are. The library keeps only their path and metadata,
-and can tell you which ones have gone missing or moved.
-
-*One exception: a program placed somewhere it may not write — `Program Files`, a
-read-only share — falls back to the application data folder, because refusing to
-start would be worse.*
-
-## How the interface draws
-
-MixCanvas draws its interface **in software**, deliberately. On the machines we
-profiled, hardware acceleration made no measurable difference, while some
-graphics drivers make WebView2's compositor tear during a zoom. Given a choice
-between no gain and a possible artefact, correctness wins.
-
-Nothing about your audio depends on this. Playback, analysis, mixing and
-bouncing are native Rust and never touch the browser's renderer.
-
-The mode is chosen at launch, with no rebuild — the last flag wins:
-
-| Flag | Effect |
+| Per-clip EQ | Reversible Bake |
 |---|---|
-| *(none)* or `--no-gpu` | everything in software — the default |
-| `--gpu-safe` | the card draws, compositing stays in software |
-| `--gpu` | full hardware acceleration |
+| ![Three-band Clip EQ with high-pass, parametric bell, low-pass, and gain controls](assets/screenshots/clip-eq.png) | ![Bake progress dialog while rendering a clip and its effects](assets/screenshots/bake.png) |
+| Shape a clip while it plays. | Render a dense clip when you are ready, then undo it at any time. |
 
-```powershell
-.\MixCanvas.exe --gpu-safe
-```
+## Vocals, instrumentals, and baking
 
-The `portable` folder ships a `.cmd` shortcut for each mode, which picks up the
-most recent build sitting beside it.
+- Separate a clip into Vocals and Instrumental locally with Open-Unmix.
+- Choose full track, vocals only, or instrumental only per clip.
+- Separation only processes the part of the source used by the clip, not an
+  entire song unnecessarily.
+- BAKE renders a clip and its effects into a reusable audio file to lighten a
+  dense mix. Baking is reversible and restores the automation it replaced.
 
----
+## Save and export
 
-## Building from source
+- Save and load portable .mixcanvas projects.
+- Bounce the complete mix to 16-bit / 44.1 kHz stereo WAV with TPDF dither.
+- The original MP3 files are never modified.
+- The Library only stores references and metadata, and warns when a source file
+  was moved or is missing.
 
-You need Node.js with Corepack, the Rust toolchain named in
-`rust-toolchain.toml`, the Microsoft C++ Build Tools with the "Desktop
-development with C++" workload, and WebView2 — already present on recent
-Windows.
+## Private and portable by design
 
-```powershell
-.\install.cmd    # dependencies, kept inside the repo: nothing installs globally
-.\dev.cmd        # run in development
-.\check.cmd      # tsc, tests, cargo test, fmt, clippy
-```
+MixCanvas makes no network request. BPM detection, waveform generation, vocal
+separation, and all audio processing run on your machine.
 
-`install.cmd` fetches pnpm into `.corepack` and keeps the caches inside the
-repository. Nothing touches your `PATH`. Both beat-tracking models are part of
-the repository, so a fresh clone can analyse without any download.
+Everything MixCanvas creates lives in MixCanvas Files beside the executable:
+the database, extracted resources, separated stems, baked clips, and project
+media. Copy the executable and that folder to move your setup. Your original
+MP3s always stay where you put them.
 
-**Close MixCanvas before `check.cmd`** — the running executable locks the ONNX
-Runtime DLL it embeds.
+### Windows requirement
 
-The single-file portable build is made like this:
+MixCanvas uses the **Microsoft Edge WebView2 Runtime** to display its interface.
+It is already included with Windows 11 and most supported Windows 10 systems.
+If it has been removed or is unavailable, install the
+[WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/).
+You do not need to install or use the Microsoft Edge browser itself.
 
-```powershell
-npx tauri build --no-bundle -f embed-resources
-```
+The portable build uses software drawing by default for visual stability on
+Windows systems where WebView2 GPU compositing can show artifacts. Audio remains
+native Rust processing in every render mode. Advanced launch flags are available:
 
-`embed-resources` bundles the models and ONNX Runtime into the executable.
-Without it the binary carries neither the frontend nor the models.
+| Flag | Render mode |
+|---|---|
+| *(none)* or --no-gpu | software rendering (default) |
+| --gpu-safe | GPU drawing with software compositing |
+| --gpu | full GPU rendering |
 
-Verified for 1.0.0: TypeScript, 230 frontend tests across 27 files, 174 Rust
-tests, formatting and Clippy — `check.cmd` exits 0.
+## Build from source
 
-## Under the hood
+Requirements: Windows, Node.js with Corepack, the Rust toolchain specified by
+rust-toolchain.toml, Microsoft C++ Build Tools with **Desktop development with
+C++**, and Microsoft Edge WebView2.
 
-- **Tauri 2**, React and TypeScript interface, Rust engine.
-- **Symphonia** through **Rodio** for decoding, **CPAL** for native output.
-- Embedded **SQLite**, no server: library, timeline and automation.
-- **RTen** runs Beat This!, **ONNX Runtime** runs Open-Unmix.
-- The mix is computed in `f32` throughout, at the device's real sample rate, to
-  avoid a double 44.1 ↔ 48 kHz conversion.
+    .\install.cmd     # installs project-local dependencies
+    .\dev.cmd         # runs the development build
+    .\check.cmd       # TypeScript, frontend tests, Rust tests, fmt, and Clippy
 
-`architecture.md` explains the *why* behind each technical decision. It is
-written in French, as are the source comments.
+Dependencies and caches remain inside the repository: pnpm does not need to be
+installed globally and the project does not modify your PATH. The beat-tracking
+models are included, so a fresh clone can analyse music without downloading
+anything at first launch.
 
-## Licence
+Close MixCanvas before running check.cmd: Windows locks the bundled ONNX Runtime
+DLL while the app is open.
 
-MixCanvas is released under the [GNU AGPL version 3 only](LICENSE), identified
-by the SPDX expression `AGPL-3.0-only`.
+Create a single-file portable build with:
 
-You may use, study, share and modify it. If you distribute a modified version —
-including over a network — you must offer its source code under the same
-licence.
+    npx tauri build --no-bundle -f embed-resources
 
-Forks are welcome. The licence already asks you to keep the copyright notices
-and to state what you changed. Beyond that, and as a courtesy rather than a
-condition, naming MixCanvas and linking back to the original project would be
-genuinely appreciated.
+The embed-resources feature packages the interface, analysis models, and ONNX
+Runtime into the executable.
 
-`THIRD_PARTY_NOTICES.md` holds the licences and SHA-256 digests of the models
-and binaries shipped with the program.
+## Technology
+
+- Tauri 2, React, TypeScript, and Rust.
+- SQLite for the local Library, Timeline, and automation data.
+- Symphonia/Rodio for decoding and CPAL for native audio output.
+- Beat This! for beat/downbeat analysis and Open-Unmix for stem separation.
+
+For implementation details and design decisions, see
+[architecture.md](architecture.md). The architecture notes and source comments
+are written in French.
+
+## License
+
+MixCanvas is released under the
+[GNU AGPL v3.0 only](LICENSE) (AGPL-3.0-only). You may use, study, share, and
+modify it. If you distribute a modified version — including as a network service
+— you must make its corresponding source available under the same license.
+
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for notices and checksums
+for bundled models and binaries.
