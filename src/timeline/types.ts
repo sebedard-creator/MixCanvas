@@ -25,7 +25,16 @@ export interface TimelineClip {
   lane: number;
   anchorBeat: number;
   tempoAnchorBeat: number;
+  /** La vitesse native du morceau : la source du time-stretch. */
   bpm: number | null;
+  /**
+   * Le tempo que la courbe vise à l'ancre de ce clip, s'il en impose un.
+   *
+   * `null` — le cas ordinaire — veut dire « la vitesse du morceau », et le clip
+   * joue à un pour un. Une valeur est une décision de mix : le clip est étiré
+   * vers elle, sans que la bibliothèque soit touchée.
+   */
+  tempoTargetBpm: number | null;
   firstBeatMs: number | null;
   preRollBeats: number;
   durationBeats: number;

@@ -668,11 +668,25 @@ function App() {
    * quand on retape la valeur de l'analyse. Le premier temps ne bouge pas :
    * on règle le tempo, pas la phase.
    */
-  const setTrackTempoFromTimeline = useCallback(async (libraryTrackId: number, bpm: number) => {
-    const track = library.find((candidate) => candidate.id === libraryTrackId);
-    if (!track) return;
-    await saveBeatgridCorrection(track, bpm, track.firstBeatMs ?? 0);
-  }, [library, saveBeatgridCorrection]);
+  /**
+   * Le tempo visé à l'ancre d'un clip — une décision de mix, pas une correction
+   * d'analyse.
+   *
+   * Cela passait autrefois par `saveBeatgridCorrection`, donc par la
+   * bibliothèque : régler le tempo d'un nœud réécrivait le BPM du morceau, ce
+   * qui déplaçait la courbe sous tous les autres clips et perdait leur
+   * beatmatching — en écrasant l'analyse au passage, sans retour. Les deux
+   * gestes ont maintenant deux chemins; celui-ci ne touche que le clip.
+   */
+  const setClipTempoTarget = useCallback(async (clipId: number, bpm: number | null) => {
+    await runTimelineEdit(
+      () => invoke<TimelineSnapshot>("set_timeline_clip_tempo_target", {
+        clipId,
+        targetBpm: bpm,
+      }),
+      refreshTimeline,
+    );
+  }, [refreshTimeline, runTimelineEdit]);
 
   const addTimelineClip = useCallback(async (
     trackId: number,
@@ -1460,7 +1474,7 @@ function App() {
             onBounceMix={bounceMix}
             onTogglePlayback={toggleTimelineTransport}
             onSeek={seekTimeline}
-            onSetTrackTempo={setTrackTempoFromTimeline}
+            onSetClipTempoTarget={setClipTempoTarget}
             onSetLaneMuted={setTimelineLaneMuted}
             onSetLaneSolo={setTimelineLaneSolo}
             onSetLimiterEnabled={setTimelineLimiterEnabled}

@@ -718,6 +718,30 @@ fn trim_timeline_clip(
     Ok(snapshot)
 }
 
+/// Le tempo visé à l'ancre de ce clip. `None` lui rend la vitesse de son
+/// morceau. Voir `timeline::set_clip_tempo_target` : ceci ne touche jamais la
+/// bibliothèque.
+#[tauri::command]
+fn set_timeline_clip_tempo_target(
+    clip_id: i64,
+    target_bpm: Option<f64>,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::set_clip_tempo_target(connection, clip_id, target_bpm)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
 #[tauri::command]
 fn move_timeline_tempo_point(
     clip_id: i64,
@@ -1966,6 +1990,7 @@ pub fn run() {
             move_timeline_clip,
             trim_timeline_clip,
             move_timeline_tempo_point,
+            set_timeline_clip_tempo_target,
             remove_timeline_clip,
             set_timeline_lane_muted,
             set_timeline_lane_solo,

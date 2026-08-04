@@ -1085,6 +1085,32 @@ button:disabled{
   opacity: 0.7;
 }
 
+/* Ce que la saisie règle, et le moyen de revenir en arrière.
+   La note dit la vitesse native du morceau; le bouton la rend. Sans eux, rien
+   ne distingue « ce clip joue à tant » de « ce morceau fait tant » — et c'est
+   cette confusion qui faisait qu'un réglage de mix écrasait une analyse. */
+.tempo-edit-note{
+  color: #7dd3fc;
+  font-size: 8px;
+  opacity: 0.75;
+}
+
+.tempo-edit-restore{
+  padding: 3px 7px;
+  border: 1px solid #0284c7;
+  border-radius: 4px;
+  background: #0f2f4d;
+  color: #e6f2fb;
+  font-family: inherit;
+  font-size: 8px;
+  cursor: pointer;
+}
+
+.tempo-edit-restore:hover{
+  border-color: #38bdf8;
+  background: #14405f;
+}
+
 .tempo-edit-popover input{
   width: 72px;
   padding: 3px 5px;
@@ -1129,6 +1155,16 @@ button:disabled{
   min-width: 24px;
   padding: 8px 0 0 6px;
   border-left: 1px solid #343b49;
+  /* Un trait, rien d'autre : aucun gestionnaire, aucun texte à sélectionner.
+     Il captait pourtant le pointeur, et comme il est posé **au-dessus** de la
+     surface de préhension du tempo et qu'il tient toute la hauteur de la règle
+     sur au moins vingt-quatre pixels, il rendait la main introuvable : elle
+     n'apparaissait que dans les interstices, et disparaissait sous le crayon —
+     le `crosshair` de la règle, hérité faute de curseur propre. Au zoom serré,
+     les marqueurs se recouvrent et couvraient la bande entière.
+     C'est le même remède que pour le point de tempo et son étiquette, plus
+     haut : ce qui ne répond pas au pointeur ne doit pas l'intercepter. */
+  pointer-events: none;
 }
 
 .timeline-tracks{
@@ -3675,13 +3711,16 @@ body,
   position: relative;
 }
 
-/* Le ƒ, au centre de la bande de filtre.
-   14,3 % de la paire : la bande occupe 43 des 150 unités de hauteur, soit son
-   premier tiers moins des poussières, et son milieu tombe là. */
-.lane-filter-hint{
+/* Les repères de la colonne fixe : `F` en face de la bande de filtre, `B` en
+   face de la ligne de tempo. Ni l'un ni l'autre n'est une commande — ils ne
+   font rien au clic et se contentent de répondre au survol, parce qu'une bande
+   sur laquelle on peut dessiner et une ligne dont les nœuds se déplacent ne le
+   disent pas d'elles-mêmes. Même dessin que `M` et `S`, dont ils partagent la
+   rangée et la grammaire. */
+.lane-filter-hint,
+.lane-tempo-hint{
   position: absolute;
   z-index: 2;
-  top: 14.3%;
   left: 50%;
   display: grid;
   width: 20px;
@@ -3708,8 +3747,22 @@ body,
   pointer-events: auto;
 }
 
+/* 14,3 % de la paire : la bande de filtre occupe 43 des 150 unités de hauteur,
+   soit son premier tiers moins des poussières, et son milieu tombe là. */
+.lane-filter-hint{
+  top: 14.3%;
+}
+
+/* La règle est la première rangée de la grille et fait exactement sa hauteur :
+   le milieu est ici le milieu, sans fraction à calculer. */
+.lane-tempo-hint{
+  top: 50%;
+}
+
 .lane-filter-hint:hover,
-.lane-filter-hint:focus-visible{
+.lane-filter-hint:focus-visible,
+.lane-tempo-hint:hover,
+.lane-tempo-hint:focus-visible{
   border-color: #0f2442;
   color: #ffffff;
   background: linear-gradient(180deg, #152c4e 0%, #0a192f 100%);
@@ -3797,8 +3850,8 @@ body,
    Sans ce délai, `M` et `S` — qu'on presse cent fois par séance — feraient
    surgir un panneau à chaque passage de souris. Là, il ne se montre qu'à celui
    qui s'arrête pour chercher. */
-:is(.lane-filter-hint, .timeline-lane-controls-row button):hover > .lane-hint-tip,
-:is(.lane-filter-hint, .timeline-lane-controls-row button):focus-visible > .lane-hint-tip{
+:is(.lane-filter-hint, .lane-tempo-hint, .timeline-lane-controls-row button):hover > .lane-hint-tip,
+:is(.lane-filter-hint, .lane-tempo-hint, .timeline-lane-controls-row button):focus-visible > .lane-hint-tip{
   opacity: 1;
   visibility: visible;
   transition:

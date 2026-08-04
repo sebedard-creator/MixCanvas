@@ -4,6 +4,23 @@ Ce document consigne quotidiennement les changements matériels apportés au pro
 
 Les entrées sont classées de la plus récente à la plus ancienne. Une journée peut distinguer les éléments ajoutés, modifiés, corrigés et les décisions prises. Une décision discutée mais non retenue ne doit pas être présentée comme une fonction terminée.
 
+## 2026-08-04
+
+- **Régler le tempo d'un nœud brisait le beatmatching, sans retour.** Défaut trouvé par l'auteur, et il était structurel. Un clip n'a pas de BPM à lui : le snapshot lisait `COALESCE(tracks.manual_bpm, tracks.bpm)` par jointure, et cette **même valeur** servait à deux choses opposées — le BPM source du time-stretch, et la cible de tempo posée sur la courbe globale. Le clic droit sur un nœud appelait la correction de BPM du morceau.
+  - Les deux bougeaient donc ensemble : le clip gardait un ratio de un pour un — il n'accélérait pas — mais la courbe se déplaçait sous **tous les autres** clips, dont le beatmatching était perdu. Et la piste était marquée `EDITED` dans la bibliothèque, définitivement, pour tous ses usages futurs. Une décision de mix écrasait une donnée d'analyse.
+  - Deux idées étaient confondues. « Le vrai BPM de ce morceau est X » est une correction, et elle appartient à la bibliothèque. « Je veux que ce clip joue à X ici » est une décision de mix, et elle appartient au clip. Schéma **26 → 27** : `timeline_clips.tempo_target_bpm`, nullable — `NULL` veut dire « la vitesse du morceau », donc rien ne change pour les projets existants.
+  - Une seule fonction, `effective_tempo_target`, sert les **deux** constructeurs de cibles — celui du plan de rendu et celui du transport. Les laisser diverger est la panne la plus fréquente de ce projet, et elle est silencieuse.
+  - La saisie dit maintenant ce qu'elle règle : « Stretches this clip · track is 120.00 », et « Follow track » rend au clip la vitesse native de son morceau.
+  - Un test verrouille les trois propriétés : le clip s'étire vers la cible, la bibliothèque ne reçoit aucune correction, et le transport vise le même tempo que le plan de rendu.
+
+- **Un repère `B` en face de la ligne de tempo.** Comme le `F` de la bande de filtre, ce n'est pas une commande — il répond au survol et dit ce que la ligne accepte : attraper un nœud, ne pas avoir à viser le point, et le clic droit qui règle le BPM. La règle qui ouvre les infobulles ne connaissait que `F` et les boutons `M`/`S`; sans l'y ajouter, le nouveau repère aurait été un badge muet.
+
+- **La main sur les nœuds de tempo était volée par les marqueurs de mesure.** `.measure-marker` est un `<span />` vide, sans le moindre gestionnaire, qui ne dessine qu'un trait — mais il est posé en `z-index: 2` **au-dessus** de la surface de préhension du tempo, tient toute la hauteur de la règle sur au moins vingt-quatre pixels, et captait le pointeur. N'ayant pas de curseur propre, il héritait du `crosshair` de la règle : la main ne se montrait que dans les interstices, et au zoom serré les marqueurs se recouvrent et couvraient la bande entière. `pointer-events: none` — le même remède que le point de tempo et son étiquette avaient déjà reçu.
+
+- **Le clic droit sur le nom d'un clip ouvre un menu, sur sa barre de titre seulement.** Le corps du clip reste au menu d'automation : c'est par-dessus les clips qu'on pose un nœud de volume, et un menu de clip couvrant toute la surface aurait enlevé ce geste. La barre de titre est déjà une zone distincte, dont l'outil contextuel se sert.
+  - Un **menu**, et non une suppression immédiate — c'était ma première version, et elle était mauvaise : le clic droit part vite, et rien ne doit détruire du travail avant qu'on ait lu ce qu'on allait faire. L'entrée nomme le clip qu'elle retire.
+  - Il rejoint la fermeture globale des autres menus, faute de quoi il serait resté ouvert à un clic ailleurs ou à une perte de focus.
+
 ## 2026-08-03
 
 - **Documentation audit.** `architecture.md`, `README.md` and `handoff.md` now agree on schema 26, 53 Tauri commands, 230 frontend tests and the measured software-rendering conclusion. The handoff also records that the current full check stops at pre-existing Rust formatting drift, after TypeScript and both test suites pass.
@@ -27,6 +44,12 @@ Les entrées sont classées de la plus récente à la plus ancienne. Une journé
 - **Portable BPM-readout build.** `MixCanvas-0.0.17-2026-08-03-BPM-READOUT-NOREACT-portable.exe` contains the trace-driven removal of Timeline re-renders during BPM ramps. It launched successfully in software mode for six seconds. Size: 65,612,800 bytes; SHA-256: `65D3E3A96C10C21E69DBC0F84EF9AE102354F6A6D9BDE374A409F68993DF5FDD`.
 
 ## 2026-08-03
+
+- **Le tempo change désormais sur les temps, et plus au milieu.** Défaut trouvé à l'oreille par l'auteur : la rampe entre deux cibles de BPM était **continue**, donc le tempo différait d'un échantillon au suivant. Juste au sens mathématique, faux au sens musical — sur un seul morceau on entendait la vitesse glisser, et sur deux clips superposés leurs transitoires dérivaient l'une contre l'autre au lieu de rester verrouillées.
+  - Le principe : un changement de tempo au milieu d'un temps est à nu, un changement à sa **frontière** est masqué par la transitoire qui s'y trouve. La rampe est donc échantillonnée au début de chaque temps entier et tient jusqu'au suivant. Une ancre posée sur un temps est honorée exactement.
+  - Les trois fonctions du modèle changent **ensemble** — `bpm_at_beat`, `seconds_at_beat`, `beat_at_seconds` —, faute de quoi la cadence réellement jouée divergerait de la position calculée, panne silencieuse de la même famille que les deux cartes de tempo du handoff.
+  - L'intégrale logarithmique et son inverse exponentielle disparaissent : elles n'existaient que pour intégrer une rampe continue. Un temps durant exactement `60 / bpm`, la somme s'accumule une fois par édition dans une table et se relit par dichotomie. Ce n'est pas un raffinement : `beat_at_seconds` est appelée depuis le chemin audio, une fois par grain WSOLA, et une boucle sur les trente mille temps d'un long mix y aurait coûté ce que la recherche WSOLA a déjà coûté une fois cette semaine.
+  - Quatre tests neufs : le tempo tient bien à l'intérieur d'un temps et change au suivant, un temps dure exactement ce que son tempo annonce, le temps ne recule jamais le long d'une rampe, et une carte de vingt mille temps reste exacte d'un bout à l'autre.
 
 - **L'arbre de travail est prêt pour un commit.** Trente-neuf fichiers non suivis traînaient à la racine, dont **103 Mo de traces de l'inspecteur**. Elles ont porté toute la campagne de performances et sont précieuses le temps d'une comparaison, mais elles ne valent que pour la machine et le scénario qui les ont produites : ce qu'on en retient appartient au changelog, pas au dépôt. `Trace-*.json.gz` rejoint `.gitignore`; les fichiers restent sur le disque, à l'auteur de les effacer quand il n'en a plus l'usage.
   - `src-tauri/tauri.diagnostic.conf.json` est au contraire **versionné**, et le handoff le nomme désormais au lieu de le décrire. Ces quatre lignes vident `beforeBuildCommand`, sans quoi la recette du build de diagnostic non minifié n'est pas exécutable — et on la redécouvre à chaque fois.

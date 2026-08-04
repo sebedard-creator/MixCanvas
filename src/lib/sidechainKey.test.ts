@@ -11,6 +11,7 @@ function clip(id: number, lane: number, startBeat: number, endBeat: number): Tim
     lane,
     anchorBeat: startBeat,
     tempoAnchorBeat: startBeat,
+    tempoTargetBpm: null,
     bpm: 128,
     firstBeatMs: 0,
     preRollBeats: 0,

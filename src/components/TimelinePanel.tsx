@@ -217,7 +217,9 @@ interface TimelinePanelProps {
   onTogglePlayback: () => Promise<void>;
   onSeek: (positionBeat: number) => Promise<void>;
   /** Règle le tempo d'un morceau depuis son nœud sur la règle. */
-  onSetTrackTempo: (libraryTrackId: number, bpm: number) => Promise<void>;
+  /** Le tempo visé à l'ancre d'un clip. `null` lui rend la vitesse de son
+   *  morceau. Ne touche jamais la bibliothèque. */
+  onSetClipTempoTarget: (clipId: number, bpm: number | null) => Promise<void>;
   selectedLane: number;
   onSelectLane: (lane: number) => void;
   onSetLaneMuted: (lane: number, isMuted: boolean) => Promise<void>;
@@ -376,7 +378,7 @@ export function TimelinePanel({
   onBounceMix,
   onTogglePlayback,
   onSeek,
-  onSetTrackTempo,
+  onSetClipTempoTarget,
   selectedLane,
   onSelectLane,
   onSetLaneMuted,
@@ -450,6 +452,10 @@ export function TimelinePanel({
   const [volumeContextMenu, setVolumeContextMenu] = useState<VolumeContextMenu | null>(null);
   const [panContextMenu, setPanContextMenu] = useState<VolumeContextMenu | null>(null);
   const [filterContextMenu, setFilterContextMenu] = useState<FilterContextMenu | null>(null);
+  /** Ouvert par un clic droit sur le nom d'un clip, dans sa barre de titre. */
+  const [clipContextMenu, setClipContextMenu] = useState<
+    { clientX: number; clientY: number; clipId: number; label: string } | null
+  >(null);
   const [dropTargetLane, setDropTargetLane] = useState<number | null>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
   const activeDrag = useRef<ActiveDrag | null>(null);
@@ -466,9 +472,16 @@ export function TimelinePanel({
    */
   const [hoveredTool, setHoveredTool] = useState<{ clipId: number; tool: SmartTool } | null>(null);
   /* Le nœud de tempo qu'on est en train de régler au clavier, s'il y en a un. */
-  const [tempoEdit, setTempoEdit] = useState<
-    { clipId: number; libraryTrackId: number; fileName: string; x: number; value: string } | null
-  >(null);
+  const [tempoEdit, setTempoEdit] = useState<{
+    clipId: number;
+    fileName: string;
+    x: number;
+    value: string;
+    /** La vitesse native du morceau, pour la proposer en retour. */
+    sourceBpm: number;
+    /** Si ce clip impose déjà un tempo, donc s'il y a quelque chose à annuler. */
+    hasTarget: boolean;
+  } | null>(null);
   /* Lu par l'écouteur de `Delete`, qui ne doit pas se reposer à chaque édition
      en cours. */
   const busyRef = useRef(busy);
@@ -521,11 +534,14 @@ export function TimelinePanel({
   }, [timeline.clips, timeline.tempoPoints, timeline.volumeNodes, timeline.filterNodes]);
 
   useEffect(() => {
-    if (!volumeContextMenu && !panContextMenu && !filterContextMenu) return undefined;
+    if (!volumeContextMenu && !panContextMenu && !filterContextMenu && !clipContextMenu) {
+      return undefined;
+    }
     const closeMenus = () => {
       setVolumeContextMenu(null);
       setPanContextMenu(null);
       setFilterContextMenu(null);
+      setClipContextMenu(null);
     };
     const closeOnOutsidePointer = (event: PointerEvent) => {
       if (!(event.target as HTMLElement | null)?.closest(".timeline-context-menu")) {
@@ -538,7 +554,7 @@ export function TimelinePanel({
       window.removeEventListener("pointerdown", closeOnOutsidePointer);
       window.removeEventListener("blur", closeMenus);
     };
-  }, [filterContextMenu, panContextMenu, volumeContextMenu]);
+  }, [clipContextMenu, filterContextMenu, panContextMenu, volumeContextMenu]);
 
   useEffect(() => {
     const element = timelineScroll.current;
@@ -1337,10 +1353,13 @@ export function TimelinePanel({
     if (!clip?.bpm) return;
     setTempoEdit({
       clipId: clip.id,
-      libraryTrackId: clip.libraryTrackId,
       fileName: clip.fileName,
       x: nearest.x,
-      value: clip.bpm.toFixed(3),
+      // Ce que la courbe vise déjà ici, et non la vitesse du morceau : rouvrir
+      // la saisie doit montrer le réglage en vigueur, pas le remettre à zéro.
+      value: (clip.tempoTargetBpm ?? clip.bpm).toFixed(3),
+      sourceBpm: clip.bpm,
+      hasTarget: clip.tempoTargetBpm !== null,
     });
   };
 
@@ -1351,7 +1370,18 @@ export function TimelinePanel({
     // Une saisie qui ne veut rien dire laisse le tempo tel quel : répondre zéro
     // à une frappe malheureuse arrêterait le morceau sans prévenir.
     if (!Number.isFinite(bpm) || bpm < 40 || bpm > 300) return;
-    void onSetTrackTempo(tempoEdit.libraryTrackId, bpm);
+    // La cible du **clip**, et non le BPM du morceau : régler une vitesse ici
+    // est une décision de mix, corriger une analyse se fait dans la
+    // bibliothèque ou dans le Beatgrid Editor.
+    void onSetClipTempoTarget(tempoEdit.clipId, bpm);
+  };
+
+  /** Rend au clip la vitesse native de son morceau. */
+  const clearTempoTarget = () => {
+    if (!tempoEdit) return;
+    const { clipId } = tempoEdit;
+    setTempoEdit(null);
+    void onSetClipTempoTarget(clipId, null);
   };
 
   const moveTempoPointDraft = (event: ReactPointerEvent<SVGRectElement>) => {
@@ -2456,7 +2486,27 @@ export function TimelinePanel({
 
       <div className="timeline-body" ref={timelineBody}>
         <div className="timeline-lane-controls" aria-label="Fixed track controls">
-          <div aria-hidden="true" />
+          {/* La première rangée de la grille fait les trente-quatre pixels de
+              la règle : ce repère tombe donc en face de la ligne de tempo, comme
+              `F` tombe en face de la bande de filtre. Rien de ce que la ligne
+              accepte ne se devine — qu'on y attrape un nœud, qu'on n'a pas
+              besoin de viser le point, et qu'un clic droit règle son BPM. */}
+          <div className="timeline-lane-cell">
+            <span
+              className="lane-tempo-hint"
+              tabIndex={0}
+              role="note"
+              aria-label="Global tempo line — drag to move the nearest node, right click to set its BPM"
+            >
+              B
+              <span className="lane-hint-tip" aria-hidden="true">
+                <strong>Tempo line</strong>
+                <span><kbd>Drag</kbd> move the nearest node in time</span>
+                <span><kbd>Right click</kbd> set its BPM</span>
+                <span>Aim anywhere on the band — the nearest node answers</span>
+              </span>
+            </span>
+          </div>
           {TIMELINE_LANES.map((lane) => {
             const laneState = timeline.lanes.find((state) => state.lane === lane) ?? {
               lane,
@@ -2638,6 +2688,29 @@ export function TimelinePanel({
                   onBlur={() => setTempoEdit(null)}
                 />
                 <span>BPM · Enter to set</span>
+                {/* Ce que règle cette saisie, dit sans détour : la vitesse à
+                    laquelle ce clip joue **ici**, pas le BPM du morceau. Sans
+                    cette ligne on ne peut pas deviner lequel des deux on
+                    change, et c'est justement la confusion qui a coûté le
+                    beatmatching. */}
+                {tempoEdit.hasTarget ? (
+                  <button
+                    type="button"
+                    className="tempo-edit-restore"
+                    /* Avant le `blur` du champ, qui referme la fenêtre : sinon
+                       le clic n'atteindrait jamais ce bouton. */
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      clearTempoTarget();
+                    }}
+                  >
+                    Follow track · {tempoEdit.sourceBpm.toFixed(2)}
+                  </button>
+                ) : (
+                  <span className="tempo-edit-note">
+                    Stretches this clip · track is {tempoEdit.sourceBpm.toFixed(2)}
+                  </span>
+                )}
               </div>
             )}
           </div>
@@ -3013,7 +3086,35 @@ export function TimelinePanel({
                     cancelClipDrag(clip.id);
                   }}
                 >
-                  <div className="clip-heading">
+                  {/* Le clic droit sur le nom ouvre un menu — **sur la barre de
+                      titre seulement**. Le corps du clip reste au menu
+                      d'automation : c'est par-dessus les clips qu'on pose un
+                      nœud de volume, et un menu de clip qui prendrait toute la
+                      surface enlèverait ce geste. La barre est déjà une zone à
+                      part, dont l'outil contextuel se sert.
+
+                      Un menu, et non une suppression immédiate : le clic droit
+                      est vite parti, et rien ne doit détruire du travail sans
+                      qu'on ait lu ce qu'on allait faire. */}
+                  <div
+                    className="clip-heading"
+                    title="Right click the name for clip actions"
+                    onContextMenu={(event) => {
+                      if (busy) return;
+                      if (event.target instanceof Element
+                        && event.target.closest(".clip-heading button")) {
+                        return;
+                      }
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setClipContextMenu({
+                        clientX: Math.min(event.clientX, window.innerWidth - 205),
+                        clientY: Math.min(event.clientY, window.innerHeight - 46),
+                        clipId: clip.id,
+                        label: clipLabel,
+                      });
+                    }}
+                  >
                     <strong className="clip-title">{clipLabel}</strong>
                     <div className="clip-heading-actions">
                       {/* Trois états pour deux touches : rien d'allumé, le
@@ -3273,6 +3374,27 @@ export function TimelinePanel({
               Delete Pan Node
             </button>
           )}
+        </div>
+      )}
+      {clipContextMenu && (
+        <div
+          className="timeline-context-menu"
+          style={{ left: clipContextMenu.clientX, top: clipContextMenu.clientY }}
+          role="menu"
+          onMouseLeave={() => setClipContextMenu(null)}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="is-destructive"
+            disabled={busy}
+            onClick={() => {
+              void onRemoveClip(clipContextMenu.clipId);
+              setClipContextMenu(null);
+            }}
+          >
+            Remove {clipContextMenu.label} from timeline
+          </button>
         </div>
       )}
       {filterContextMenu && (

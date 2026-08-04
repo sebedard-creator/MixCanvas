@@ -1,4 +1,4 @@
-# Handoff — 2026-08-03
+# Handoff — 2026-08-04
 
 Ce document décrit l'état réel du dépôt à la fin d'une semaine consacrée pour
 l'essentiel aux performances de l'interface. Les chiffres ci-dessous proviennent
@@ -9,11 +9,11 @@ d'une exécution vérifiée, pas d'un décompte estimé dans le code.
 `.\check.cmd` enchaîne `tsc --noEmit`, `vitest run`, `cargo test`,
 `cargo fmt --check` et `cargo clippy --all-targets -- -D warnings`.
 
-| Étape | Résultat au 2026-08-03 |
+| Étape | Résultat au 2026-08-04 |
 |---|---|
 | `tsc --noEmit` | passe |
 | `vitest run` | 230 tests, 27 fichiers |
-| `cargo test` | 168 tests réussis, 4 ignorés explicitement |
+| `cargo test` | 173 tests réussis, 4 ignorés explicitement |
 | `cargo fmt --check` | propre |
 | `cargo clippy -D warnings` | propre |
 | Sortie du script | code 0 |
@@ -42,11 +42,11 @@ Clippy qui n'a rien à voir avec le code. Fermer MixCanvas avant de lancer
   L'identifiant de paquet est `ca.mixcanvas.app`; `adopt_legacy_library` dans
   `src-tauri/src/lib.rs` reprend au premier lancement une base laissée sous un
   ancien identifiant ou dans l'ancien emplacement. Ce code est temporaire.
-- Le schéma SQLite est en version **26**. `LATEST_SCHEMA_VERSION` et
+- Le schéma SQLite est en version **27**. `LATEST_SCHEMA_VERSION` et
   `CURRENT_DATABASE_SCHEMA` dans `src-tauri/src/library.rs` doivent toujours
   s'accorder; des tests parcourent la chaîne de migrations ancienne.
 - Le fichier `.mixcanvas` porte le format `mixcanvas-project`, version **1**.
-- **53 commandes Tauri** sont enregistrées dans `generate_handler!`.
+- **54 commandes Tauri** sont enregistrées dans `generate_handler!`.
 - L'interface est **unilingue anglaise**. Aucune chaîne affichée ne doit être en
   français. Les commentaires du code et les documents `.md` sont en français,
   délibérément.
@@ -122,7 +122,7 @@ grep -rn '"--[a-z-]*":' src/            # propriétés personnalisées écrites 
 grep -rn "getBoundingClientRect\|offsetWidth\|clientWidth\|scrollLeft" src/
 ```
 
-Au 2026-08-03 la première ne rend rien, et la seconde ne rend que des lectures
+Au 2026-08-04 la première ne rend rien, et la seconde ne rend que des lectures
 situées dans des gestionnaires de pointeur — une par geste, ce qui est sain.
 
 ## Ce qui reste ouvert

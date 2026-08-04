@@ -12,40 +12,40 @@ use crate::{
 const MIN_BPM: f64 = 40.0;
 const MAX_BPM: f64 = 300.0;
 const BEATS_PER_MEASURE: i64 = 4;
-/// Miroir de `MAX_SHAPE_NODES` côté interface : le serveur revalide ce que
-/// le geste a déjà borné, faute de quoi une commande forgée pourrait remplir
+/// Miroir de `MAX_SHAPE_NODES` cÃ´tÃ© interface : le serveur revalide ce que
+/// le geste a dÃ©jÃ  bornÃ©, faute de quoi une commande forgÃ©e pourrait remplir
 /// une piste.
 const MAX_SHAPE_NODES: usize = 2_048;
-/// Le nœud qui referme la forme, et les deux ancres de repos qui l'encadrent.
+/// Le nÅ“ud qui referme la forme, et les deux ancres de repos qui l'encadrent.
 ///
-/// L'interface borne la **forme dessinée** à `MAX_SHAPE_NODES`, puis ajoute ces
-/// trois-là. Le serveur borne ce qu'il **reçoit** : confondre les deux faisait
-/// refuser un long trait à la période la plus courte — 2051 nœuds arrivaient
+/// L'interface borne la **forme dessinÃ©e** Ã  `MAX_SHAPE_NODES`, puis ajoute ces
+/// trois-lÃ . Le serveur borne ce qu'il **reÃ§oit** : confondre les deux faisait
+/// refuser un long trait Ã  la pÃ©riode la plus courte â€” 2051 nÅ“uds arrivaient
 /// contre une limite de 2048, et le trait mourait sur un message au lieu de
 /// s'inscrire. Miroir de `SHAPE_EDGE_NODES` dans `src/lib/automationShapes.ts`.
 const SHAPE_EDGE_NODES: usize = 3;
 const MAX_STROKE_NODES: usize = MAX_SHAPE_NODES + SHAPE_EDGE_NODES;
 const MAX_TIMELINE_BEAT: f64 = 1_000_000.0;
 const MAX_LANE: i64 = 2;
-/// Niveau d'une piste là où l'utilisateur n'a rien décidé.
+/// Niveau d'une piste lÃ  oÃ¹ l'utilisateur n'a rien dÃ©cidÃ©.
 ///
-/// Deux morceaux beatmatchés ont leurs kicks en phase : ils s'additionnent de
-/// façon cohérente, soit +6 dB dans le pire cas. La valeur historique de −6 dB
-/// réservait exactement cette marge, à une époque où la sortie était bornée en
-/// dur et où tout dépassement s'entendait comme un écrêtage.
+/// Deux morceaux beatmatchÃ©s ont leurs kicks en phase : ils s'additionnent de
+/// faÃ§on cohÃ©rente, soit +6 dB dans le pire cas. La valeur historique de âˆ’6 dB
+/// rÃ©servait exactement cette marge, Ã  une Ã©poque oÃ¹ la sortie Ã©tait bornÃ©e en
+/// dur et oÃ¹ tout dÃ©passement s'entendait comme un Ã©crÃªtage.
 ///
-/// Le limiteur occupe désormais cette place et travaille par défaut. Payer six
-/// décibels en permanence pour un événement qu'il absorbe proprement serait un
-/// mauvais échange, d'autant que +6 dB est le pire cas théorique : deux kicks
-/// de morceaux différents n'ont ni la même phase ni le même spectre.
+/// Le limiteur occupe dÃ©sormais cette place et travaille par dÃ©faut. Payer six
+/// dÃ©cibels en permanence pour un Ã©vÃ©nement qu'il absorbe proprement serait un
+/// mauvais Ã©change, d'autant que +6 dB est le pire cas thÃ©orique : deux kicks
+/// de morceaux diffÃ©rents n'ont ni la mÃªme phase ni le mÃªme spectre.
 ///
-/// Le moteur audio lit cette même constante pour les voies sans nœud, faute de
-/// quoi la valeur écrite en base et celle qu'on entend pourraient diverger.
+/// Le moteur audio lit cette mÃªme constante pour les voies sans nÅ“ud, faute de
+/// quoi la valeur Ã©crite en base et celle qu'on entend pourraient diverger.
 pub const DEFAULT_TRACK_GAIN_DB: f64 = -4.0;
 
-/// Le centre du champ stéréo, où repose une voie dont personne n'a touché le
-/// panoramique. Nommé plutôt qu'écrit en clair, pour que l'ancrage d'un clip
-/// neuf et la valeur de repos d'un trait de crayon désignent la même chose.
+/// Le centre du champ stÃ©rÃ©o, oÃ¹ repose une voie dont personne n'a touchÃ© le
+/// panoramique. NommÃ© plutÃ´t qu'Ã©crit en clair, pour que l'ancrage d'un clip
+/// neuf et la valeur de repos d'un trait de crayon dÃ©signent la mÃªme chose.
 pub const PAN_CENTRE: f64 = 0.0;
 const FILTER_BUBBLE_MIN_WIDTH_BEATS: f64 = 2.0;
 /// 1 024 measures, roughly half an hour at 128 BPM: long enough for a sweep
@@ -98,8 +98,8 @@ pub struct TimelineVolumeNode {
     pub draw_group_id: Option<i64>,
 }
 
-/// Un point de panoramique. `value` va de −1 (gauche) à +1 (droite), 0 au
-/// centre — la même convention bipolaire que les nœuds de filtre.
+/// Un point de panoramique. `value` va de âˆ’1 (gauche) Ã  +1 (droite), 0 au
+/// centre â€” la mÃªme convention bipolaire que les nÅ“uds de filtre.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimelinePanNode {
@@ -150,7 +150,15 @@ pub struct TimelineClip {
     pub lane: i64,
     pub anchor_beat: i64,
     pub tempo_anchor_beat: i64,
+    /// Le BPM **du morceau** : sa vitesse native, telle que l'analyse la donne
+    /// ou telle qu'on l'a corrigÃ©e. C'est la source du time-stretch.
     pub bpm: Option<f64>,
+    /// Le tempo que la courbe vise Ã  l'ancre de ce clip, s'il en impose un.
+    ///
+    /// `None` â€” le cas ordinaire â€” veut dire Â« la vitesse native du morceau Â» :
+    /// le clip joue Ã  un pour un. Une valeur est une dÃ©cision de mix, et le clip
+    /// est Ã©tirÃ© vers elle. Voir [`effective_tempo_target`].
+    pub tempo_target_bpm: Option<f64>,
     pub first_beat_ms: Option<u64>,
     pub pre_roll_beats: f64,
     pub duration_beats: f64,
@@ -160,24 +168,24 @@ pub struct TimelineClip {
     pub trim_end_beats: f64,
     pub is_sidechain_key: bool,
     /// `full`, `vocals` ou `instrumental` : laquelle des voix du morceau ce clip
-    /// joue. La séparation appartient au morceau, le choix appartient au clip.
+    /// joue. La sÃ©paration appartient au morceau, le choix appartient au clip.
     pub stem: String,
-    /// Si le morceau a déjà été séparé. C'est ce qui distingue un clic
-    /// instantané d'un rendu de deux minutes, et l'interface doit le savoir
-    /// **avant** de cliquer pour ouvrir la bonne fenêtre.
+    /// Si le morceau a dÃ©jÃ  Ã©tÃ© sÃ©parÃ©. C'est ce qui distingue un clic
+    /// instantanÃ© d'un rendu de deux minutes, et l'interface doit le savoir
+    /// **avant** de cliquer pour ouvrir la bonne fenÃªtre.
     pub has_stems: bool,
     /// Si le fichier cuit a disparu du disque.
     ///
-    /// Le clip reste « cuit » — son automation retirée vit dans
-    /// l'enregistrement et doit rester récupérable — mais il joue sa source, ce
-    /// qui ne s'entend pas comme une panne. Sans ce drapeau, une touche allumée
+    /// Le clip reste Â« cuit Â» â€” son automation retirÃ©e vit dans
+    /// l'enregistrement et doit rester rÃ©cupÃ©rable â€” mais il joue sa source, ce
+    /// qui ne s'entend pas comme une panne. Sans ce drapeau, une touche allumÃ©e
     /// affirme un effet que personne n'applique.
     pub bake_is_missing: bool,
-    /// Si ce clip joue un fichier cuit plutôt que sa source.
+    /// Si ce clip joue un fichier cuit plutÃ´t que sa source.
     ///
-    /// L'automation et l'égalisation qu'il portait sont alors **dans** le son :
-    /// les commandes qui les règlent n'ont plus rien à régler, et l'interface
-    /// doit pouvoir les éteindre plutôt que de les laisser mentir.
+    /// L'automation et l'Ã©galisation qu'il portait sont alors **dans** le son :
+    /// les commandes qui les rÃ¨glent n'ont plus rien Ã  rÃ©gler, et l'interface
+    /// doit pouvoir les Ã©teindre plutÃ´t que de les laisser mentir.
     pub is_baked: bool,
     pub is_missing: bool,
     pub needs_analysis: bool,
@@ -247,9 +255,9 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
                     COALESCE(tracks.manual_bpm, tracks.bpm),
                     COALESCE(tracks.manual_first_beat_ms, tracks.first_beat_ms),
                     tracks.duration_ms,
-                    -- Trois ondes possibles, dans l'ordre où le moteur choisit
-                    -- sa source : le fichier cuit d'abord — c'est lui qu'on
-                    -- entend, filtre compris —, puis le stem quand le clip en
+                    -- Trois ondes possibles, dans l'ordre oÃ¹ le moteur choisit
+                    -- sa source : le fichier cuit d'abord â€” c'est lui qu'on
+                    -- entend, filtre compris â€”, puis le stem quand le clip en
                     -- joue un, puis le morceau entier.
                     COALESCE(bakes.bucket_count, stems.bucket_count, waveforms.bucket_count),
                     COALESCE(bakes.left_min, stems.left_min, waveforms.left_min),
@@ -265,7 +273,11 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
                     clips.stem,
                     EXISTS(SELECT 1 FROM clip_stems WHERE clip_stems.clip_id = clips.id),
                     bakes.id IS NOT NULL,
-                    bakes.file_path
+                    bakes.file_path,
+                    -- En derniÃ¨re colonne, et non Ã  sa place logique : le
+                    -- mapping ci-dessous est positionnel, et l'insÃ©rer au milieu
+                    -- dÃ©calerait silencieusement vingt indices.
+                    clips.tempo_target_bpm
              FROM timeline_clips AS clips
              JOIN library_tracks AS tracks ON tracks.id = clips.library_track_id
              LEFT JOIN track_waveforms AS waveforms ON waveforms.track_id = tracks.id
@@ -303,6 +315,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
                 row.get::<_, i64>(22)? != 0,
                 row.get::<_, i64>(23)? != 0,
                 row.get::<_, Option<String>>(24)?,
+                row.get::<_, Option<f64>>(25)?,
             ))
         })
         .map_err(database_read_error)?;
@@ -335,6 +348,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
             has_stems,
             is_baked,
             bake_file_path,
+            tempo_target_bpm,
         ) = row.map_err(database_read_error)?;
         let geometry = clip_geometry(
             duration_ms,
@@ -368,6 +382,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
             anchor_beat,
             tempo_anchor_beat,
             bpm,
+            tempo_target_bpm,
             first_beat_ms: first_beat_ms.and_then(|value| u64::try_from(value).ok()),
             pre_roll_beats: geometry.pre_roll_beats,
             duration_beats: geometry.duration_beats,
@@ -450,7 +465,7 @@ pub fn set_limiter_enabled(
 ///
 /// Exactly one clip can hold the key: naming a new one releases the previous,
 /// in the same transaction, so the project is never briefly keyed by two clips
-/// at once — which would duck twice as deep for a moment.
+/// at once â€” which would duck twice as deep for a moment.
 pub fn set_sidechain_key(
     connection: &mut Connection,
     clip_id: i64,
@@ -621,6 +636,11 @@ struct TimingRow {
     anchor_beat: i64,
     tempo_anchor_beat: i64,
     bpm: Option<f64>,
+    /// La cible imposÃ©e par le clip, s'il y en a une. Voir
+    /// [`effective_tempo_target`] : cette colonne doit suivre celle du snapshot,
+    /// faute de quoi le transport et le plan de rendu ne visent plus le mÃªme
+    /// tempo.
+    tempo_target_bpm: Option<f64>,
     first_beat_ms: Option<i64>,
     duration_ms: i64,
     trim_start_beats: f64,
@@ -632,6 +652,7 @@ fn timing_rows(connection: &Connection) -> Result<Vec<TimingRow>, String> {
         .prepare(
             "SELECT clips.id, clips.anchor_beat, clips.tempo_anchor_beat,
                     COALESCE(tracks.manual_bpm, tracks.bpm),
+                    clips.tempo_target_bpm,
                     COALESCE(tracks.manual_first_beat_ms, tracks.first_beat_ms),
                     tracks.duration_ms,
                     clips.trim_start_beats, clips.trim_end_beats
@@ -647,15 +668,32 @@ fn timing_rows(connection: &Connection) -> Result<Vec<TimingRow>, String> {
                 anchor_beat: row.get(1)?,
                 tempo_anchor_beat: row.get(2)?,
                 bpm: row.get(3)?,
-                first_beat_ms: row.get(4)?,
-                duration_ms: row.get(5)?,
-                trim_start_beats: row.get(6)?,
-                trim_end_beats: row.get(7)?,
+                tempo_target_bpm: row.get(4)?,
+                first_beat_ms: row.get(5)?,
+                duration_ms: row.get(6)?,
+                trim_start_beats: row.get(7)?,
+                trim_end_beats: row.get(8)?,
             })
         })
         .map_err(database_read_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(database_read_error)
+}
+
+/// Le tempo que la courbe globale vise Ã  l'ancre d'un clip.
+///
+/// Une seule rÃ¨gle, appelÃ©e par les deux constructeurs de cibles â€” celui du
+/// plan de rendu et celui du transport. Les laisser diverger est la panne qui
+/// revient le plus souvent dans ce projet, et elle est silencieuse : les deux
+/// cartes cessent de se reconnaÃ®tre et le Seek s'arrÃªte de fonctionner sans
+/// rien dire.
+///
+/// La cible du clip l'emporte quand elle existe; sinon c'est la vitesse native
+/// du morceau, et le clip joue Ã  un pour un.
+fn effective_tempo_target(target_bpm: Option<f64>, source_bpm: Option<f64>) -> Option<f64> {
+    target_bpm
+        .or(source_bpm)
+        .filter(|bpm| bpm.is_finite() && (MIN_BPM..=MAX_BPM).contains(bpm))
 }
 
 /// A tempo target sits on `tempo_anchor_beat`, which a turquoise node can be
@@ -666,8 +704,7 @@ fn timing_rows(connection: &Connection) -> Result<Vec<TimingRow>, String> {
 fn tempo_targets(rows: &[TimingRow]) -> Vec<TempoPoint> {
     rows.iter()
         .filter_map(|row| {
-            row.bpm
-                .filter(|bpm| bpm.is_finite() && (MIN_BPM..=MAX_BPM).contains(bpm))
+            effective_tempo_target(row.tempo_target_bpm, row.bpm)
                 .map(|bpm| TempoPoint::clip_target(row.tempo_anchor_beat as f64, bpm, row.id))
         })
         .collect()
@@ -725,22 +762,22 @@ pub(crate) fn render_plan(connection: &Connection) -> Result<TimelineRenderPlan,
         })?;
 
         end_beat = end_beat.max(clip.visual_end_beat);
-        // Le clip lit son stem s'il en joue un. Les fichiers séparés étant
-        // alignés à l'échantillon près sur l'original, tout ce qui a été réglé
-        // dessus — ancre, rognage, grille, automation — reste valable.
+        // Le clip lit son stem s'il en joue un. Les fichiers sÃ©parÃ©s Ã©tant
+        // alignÃ©s Ã  l'Ã©chantillon prÃ¨s sur l'original, tout ce qui a Ã©tÃ© rÃ©glÃ©
+        // dessus â€” ancre, rognage, grille, automation â€” reste valable.
         let (file_path, stem_from_ms) =
             clip_audio_source(connection, clip.id, &clip.stem, &clip.file_path);
-        // Le stem ne couvre que la fenêtre du clip, donc tout ce qui s'y lit
-        // est décalé de ce que la fenêtre a coupé.
+        // Le stem ne couvre que la fenÃªtre du clip, donc tout ce qui s'y lit
+        // est dÃ©calÃ© de ce que la fenÃªtre a coupÃ©.
         //
-        // Le décalage est retiré du **rognage**, pas du premier temps. Sur un
-        // clip déjà rogné, la fenêtre commence bien après le premier temps du
-        // morceau : `first_beat_ms - décalage` devenait négatif, et le borner à
-        // zéro faisait lire le moteur des secondes trop loin — d'où un stem
-        // tantôt décalé, tantôt muet, alors que la forme d'onde restait juste.
-        // Le rognage, lui, contient déjà ce décalage par construction et reste
-        // positif : `premier temps + (rognage − décalage)` donne exactement la
-        // même position, sans jamais passer sous zéro.
+        // Le dÃ©calage est retirÃ© du **rognage**, pas du premier temps. Sur un
+        // clip dÃ©jÃ  rognÃ©, la fenÃªtre commence bien aprÃ¨s le premier temps du
+        // morceau : `first_beat_ms - dÃ©calage` devenait nÃ©gatif, et le borner Ã
+        // zÃ©ro faisait lire le moteur des secondes trop loin â€” d'oÃ¹ un stem
+        // tantÃ´t dÃ©calÃ©, tantÃ´t muet, alors que la forme d'onde restait juste.
+        // Le rognage, lui, contient dÃ©jÃ  ce dÃ©calage par construction et reste
+        // positif : `premier temps + (rognage âˆ’ dÃ©calage)` donne exactement la
+        // mÃªme position, sans jamais passer sous zÃ©ro.
         let stem_trim_beats = if stem_from_ms > 0.0 {
             stem_from_ms / (60_000.0 / source_bpm)
         } else {
@@ -786,8 +823,7 @@ fn tempo_points_for_clips(
     let targets = clips
         .iter()
         .filter_map(|clip| {
-            clip.bpm
-                .filter(|bpm| bpm.is_finite() && (MIN_BPM..=MAX_BPM).contains(bpm))
+            effective_tempo_target(clip.tempo_target_bpm, clip.bpm)
                 .map(|bpm| TempoPoint::clip_target(clip.tempo_anchor_beat as f64, bpm, clip.id))
         })
         .collect();
@@ -910,17 +946,17 @@ pub fn add_clip(
     snapshot(connection)
 }
 
-/// Pose aux deux bouts d'un clip neuf ses nœuds d'ancrage, à la valeur de repos
+/// Pose aux deux bouts d'un clip neuf ses nÅ“uds d'ancrage, Ã  la valeur de repos
 /// de la ligne.
 ///
-/// Sans eux, une automation écrite plus loin sur la voie remonterait jusqu'au
-/// début du clip : la ligne rampe entre ses nœuds, et le premier nœud d'une
-/// voie vaut pour tout ce qui le précède. Les ancres bornent donc le clip à ce
-/// qu'il est censé être avant qu'on y touche, et deviennent les poignées par
+/// Sans eux, une automation Ã©crite plus loin sur la voie remonterait jusqu'au
+/// dÃ©but du clip : la ligne rampe entre ses nÅ“uds, et le premier nÅ“ud d'une
+/// voie vaut pour tout ce qui le prÃ©cÃ¨de. Les ancres bornent donc le clip Ã  ce
+/// qu'il est censÃ© Ãªtre avant qu'on y touche, et deviennent les poignÃ©es par
 /// lesquelles on l'attrape.
 ///
-/// `ON CONFLICT DO NOTHING` : si un nœud occupe déjà la place, il porte un
-/// réglage voulu par quelqu'un et l'ancrage n'a rien à y redire.
+/// `ON CONFLICT DO NOTHING` : si un nÅ“ud occupe dÃ©jÃ  la place, il porte un
+/// rÃ©glage voulu par quelqu'un et l'ancrage n'a rien Ã  y redire.
 fn seed_clip_automation_nodes(
     transaction: &Transaction<'_>,
     table: AutomationTable,
@@ -945,23 +981,23 @@ fn seed_clip_automation_nodes(
     Ok(())
 }
 
-/// Une table d'automation de voie, désignée par son nom et par le mot qui la
+/// Une table d'automation de voie, dÃ©signÃ©e par son nom et par le mot qui la
 /// nomme dans un message d'erreur.
 ///
-/// Le volume et le panoramique subissent exactement la même manœuvre quand un
-/// clip se déplace. L'écrire deux fois est le défaut qui revient le plus
+/// Le volume et le panoramique subissent exactement la mÃªme manÅ“uvre quand un
+/// clip se dÃ©place. L'Ã©crire deux fois est le dÃ©faut qui revient le plus
 /// souvent dans ce projet : les deux copies finissent par diverger, et
-/// l'oubliée s'arrête de suivre sans rien dire. Le nom de table est une
-/// constante du programme, jamais une entrée, donc son insertion dans le SQL
+/// l'oubliÃ©e s'arrÃªte de suivre sans rien dire. Le nom de table est une
+/// constante du programme, jamais une entrÃ©e, donc son insertion dans le SQL
 /// n'ouvre rien.
 #[derive(Clone, Copy)]
 struct AutomationTable {
     name: &'static str,
     node_label: &'static str,
     /// La colonne qui porte la valeur : les deux tables ne la nomment pas
-    /// pareil, parce qu'un décibel et un côté ne sont pas la même grandeur.
+    /// pareil, parce qu'un dÃ©cibel et un cÃ´tÃ© ne sont pas la mÃªme grandeur.
     value_column: &'static str,
-    /// Ce que vaut la ligne quand personne n'y a touché.
+    /// Ce que vaut la ligne quand personne n'y a touchÃ©.
     rest_value: f64,
 }
 
@@ -979,12 +1015,12 @@ const PAN_AUTOMATION: AutomationTable = AutomationTable {
     rest_value: PAN_CENTRE,
 };
 
-/// Emporte avec le clip les nœuds d'automation qu'il contient.
+/// Emporte avec le clip les nÅ“uds d'automation qu'il contient.
 ///
-/// Les nœuds passent par un garage hors timeline avant d'être posés à leur
-/// destination : sans lui, décaler d'un cran une suite de nœuds ferait entrer
-/// le premier dans la place encore occupée par le second, et la contrainte
-/// d'unicité refuserait le déplacement.
+/// Les nÅ“uds passent par un garage hors timeline avant d'Ãªtre posÃ©s Ã  leur
+/// destination : sans lui, dÃ©caler d'un cran une suite de nÅ“uds ferait entrer
+/// le premier dans la place encore occupÃ©e par le second, et la contrainte
+/// d'unicitÃ© refuserait le dÃ©placement.
 fn move_clip_automation_nodes(
     transaction: &Transaction<'_>,
     table: AutomationTable,
@@ -1040,11 +1076,11 @@ fn move_clip_automation_nodes(
     drop(all_nodes);
 
     // Translation, pas repose : les positions gardent leur finesse d'origine.
-    // Les recaler sur le quart de temps écrasait les uns sur les autres les
-    // nœuds d'une forme dessinée — un sinus en pose une douzaine par cycle,
-    // donc plusieurs par quart — et la contrainte d'unicité refusait alors le
-    // déplacement d'un clip qui n'avait pourtant rien d'ambigu. Le calage sur
-    // le quart appartient au geste qui pose un nœud, pas à un clip qui avance.
+    // Les recaler sur le quart de temps Ã©crasait les uns sur les autres les
+    // nÅ“uds d'une forme dessinÃ©e â€” un sinus en pose une douzaine par cycle,
+    // donc plusieurs par quart â€” et la contrainte d'unicitÃ© refusait alors le
+    // dÃ©placement d'un clip qui n'avait pourtant rien d'ambigu. Le calage sur
+    // le quart appartient au geste qui pose un nÅ“ud, pas Ã  un clip qui avance.
     let moved = selected
         .iter()
         .map(|(id, beat)| {
@@ -1058,9 +1094,9 @@ fn move_clip_automation_nodes(
             Ok((*id, target))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    // Et la place n'est prise que par un nœud réellement au même endroit :
-    // comparer au quart de temps aurait fait barrer la route à toute une forme
-    // par un seul nœud voisin.
+    // Et la place n'est prise que par un nÅ“ud rÃ©ellement au mÃªme endroit :
+    // comparer au quart de temps aurait fait barrer la route Ã  toute une forme
+    // par un seul nÅ“ud voisin.
     for (_, target_beat) in &moved {
         if existing.iter().any(|(id, lane, beat)| {
             *lane == new_lane
@@ -1216,8 +1252,8 @@ pub fn move_clip(
         );
     }
     let transaction = connection.transaction().map_err(database_write_error)?;
-    // Les deux lignes suivent le clip : une automation qui reste en arrière
-    // décrirait un geste sur du silence, et le clip arriverait sur le geste du
+    // Les deux lignes suivent le clip : une automation qui reste en arriÃ¨re
+    // dÃ©crirait un geste sur du silence, et le clip arriverait sur le geste du
     // voisin.
     for table in [VOLUME_AUTOMATION, PAN_AUTOMATION] {
         move_clip_automation_nodes(
@@ -1256,21 +1292,21 @@ pub fn move_clip(
     snapshot(connection)
 }
 
-/// Deux nœuds séparés de moins que cela occupent la même place.
+/// Deux nÅ“uds sÃ©parÃ©s de moins que cela occupent la mÃªme place.
 ///
-/// SQLite compare les réels exactement; ce seuil est donc un peu plus large que
-/// la contrainte, ce qui refuse d'avance un déplacement qu'elle aurait accepté
-/// de justesse. C'est le bon sens de l'inégalité : mieux vaut un message clair
-/// qu'un empilement de nœuds à un millionième de temps l'un de l'autre.
+/// SQLite compare les rÃ©els exactement; ce seuil est donc un peu plus large que
+/// la contrainte, ce qui refuse d'avance un dÃ©placement qu'elle aurait acceptÃ©
+/// de justesse. C'est le bon sens de l'inÃ©galitÃ© : mieux vaut un message clair
+/// qu'un empilement de nÅ“uds Ã  un millioniÃ¨me de temps l'un de l'autre.
 const BEAT_SAME_SLOT_EPSILON: f64 = 1e-6;
 
 /// Choisit laquelle des voix d'un morceau ce clip joue.
 ///
-/// La séparation appartient au **morceau** et le choix au **clip** : deux clips
-/// du même morceau peuvent jouer l'un la voix, l'autre l'instrumental, sans
-/// qu'on sépare deux fois.
+/// La sÃ©paration appartient au **morceau** et le choix au **clip** : deux clips
+/// du mÃªme morceau peuvent jouer l'un la voix, l'autre l'instrumental, sans
+/// qu'on sÃ©pare deux fois.
 ///
-/// Le fichier doit exister avant qu'on puisse le désigner. Laisser passer un
+/// Le fichier doit exister avant qu'on puisse le dÃ©signer. Laisser passer un
 /// clip vers un stem absent donnerait un clip muet dont rien n'expliquerait le
 /// silence.
 pub fn set_clip_stem(
@@ -1306,7 +1342,8 @@ pub fn set_clip_stem(
             Some(path) if Path::new(&path).is_file() => {}
             _ => {
                 return Err(
-                    "This track has not been separated yet — run Separate Stems first.".to_owned(),
+                    "This track has not been separated yet â€” run Separate Stems first."
+                        .to_owned(),
                 );
             }
         }
@@ -1321,10 +1358,10 @@ pub fn set_clip_stem(
     snapshot(connection)
 }
 
-/// Le fichier qu'un clip doit réellement lire, selon la voix qu'il joue.
+/// Le fichier qu'un clip doit rÃ©ellement lire, selon la voix qu'il joue.
 ///
-/// Un clip bascule sur son stem sans bouger : les fichiers séparés sont alignés
-/// à l'échantillon près sur l'original, donc l'ancre, le rognage et la grille
+/// Un clip bascule sur son stem sans bouger : les fichiers sÃ©parÃ©s sont alignÃ©s
+/// Ã  l'Ã©chantillon prÃ¨s sur l'original, donc l'ancre, le rognage et la grille
 /// restent valables tels quels.
 pub(crate) fn clip_audio_source(
     connection: &Connection,
@@ -1332,9 +1369,9 @@ pub(crate) fn clip_audio_source(
     stem: &str,
     original: &str,
 ) -> (String, f64) {
-    // Le bake passe avant tout le reste : le fichier cuit contient déjà le stem
-    // qui jouait au moment de la cuisson, ainsi que l'égalisation et
-    // l'automation. Le relire à travers un stem reviendrait à choisir deux fois.
+    // Le bake passe avant tout le reste : le fichier cuit contient dÃ©jÃ  le stem
+    // qui jouait au moment de la cuisson, ainsi que l'Ã©galisation et
+    // l'automation. Le relire Ã  travers un stem reviendrait Ã  choisir deux fois.
     if let Some(baked) = baked_audio_source(connection, clip_id) {
         return baked;
     }
@@ -1355,12 +1392,12 @@ pub(crate) fn clip_audio_source(
         .unwrap_or_else(|| (original.to_owned(), 0.0))
 }
 
-/// Le fichier cuit d'un clip, s'il en a un et qu'il est toujours là.
+/// Le fichier cuit d'un clip, s'il en a un et qu'il est toujours lÃ .
 ///
-/// Un bake dont le fichier a disparu — dossier de données effacé, disque
-/// externe absent — ne doit pas rendre le clip muet : on retombe sur la source,
-/// donc sur le clip sans ses effets. C'est faux à l'oreille, mais audible et
-/// réparable d'un clic sur `BAKE`; un silence, lui, ne se diagnostique pas.
+/// Un bake dont le fichier a disparu â€” dossier de donnÃ©es effacÃ©, disque
+/// externe absent â€” ne doit pas rendre le clip muet : on retombe sur la source,
+/// donc sur le clip sans ses effets. C'est faux Ã  l'oreille, mais audible et
+/// rÃ©parable d'un clic sur `BAKE`; un silence, lui, ne se diagnostique pas.
 fn baked_audio_source(connection: &Connection, clip_id: i64) -> Option<(String, f64)> {
     connection
         .query_row(
@@ -1377,12 +1414,12 @@ fn baked_audio_source(connection: &Connection, clip_id: i64) -> Option<(String, 
 
 /// La tranche de la source qu'un clip fait entendre, en millisecondes.
 ///
-/// **L'origine est le début du fichier, pas le premier temps.** Un clip fait
-/// entendre tout ce qui précède ce premier temps — le pré-roll —, et
-/// `duration_beats` le compte. Ancrer cette fenêtre sur le premier temps
-/// laissait le pré-roll dehors : sur un morceau dont le premier temps tombe à
-/// deux minutes quarante-six, un stem séparé était muet sur toute cette
-/// première partie.
+/// **L'origine est le dÃ©but du fichier, pas le premier temps.** Un clip fait
+/// entendre tout ce qui prÃ©cÃ¨de ce premier temps â€” le prÃ©-roll â€”, et
+/// `duration_beats` le compte. Ancrer cette fenÃªtre sur le premier temps
+/// laissait le prÃ©-roll dehors : sur un morceau dont le premier temps tombe Ã
+/// deux minutes quarante-six, un stem sÃ©parÃ© Ã©tait muet sur toute cette
+/// premiÃ¨re partie.
 pub(crate) fn clip_source_window_ms(clip: &TimelineClip) -> Option<(f64, f64)> {
     let beat_ms = 60_000.0 / clip.bpm?;
     let start = clip.trim_start_beats * beat_ms;
@@ -1540,6 +1577,40 @@ pub fn move_tempo_point(
     snapshot(connection)
 }
 
+/// Impose Ã  ce clip le tempo que la courbe doit viser Ã  son ancre, ou lui rend
+/// la vitesse native de son morceau avec `None`.
+///
+/// **N'Ã©crit pas dans la bibliothÃ¨que.** C'Ã©tait le dÃ©faut : rÃ©gler le tempo
+/// d'un nÅ“ud appelait la correction de BPM du morceau, si bien qu'une dÃ©cision
+/// de mix rÃ©Ã©crivait une analyse â€” dÃ©finitivement, et pour tous les usages
+/// futurs de ce morceau â€” tout en dÃ©plaÃ§ant la courbe sous **les autres** clips,
+/// dont le beatmatching Ã©tait perdu. Corriger une analyse et choisir une
+/// vitesse sont deux gestes distincts, et ils ont dÃ©sormais deux chemins.
+pub fn set_clip_tempo_target(
+    connection: &Connection,
+    clip_id: i64,
+    target_bpm: Option<f64>,
+) -> Result<TimelineSnapshot, String> {
+    if let Some(bpm) = target_bpm
+        && !(bpm.is_finite() && (MIN_BPM..=MAX_BPM).contains(&bpm))
+    {
+        return Err(format!(
+            "The tempo has to be between {MIN_BPM:.0} and {MAX_BPM:.0}."
+        ));
+    }
+
+    let updated = connection
+        .execute(
+            "UPDATE timeline_clips SET tempo_target_bpm = ?2 WHERE id = ?1",
+            params![clip_id, target_bpm],
+        )
+        .map_err(database_write_error)?;
+    if updated == 0 {
+        return Err("This clip is no longer on the timeline.".to_owned());
+    }
+    snapshot(connection)
+}
+
 pub fn remove_clip(connection: &Connection, clip_id: i64) -> Result<TimelineSnapshot, String> {
     connection
         .execute("DELETE FROM timeline_clips WHERE id = ?1", [clip_id])
@@ -1649,9 +1720,9 @@ pub fn delete_volume_node(
     snapshot(connection)
 }
 
-/// Pose un point de panoramique, en reprenant la valeur déjà en vigueur à cet
-/// endroit : ajouter un nœud ne doit jamais déplacer le son, seulement offrir
-/// une poignée pour le faire ensuite.
+/// Pose un point de panoramique, en reprenant la valeur dÃ©jÃ  en vigueur Ã  cet
+/// endroit : ajouter un nÅ“ud ne doit jamais dÃ©placer le son, seulement offrir
+/// une poignÃ©e pour le faire ensuite.
 pub fn add_pan_node(
     connection: &Connection,
     lane: i64,
@@ -1733,12 +1804,12 @@ pub fn delete_draw_group(
     snapshot(connection)
 }
 
-/// Écrit une forme d'automation de volume, en remplaçant ce qui occupait
-/// l'étendue couverte.
+/// Ã‰crit une forme d'automation de volume, en remplaÃ§ant ce qui occupait
+/// l'Ã©tendue couverte.
 ///
-/// L'ancienne plage et la nouvelle partent dans la même transaction : une forme
-/// à demi effacée ne doit jamais s'entendre, et un trait interrompu ne doit pas
-/// laisser derrière lui la queue de ce qu'il remplaçait.
+/// L'ancienne plage et la nouvelle partent dans la mÃªme transaction : une forme
+/// Ã  demi effacÃ©e ne doit jamais s'entendre, et un trait interrompu ne doit pas
+/// laisser derriÃ¨re lui la queue de ce qu'il remplaÃ§ait.
 fn validate_draw_metadata(shape: &str, period: f64) -> Result<(), String> {
     if !matches!(shape, "step" | "sine" | "triangle") {
         return Err("That Draw shape is not supported.".to_owned());
@@ -1820,7 +1891,7 @@ pub fn draw_volume_shape(
     snapshot(connection)
 }
 
-/// La même chose pour le panoramique.
+/// La mÃªme chose pour le panoramique.
 pub fn draw_pan_shape(
     connection: &mut Connection,
     lane: i64,
@@ -1877,12 +1948,12 @@ pub fn draw_pan_shape(
     snapshot(connection)
 }
 
-/// Pose un nœud de filtre isolé.
+/// Pose un nÅ“ud de filtre isolÃ©.
 ///
-/// Plus aucune commande n'y mène : le pinceau écrit des plages entières, et le
-/// tracé libre aussi. La fonction reste parce que deux tests ont besoin de
-/// poser un nœud pour vérifier autre chose — la signature de lecture, le
-/// remplacement d'une plage —, pas parce qu'elle est encore un geste.
+/// Plus aucune commande n'y mÃ¨ne : le pinceau Ã©crit des plages entiÃ¨res, et le
+/// tracÃ© libre aussi. La fonction reste parce que deux tests ont besoin de
+/// poser un nÅ“ud pour vÃ©rifier autre chose â€” la signature de lecture, le
+/// remplacement d'une plage â€”, pas parce qu'elle est encore un geste.
 #[cfg(test)]
 pub fn add_filter_node(
     connection: &Connection,
@@ -1910,7 +1981,7 @@ pub fn add_filter_node(
 ///
 /// `replaced_range` names a curve this gesture supersedes. Resizing one is
 /// exactly that: the old span must disappear and the new one appear together,
-/// or a shortened curve would leave its former tail behind — and a curve that
+/// or a shortened curve would leave its former tail behind â€” and a curve that
 /// vanished before being rewritten would be heard opening up mid-playback.
 pub fn draw_filter_bubble(
     connection: &mut Connection,
@@ -2017,19 +2088,19 @@ pub fn draw_filter_bubble(
     snapshot(connection)
 }
 
-/// Écrit un trait de filtre tracé à main levée.
+/// Ã‰crit un trait de filtre tracÃ© Ã  main levÃ©e.
 ///
-/// Le pinceau à bulle calcule sa forme ici, à partir d'une largeur et d'une
-/// profondeur; un trait libre, lui, arrive déjà dessiné — c'est la main qui l'a
-/// fait, et le serveur n'a rien à en déduire. Il ne lui reste qu'à vérifier ce
-/// qu'il reçoit et à remplacer la plage d'un seul coup.
+/// Le pinceau Ã  bulle calcule sa forme ici, Ã  partir d'une largeur et d'une
+/// profondeur; un trait libre, lui, arrive dÃ©jÃ  dessinÃ© â€” c'est la main qui l'a
+/// fait, et le serveur n'a rien Ã  en dÃ©duire. Il ne lui reste qu'Ã  vÃ©rifier ce
+/// qu'il reÃ§oit et Ã  remplacer la plage d'un seul coup.
 ///
 /// Les ancres au bypass qui referment le trait arrivent avec les points peints,
-/// dans le même tableau, posées par `filterStrokeNodes`
-/// (`src/lib/filterShape.ts`) : c'est ce qui permet à la courbe tracée sous le
-/// curseur d'être exactement celle qui sera jouée. Les recalculer ici en
-/// donnerait deux propriétaires, et c'est ainsi que ce projet a perdu six
-/// règles.
+/// dans le mÃªme tableau, posÃ©es par `filterStrokeNodes`
+/// (`src/lib/filterShape.ts`) : c'est ce qui permet Ã  la courbe tracÃ©e sous le
+/// curseur d'Ãªtre exactement celle qui sera jouÃ©e. Les recalculer ici en
+/// donnerait deux propriÃ©taires, et c'est ainsi que ce projet a perdu six
+/// rÃ¨gles.
 pub fn draw_filter_stroke(
     connection: &mut Connection,
     lane: i64,
@@ -2151,15 +2222,15 @@ pub fn restore_snapshot(
             .map_err(database_write_error)?;
     }
 
-    // Les clips ne sont plus remplacés, ils sont **corrigés**.
+    // Les clips ne sont plus remplacÃ©s, ils sont **corrigÃ©s**.
     //
-    // L'ancienne manœuvre effaçait tout puis réinsérait : `clip_stems` partait
-    // en cascade, et il fallait la relever et la reposer à la main. Ce
-    // sauvetage nommait ses colonnes une par une, donc il en oubliait — la
-    // forme d'onde du stem disparaissait à chaque Undo, quel que soit le geste
-    // annulé. Le même piège attendrait la prochaine table rattachée aux clips.
+    // L'ancienne manÅ“uvre effaÃ§ait tout puis rÃ©insÃ©rait : `clip_stems` partait
+    // en cascade, et il fallait la relever et la reposer Ã  la main. Ce
+    // sauvetage nommait ses colonnes une par une, donc il en oubliait â€” la
+    // forme d'onde du stem disparaissait Ã  chaque Undo, quel que soit le geste
+    // annulÃ©. Le mÃªme piÃ¨ge attendrait la prochaine table rattachÃ©e aux clips.
     //
-    // Mettre à jour ce qui reste et ne supprimer que ce qui s'en va laisse
+    // Mettre Ã  jour ce qui reste et ne supprimer que ce qui s'en va laisse
     // intact tout ce qui pend aux clips, aujourd'hui comme demain.
     let kept: Vec<i64> = target.clips.iter().map(|clip| clip.id).collect();
     let placeholders = kept
@@ -2259,8 +2330,8 @@ pub fn restore_snapshot(
             .map_err(database_write_error)?;
     }
 
-    // Le panoramique fait partie de l'état restauré au même titre que le
-    // volume : l'oublier ici laisserait un Undo réécrire tout sauf lui.
+    // Le panoramique fait partie de l'Ã©tat restaurÃ© au mÃªme titre que le
+    // volume : l'oublier ici laisserait un Undo rÃ©Ã©crire tout sauf lui.
     for node in &target.pan_nodes {
         transaction
             .execute(
@@ -2388,9 +2459,9 @@ pub fn clear_filter_range(
     snapshot(connection)
 }
 
-/// Borne et cale un nœud d'automation sur le quart de temps.
+/// Borne et cale un nÅ“ud d'automation sur le quart de temps.
 ///
-/// La règle est la même pour les deux lignes; seul le mot change dans le
+/// La rÃ¨gle est la mÃªme pour les deux lignes; seul le mot change dans le
 /// message, parce que l'utilisateur doit savoir laquelle il vient de sortir de
 /// la timeline.
 fn validate_automation_beat(beat: f64, node_label: &str) -> Result<f64, String> {
@@ -2412,7 +2483,7 @@ fn validate_volume_beat(beat: f64) -> Result<f64, String> {
 
 fn validate_gain_db(gain_db: Option<f64>) -> Result<(), String> {
     if gain_db.is_some_and(|value| !value.is_finite() || !(-60.0..=12.0).contains(&value)) {
-        return Err("Volume must be between -∞ dB and +12 dB.".to_owned());
+        return Err("Volume must be between -âˆž dB and +12 dB.".to_owned());
     }
     Ok(())
 }
@@ -2531,12 +2602,12 @@ pub fn split_timeline_clip(
         )
         .map_err(database_write_error)?;
 
-    // La moitié droite hérite des stems de l'originale.
+    // La moitiÃ© droite hÃ©rite des stems de l'originale.
     //
-    // Les deux viennent de la même source, et le fichier séparé couvre déjà
-    // l'étendue qu'elles se partagent : elles peuvent le désigner toutes les
-    // deux. Sans cela, la nouvelle moitié retombait sur le morceau complet — et
-    // comme le clip garde sa touche allumée, l'affichage et le son se
+    // Les deux viennent de la mÃªme source, et le fichier sÃ©parÃ© couvre dÃ©jÃ
+    // l'Ã©tendue qu'elles se partagent : elles peuvent le dÃ©signer toutes les
+    // deux. Sans cela, la nouvelle moitiÃ© retombait sur le morceau complet â€” et
+    // comme le clip garde sa touche allumÃ©e, l'affichage et le son se
     // contredisaient.
     let right_id = transaction.last_insert_rowid();
     transaction
@@ -2551,14 +2622,14 @@ pub fn split_timeline_clip(
         )
         .map_err(database_write_error)?;
 
-    // Et de la cuisson, pour la même raison : le fichier cuit couvre l'étendue
-    // que les deux moitiés se partagent, avec la même origine dans la source.
-    // Sans cela, la moitié droite repartait de l'original — donc sans les effets
-    // qu'on venait d'y cuire, en gardant sa touche allumée.
+    // Et de la cuisson, pour la mÃªme raison : le fichier cuit couvre l'Ã©tendue
+    // que les deux moitiÃ©s se partagent, avec la mÃªme origine dans la source.
+    // Sans cela, la moitiÃ© droite repartait de l'original â€” donc sans les effets
+    // qu'on venait d'y cuire, en gardant sa touche allumÃ©e.
     //
-    // `removed` est recopiée telle quelle : décuire l'une ou l'autre rend la
-    // même automation, ce qui est bien ce qu'on veut, puisqu'elle appartenait à
-    // la voie et non à la moitié.
+    // `removed` est recopiÃ©e telle quelle : dÃ©cuire l'une ou l'autre rend la
+    // mÃªme automation, ce qui est bien ce qu'on veut, puisqu'elle appartenait Ã
+    // la voie et non Ã  la moitiÃ©.
     transaction
         .execute(
             "INSERT INTO clip_bakes
@@ -2593,8 +2664,8 @@ fn snapped_filter_value(value: f64) -> f64 {
     if value.abs() <= 0.05 { 0.0 } else { value }
 }
 
-/// Panoramique en vigueur à un beat donné, interpolé linéairement entre les
-/// nœuds voisins. Une piste sans nœud est au centre.
+/// Panoramique en vigueur Ã  un beat donnÃ©, interpolÃ© linÃ©airement entre les
+/// nÅ“uds voisins. Une piste sans nÅ“ud est au centre.
 pub(crate) fn interpolated_pan(nodes: &[TimelinePanNode], lane: i64, beat: f64) -> f64 {
     let lane_nodes = nodes
         .iter()
@@ -2732,20 +2803,20 @@ fn beats_for_milliseconds(milliseconds: u64, bpm: f64) -> f64 {
     milliseconds as f64 * bpm / 60_000.0
 }
 
-/// Le temps le plus à gauche où l'ancre d'un clip peut se poser.
+/// Le temps le plus Ã  gauche oÃ¹ l'ancre d'un clip peut se poser.
 ///
-/// L'ancre porte le **premier temps**, pas le début du clip : entre les deux il
-/// y a le pré-roll, tout ce que le morceau fait entendre avant sa première
+/// L'ancre porte le **premier temps**, pas le dÃ©but du clip : entre les deux il
+/// y a le prÃ©-roll, tout ce que le morceau fait entendre avant sa premiÃ¨re
 /// mesure. Ce qu'on ne veut pas, c'est que la partie *visible* commence avant
-/// le temps zéro — donc `ancre − pré-roll + rognage ≥ 0`.
+/// le temps zÃ©ro â€” donc `ancre âˆ’ prÃ©-roll + rognage â‰¥ 0`.
 ///
-/// Le rognage manquait à ce calcul. Un clip dont on avait coupé le début
-/// restait bloqué à sa position d'origine : la butée protégeait encore une
-/// tête que le clip ne fait plus entendre, et le premier clip d'une timeline
-/// refusait de reculer jusqu'à zéro. On ne borne que ce qui s'entend.
+/// Le rognage manquait Ã  ce calcul. Un clip dont on avait coupÃ© le dÃ©but
+/// restait bloquÃ© Ã  sa position d'origine : la butÃ©e protÃ©geait encore une
+/// tÃªte que le clip ne fait plus entendre, et le premier clip d'une timeline
+/// refusait de reculer jusqu'Ã  zÃ©ro. On ne borne que ce qui s'entend.
 ///
-/// Le plancher à zéro reste : le schéma interdit une ancre négative, et un
-/// clip dont le pré-roll dépasse le rognage garde donc sa marge.
+/// Le plancher Ã  zÃ©ro reste : le schÃ©ma interdit une ancre nÃ©gative, et un
+/// clip dont le prÃ©-roll dÃ©passe le rognage garde donc sa marge.
 fn minimum_anchor_beat(pre_roll_beats: f64, trim_start_beats: f64) -> i64 {
     ((pre_roll_beats - trim_start_beats).ceil() as i64).max(0)
 }
@@ -2786,7 +2857,7 @@ fn validate_bpm(bpm: f64) -> Result<(), String> {
 /// recently added clip, so successive drops walk A, B, C rather than piling up.
 ///
 /// The newest clip is the one with the highest id, since ids are handed out in
-/// insertion order — the order the clips sit in the timeline says nothing about
+/// insertion order â€” the order the clips sit in the timeline says nothing about
 /// which arrived last.
 fn next_rotation_lane(clips: &[TimelineClip]) -> i64 {
     let lane_count = MAX_LANE + 1;
@@ -2803,20 +2874,20 @@ fn validate_lane(lane: i64) -> Result<(), String> {
     Ok(())
 }
 
-// ─── Bake ────────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Bake â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Combien de source on cuit de part et d'autre de ce que le clip fait entendre.
 ///
-/// Sans cette marge, rallonger le rognage après une cuisson tomberait dans le
-/// vide : le fichier s'arrêterait exactement là où le clip s'arrêtait. Huit
-/// secondes couvrent les retouches ordinaires; au-delà, il faut décuire.
+/// Sans cette marge, rallonger le rognage aprÃ¨s une cuisson tomberait dans le
+/// vide : le fichier s'arrÃªterait exactement lÃ  oÃ¹ le clip s'arrÃªtait. Huit
+/// secondes couvrent les retouches ordinaires; au-delÃ , il faut dÃ©cuire.
 const BAKE_MARGIN_MS: f64 = 8_000.0;
 
-/// L'automation qu'un bake a emportée, telle qu'elle était.
+/// L'automation qu'un bake a emportÃ©e, telle qu'elle Ã©tait.
 ///
-/// C'est ce qui rend l'opération réversible. Sans elle, cuire un effet dans un
-/// fichier serait un aller simple — et un bouton dont on ne revient pas finit
-/// par ne plus être cliqué du tout.
+/// C'est ce qui rend l'opÃ©ration rÃ©versible. Sans elle, cuire un effet dans un
+/// fichier serait un aller simple â€” et un bouton dont on ne revient pas finit
+/// par ne plus Ãªtre cliquÃ© du tout.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RemovedAutomation {
@@ -2832,30 +2903,30 @@ pub(crate) struct RemovedAutomation {
 
 /// Tout ce qu'il faut pour cuire un clip, lu sans rien modifier.
 ///
-/// La lecture et l'écriture sont séparées parce que le rendu dure : le verrou
-/// de la bibliothèque est pris pour préparer, relâché pendant la cuisson, puis
-/// repris pour ranger le résultat.
+/// La lecture et l'Ã©criture sont sÃ©parÃ©es parce que le rendu dure : le verrou
+/// de la bibliothÃ¨que est pris pour prÃ©parer, relÃ¢chÃ© pendant la cuisson, puis
+/// repris pour ranger le rÃ©sultat.
 pub(crate) struct BakeSpec {
     pub plan: TimelineRenderPlan,
-    /// Où commence le fichier cuit dans la source, en millisecondes.
+    /// OÃ¹ commence le fichier cuit dans la source, en millisecondes.
     pub source_from_ms: f64,
     pub removed: RemovedAutomation,
 }
 
-/// Prépare la cuisson d'un clip : le plan de rendu, et ce qui sera retiré.
+/// PrÃ©pare la cuisson d'un clip : le plan de rendu, et ce qui sera retirÃ©.
 ///
 /// Le plan ne contient **que** ce clip, sur sa voie, avec l'automation de cette
-/// voie et son égalisation. Trois choses en sont délibérément absentes :
+/// voie et son Ã©galisation. Trois choses en sont dÃ©libÃ©rÃ©ment absentes :
 ///
-/// - **L'étirement temporel.** La carte de tempo est fixée au tempo propre de la
-///   source, donc le rapport vaut un. Cuire un clip déjà étiré vers le tempo du
-///   projet le ferait étirer une seconde fois le jour où ce tempo change.
-///   L'automation, elle, reste indexée sur les temps : son alignement avec le
-///   son est le même avant et après.
-/// - **Le compresseur et le limiteur**, qui appartiennent au bus général. Les
+/// - **L'Ã©tirement temporel.** La carte de tempo est fixÃ©e au tempo propre de la
+///   source, donc le rapport vaut un. Cuire un clip dÃ©jÃ  Ã©tirÃ© vers le tempo du
+///   projet le ferait Ã©tirer une seconde fois le jour oÃ¹ ce tempo change.
+///   L'automation, elle, reste indexÃ©e sur les temps : son alignement avec le
+///   son est le mÃªme avant et aprÃ¨s.
+/// - **Le compresseur et le limiteur**, qui appartiennent au bus gÃ©nÃ©ral. Les
 ///   cuire dans un clip les appliquerait deux fois.
 /// - **Le sidechain**, qui n'est pas un effet du clip mais une relation avec un
-///   autre clip — lequel peut encore bouger. Figé, il pomperait à contretemps.
+///   autre clip â€” lequel peut encore bouger. FigÃ©, il pomperait Ã  contretemps.
 pub(crate) fn prepare_bake(connection: &Connection, clip_id: i64) -> Result<BakeSpec, String> {
     let timeline = snapshot(connection)?;
     let clip = timeline
@@ -2890,8 +2961,8 @@ pub(crate) fn prepare_bake(connection: &Connection, clip_id: i64) -> Result<Bake
         )
         .map_err(database_read_error)?;
 
-    // Le clip élargi de sa marge, des deux côtés. `clip_geometry` recalcule
-    // alors une étendue plus longue qui commence plus tôt — c'est elle qu'on
+    // Le clip Ã©largi de sa marge, des deux cÃ´tÃ©s. `clip_geometry` recalcule
+    // alors une Ã©tendue plus longue qui commence plus tÃ´t â€” c'est elle qu'on
     // rend, et le rognage d'origine s'y retrouvera par simple soustraction.
     let beat_ms = 60_000.0 / source_bpm;
     let margin_beats = BAKE_MARGIN_MS / beat_ms;
@@ -2911,7 +2982,7 @@ pub(crate) fn prepare_bake(connection: &Connection, clip_id: i64) -> Result<Bake
 
     // La source que le clip joue **aujourd'hui** : son stem, s'il en a choisi
     // un. Cuire l'original alors qu'on entend la voix seule produirait un
-    // fichier qui ne ressemble pas à ce qu'on écoutait.
+    // fichier qui ne ressemble pas Ã  ce qu'on Ã©coutait.
     let (file_path, stem_from_ms) =
         clip_audio_source(connection, clip.id, &clip.stem, &clip.file_path);
     let stem_trim_beats = if stem_from_ms > 0.0 {
@@ -2958,7 +3029,7 @@ pub(crate) fn prepare_bake(connection: &Connection, clip_id: i64) -> Result<Bake
     })
 }
 
-/// Ce que la cuisson emportera : l'automation de la voie sur l'étendue rendue.
+/// Ce que la cuisson emportera : l'automation de la voie sur l'Ã©tendue rendue.
 fn collect_removed_automation(
     timeline: &TimelineSnapshot,
     lane: i64,
@@ -2992,10 +3063,10 @@ fn collect_removed_automation(
     }
 }
 
-/// Range le fichier cuit et retire l'automation qu'il contient désormais.
+/// Range le fichier cuit et retire l'automation qu'il contient dÃ©sormais.
 ///
-/// Une seule transaction : un enregistrement écrit sans que l'automation parte
-/// donnerait un clip qui joue ses effets deux fois — une fois dans le fichier,
+/// Une seule transaction : un enregistrement Ã©crit sans que l'automation parte
+/// donnerait un clip qui joue ses effets deux fois â€” une fois dans le fichier,
 /// une fois par la voie.
 pub fn commit_bake(
     connection: &mut Connection,
@@ -3061,11 +3132,11 @@ pub fn commit_bake(
     snapshot(connection)
 }
 
-/// Efface l'automation de la voie sur l'étendue cuite, et referme les bords.
+/// Efface l'automation de la voie sur l'Ã©tendue cuite, et referme les bords.
 ///
-/// Les deux nœuds de repos ne sont pas une politesse : la voie continue après le
-/// clip, et sans eux la ligne rejoindrait le nœud suivant en rampant depuis le
-/// dernier nœud d'avant — de l'automation que personne n'a demandée, en travers
+/// Les deux nÅ“uds de repos ne sont pas une politesse : la voie continue aprÃ¨s le
+/// clip, et sans eux la ligne rejoindrait le nÅ“ud suivant en rampant depuis le
+/// dernier nÅ“ud d'avant â€” de l'automation que personne n'a demandÃ©e, en travers
 /// de ce qui suit.
 fn clear_lane_automation(
     transaction: &Transaction<'_>,
@@ -3097,15 +3168,15 @@ fn clear_lane_automation(
     Ok(())
 }
 
-/// Défait une cuisson : l'automation revient, le fichier s'en va.
+/// DÃ©fait une cuisson : l'automation revient, le fichier s'en va.
 ///
-/// Ce qui a été dessiné **depuis** la cuisson, sur cette voie et sur cette
-/// étendue, est remplacé — deux automations ne peuvent pas occuper les mêmes
+/// Ce qui a Ã©tÃ© dessinÃ© **depuis** la cuisson, sur cette voie et sur cette
+/// Ã©tendue, est remplacÃ© â€” deux automations ne peuvent pas occuper les mÃªmes
 /// temps. L'annulation le couvre, et le bouton le dit.
 ///
-/// Le chemin du fichier est renvoyé pour que l'appelant l'efface : le faire ici
-/// mettrait une écriture sur disque dans une transaction de base de données, et
-/// un échec à la validation laisserait un enregistrement sans son fichier.
+/// Le chemin du fichier est renvoyÃ© pour que l'appelant l'efface : le faire ici
+/// mettrait une Ã©criture sur disque dans une transaction de base de donnÃ©es, et
+/// un Ã©chec Ã  la validation laisserait un enregistrement sans son fichier.
 pub fn unbake_clip(
     connection: &mut Connection,
     clip_id: i64,
@@ -3221,26 +3292,26 @@ mod tests {
         assert_eq!(minimum_anchor_beat(2.0, 0.0), 2);
     }
 
-    /// Un clip rogné du début doit pouvoir reculer d'autant.
+    /// Un clip rognÃ© du dÃ©but doit pouvoir reculer d'autant.
     ///
-    /// La butée protégeait le pré-roll entier, y compris la part qu'on venait
-    /// de couper : le premier clip d'une timeline refusait de reculer jusqu'à
-    /// zéro, retenu par une tête qu'il ne fait plus entendre.
+    /// La butÃ©e protÃ©geait le prÃ©-roll entier, y compris la part qu'on venait
+    /// de couper : le premier clip d'une timeline refusait de reculer jusqu'Ã
+    /// zÃ©ro, retenu par une tÃªte qu'il ne fait plus entendre.
     #[test]
     fn trimming_the_head_lets_a_clip_move_that_much_further_left() {
-        // Huit temps de pré-roll, deux coupés : il reste six temps à protéger.
+        // Huit temps de prÃ©-roll, deux coupÃ©s : il reste six temps Ã  protÃ©ger.
         assert_eq!(minimum_anchor_beat(8.0, 2.0), 6);
-        // Tout le pré-roll coupé : le clip commence sur son premier temps et
-        // peut donc se poser au tout début.
+        // Tout le prÃ©-roll coupÃ© : le clip commence sur son premier temps et
+        // peut donc se poser au tout dÃ©but.
         assert_eq!(minimum_anchor_beat(8.0, 8.0), 0);
-        // Rogné au-delà : on ne descend pas sous zéro, le schéma l'interdit.
+        // RognÃ© au-delÃ  : on ne descend pas sous zÃ©ro, le schÃ©ma l'interdit.
         assert_eq!(minimum_anchor_beat(8.0, 40.0), 0);
-        // Et la marge d'un clip non rogné ne bouge pas d'un pouce.
+        // Et la marge d'un clip non rognÃ© ne bouge pas d'un pouce.
         assert_eq!(minimum_anchor_beat(8.4, 0.0), 9);
     }
 
-    /// La butée et la géométrie doivent parler de la même chose : à l'ancre
-    /// minimale, le clip visible commence à zéro ou après — jamais avant.
+    /// La butÃ©e et la gÃ©omÃ©trie doivent parler de la mÃªme chose : Ã  l'ancre
+    /// minimale, le clip visible commence Ã  zÃ©ro ou aprÃ¨s â€” jamais avant.
     #[test]
     fn the_clamp_and_the_geometry_agree_on_where_zero_is() {
         for (duration_ms, bpm, first_beat_ms, trim_start) in [
@@ -3268,17 +3339,17 @@ mod tests {
             );
             assert!(
                 placed.visual_start_beat >= -1e-9,
-                "à l'ancre minimale le clip commencerait à {} — avant le début",
+                "Ã  l'ancre minimale le clip commencerait Ã  {} â€” avant le dÃ©but",
                 placed.visual_start_beat
             );
-            // Quand la butée est ce qui retient, elle doit retenir *juste* :
-            // pas un temps de jeu perdu. Quand elle est déjà à zéro, c'est le
-            // plancher du schéma — une ancre ne peut pas être négative — et le
-            // reste est irréductible : un clip rogné plus loin que son
-            // pré-roll ne peut pas commencer au temps zéro.
+            // Quand la butÃ©e est ce qui retient, elle doit retenir *juste* :
+            // pas un temps de jeu perdu. Quand elle est dÃ©jÃ  Ã  zÃ©ro, c'est le
+            // plancher du schÃ©ma â€” une ancre ne peut pas Ãªtre nÃ©gative â€” et le
+            // reste est irrÃ©ductible : un clip rognÃ© plus loin que son
+            // prÃ©-roll ne peut pas commencer au temps zÃ©ro.
             assert!(
                 placed.visual_start_beat < 1.0 || minimum == 0,
-                "la butée laisse {} temps de jeu inutiles avant le début",
+                "la butÃ©e laisse {} temps de jeu inutiles avant le dÃ©but",
                 placed.visual_start_beat
             );
         }
@@ -3437,10 +3508,10 @@ mod tests {
         }
     }
 
-    /// Chaque table d'automation ajoutée doit être inscrite dans les deux
-    /// endroits qui les énumèrent : `clear_timeline` et `restore_snapshot`. Le
-    /// panoramique avait été oublié dans les deux — CLEAR le laissait derrière,
-    /// et un Undo réécrivait tout sauf lui.
+    /// Chaque table d'automation ajoutÃ©e doit Ãªtre inscrite dans les deux
+    /// endroits qui les Ã©numÃ¨rent : `clear_timeline` et `restore_snapshot`. Le
+    /// panoramique avait Ã©tÃ© oubliÃ© dans les deux â€” CLEAR le laissait derriÃ¨re,
+    /// et un Undo rÃ©Ã©crivait tout sauf lui.
     #[test]
     fn clearing_and_restoring_account_for_every_automation_table() {
         let suffix = SystemTime::now()
@@ -3479,7 +3550,7 @@ mod tests {
                 "the pan node should be there to begin with"
             );
 
-            // Un Undo doit rétablir le panoramique comme le reste.
+            // Un Undo doit rÃ©tablir le panoramique comme le reste.
             let cleared = clear_timeline(&store.connection).expect("the timeline should clear");
             assert!(cleared.clips.is_empty(), "clips should go");
             assert!(cleared.volume_nodes.is_empty(), "volume nodes should go");
@@ -3762,10 +3833,10 @@ mod tests {
             assert!(restored.lanes[1].is_muted);
             assert!(restored.lanes[2].is_solo);
             assert_eq!(restored.volume_nodes.len(), 7);
-            // Les nœuds posés automatiquement portent le niveau par défaut;
-            // seul celui déplacé à la main s'en écarte. L'assertion nommait
-            // autrefois `-6.0` des deux côtés et réussissait donc par
-            // coïncidence, sans distinguer les deux.
+            // Les nÅ“uds posÃ©s automatiquement portent le niveau par dÃ©faut;
+            // seul celui dÃ©placÃ© Ã  la main s'en Ã©carte. L'assertion nommait
+            // autrefois `-6.0` des deux cÃ´tÃ©s et rÃ©ussissait donc par
+            // coÃ¯ncidence, sans distinguer les deux.
             let (moved, automatic): (
                 Vec<&super::TimelineVolumeNode>,
                 Vec<&super::TimelineVolumeNode>,
@@ -3779,10 +3850,10 @@ mod tests {
                     .iter()
                     .all(|node| node.gain_db == Some(DEFAULT_TRACK_GAIN_DB))
             );
-            // La courbe de filtre survit à la réouverture. Elle est désignée
-            // par sa crête telle que le pinceau l'a posée : le nœud isolé
-            // qu'on plaçait ici autrefois n'est plus atteignable depuis
-            // l'interface, et l'affirmer aurait vérifié du code mort.
+            // La courbe de filtre survit Ã  la rÃ©ouverture. Elle est dÃ©signÃ©e
+            // par sa crÃªte telle que le pinceau l'a posÃ©e : le nÅ“ud isolÃ©
+            // qu'on plaÃ§ait ici autrefois n'est plus atteignable depuis
+            // l'interface, et l'affirmer aurait vÃ©rifiÃ© du code mort.
             assert!(restored.filter_nodes.iter().any(|node| node.lane == 1
                 && (node.beat - 28.0).abs() < f64::EPSILON
                 && (node.value + 0.8).abs() < 1.0e-9));
@@ -3882,6 +3953,101 @@ mod tests {
             assert!(
                 (end_beat - 43.0).abs() < 1.0e-9,
                 "the trimmed project should end on the split, not on the full source: {end_beat}"
+            );
+        }
+
+        fs::remove_file(&fake_mp3).expect("fake MP3 should be removed");
+        for suffix in ["", "-wal", "-shm"] {
+            let candidate =
+                std::path::PathBuf::from(format!("{}{}", database_path.to_string_lossy(), suffix));
+            if candidate.exists() {
+                fs::remove_file(candidate).expect("test database should be removed");
+            }
+        }
+    }
+
+    /// Le dÃ©faut du 3 aoÃ»t : rÃ©gler le tempo d'un nÅ“ud corrigeait le BPM du
+    /// **morceau**. Les deux valeurs bougeaient donc ensemble, le clip gardait
+    /// un ratio de un pour un au lieu d'accÃ©lÃ©rer, la courbe se dÃ©plaÃ§ait sous
+    /// tous les autres clips â€” et l'analyse de la bibliothÃ¨que Ã©tait Ã©crasÃ©e
+    /// sans retour.
+    #[test]
+    fn a_clip_tempo_target_stretches_the_clip_and_leaves_the_library_alone() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-target-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+        let fake_mp3 = database_path.with_extension("mp3");
+        fs::write(&fake_mp3, []).expect("fake MP3 should be created");
+
+        {
+            let mut store = LibraryStore::open(&database_path).expect("database should open");
+            store
+                .connection
+                .execute(
+                    "INSERT INTO library_tracks
+                     (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                      bpm, first_beat_ms, beat_count, analysis_status)
+                     VALUES (?1, ?2, 'target.mp3', 60000, 44100, 2,
+                             120.0, 500, 120, 'analyzed')",
+                    params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+                )
+                .expect("track should be inserted");
+            let track_id = store.connection.last_insert_rowid();
+
+            let added = add_clip(&mut store.connection, track_id, Some(0.0), Some(0))
+                .expect("clip should be added");
+            let clip_id = added.clips[0].id;
+
+            let after = super::set_clip_tempo_target(&store.connection, clip_id, Some(128.0))
+                .expect("the target should be written");
+            let clip = &after.clips[0];
+
+            // La vitesse native du morceau ne bouge pas : c'est elle qui donne
+            // le ratio d'Ã©tirement, et l'Ã©craser Ã©tait tout le dÃ©faut.
+            assert_eq!(clip.bpm, Some(120.0));
+            assert_eq!(clip.tempo_target_bpm, Some(128.0));
+
+            // Et la bibliothÃ¨que n'a rien reÃ§u : aucune correction manuelle.
+            let manual: Option<f64> = store
+                .connection
+                .query_row(
+                    "SELECT manual_bpm FROM library_tracks WHERE id = ?1",
+                    [track_id],
+                    |row| row.get(0),
+                )
+                .expect("the track should still be there");
+            assert_eq!(manual, None, "a mix decision must not rewrite the analysis");
+
+            // La courbe vise bien 128 lÃ  oÃ¹ le clip est posÃ©, donc le clip est
+            // Ã©tirÃ© de 120 vers 128 au lieu de jouer Ã  un pour un.
+            let (transport_map, _) = project_timing(&store.connection).expect("timing should read");
+            let anchor = clip.tempo_anchor_beat as f64;
+            assert!(
+                (transport_map.bpm_at_beat(anchor) - 128.0).abs() < 1.0e-9,
+                "la courbe doit viser 128 à l'ancre du clip"
+            );
+
+            // Le transport et le plan de rendu doivent viser le mÃªme tempo.
+            let plan_map =
+                crate::tempo::TempoMap::new(after.project_bpm, after.tempo_points.clone())
+                    .expect("the snapshot tempo points should rebuild");
+            assert_eq!(transport_map.signature(), plan_map.signature());
+
+            // Et l'on peut rendre au clip la vitesse de son morceau.
+            let restored = super::set_clip_tempo_target(&store.connection, clip_id, None)
+                .expect("the target should be cleared");
+            assert_eq!(restored.clips[0].tempo_target_bpm, None);
+            let (restored_map, _) = project_timing(&store.connection).expect("timing should read");
+            assert!(
+                (restored_map.bpm_at_beat(restored.clips[0].tempo_anchor_beat as f64) - 120.0)
+                    .abs()
+                    < 1.0e-9,
+                "sans cible, la courbe reprend la vitesse du morceau"
             );
         }
 
@@ -4236,8 +4402,8 @@ mod tests {
         }
     }
 
-    /// Le panoramique décrit un geste sur un son précis. Laissé en arrière quand
-    /// le clip s'en va, il décrit ce geste sur du silence — et le clip arrive
+    /// Le panoramique dÃ©crit un geste sur un son prÃ©cis. LaissÃ© en arriÃ¨re quand
+    /// le clip s'en va, il dÃ©crit ce geste sur du silence â€” et le clip arrive
     /// sur celui du voisin.
     #[test]
     fn both_automation_lines_travel_with_the_clip_that_holds_them() {
@@ -4271,7 +4437,7 @@ mod tests {
             let clip = placed.clips[0].id;
             let start = placed.clips[0].visual_start_beat;
 
-            // Le dépôt a posé ses deux ancres, au centre, aux bouts du clip.
+            // Le dÃ©pÃ´t a posÃ© ses deux ancres, au centre, aux bouts du clip.
             let seeded: Vec<_> = placed
                 .pan_nodes
                 .iter()
@@ -4285,8 +4451,8 @@ mod tests {
                     .any(|node| (node.beat - start).abs() < f64::EPSILON)
             );
 
-            // Deux nœuds de plus dans le clip, un dernier bien à l'écart :
-            // celui-là ne doit pas bouger, sans quoi c'est toute la voie qui
+            // Deux nÅ“uds de plus dans le clip, un dernier bien Ã  l'Ã©cart :
+            // celui-lÃ  ne doit pas bouger, sans quoi c'est toute la voie qui
             // suivrait.
             add_pan_node(&store.connection, 0, start + 2.0).expect("pan node should be added");
             add_pan_node(&store.connection, 0, start + 6.0).expect("pan node should be added");
@@ -4320,7 +4486,7 @@ mod tests {
                 "a pan node outside the clip should stay where it was"
             );
             assert_eq!(moved.pan_nodes.len(), 5);
-            // Le volume voyage par le même chemin : les deux graines posées à
+            // Le volume voyage par le mÃªme chemin : les deux graines posÃ©es Ã
             // l'ajout doivent se retrouver sur la nouvelle voie.
             assert_eq!(
                 moved
@@ -4342,10 +4508,10 @@ mod tests {
         }
     }
 
-    /// Un sinus dessiné pose une douzaine de nœuds par cycle, donc plusieurs
-    /// par quart de temps. Les recaler sur le quart en déplaçant le clip les
-    /// écrasait les uns sur les autres, et la contrainte d'unicité renvoyait
-    /// « UNIQUE constraint failed » sur un geste parfaitement ordinaire.
+    /// Un sinus dessinÃ© pose une douzaine de nÅ“uds par cycle, donc plusieurs
+    /// par quart de temps. Les recaler sur le quart en dÃ©plaÃ§ant le clip les
+    /// Ã©crasait les uns sur les autres, et la contrainte d'unicitÃ© renvoyait
+    /// Â« UNIQUE constraint failed Â» sur un geste parfaitement ordinaire.
     #[test]
     fn a_drawn_shape_travels_with_its_clip_without_collapsing_onto_the_quarter_beat() {
         let suffix = SystemTime::now()
@@ -4378,8 +4544,8 @@ mod tests {
             let clip = placed.clips[0].id;
             let start = placed.clips[0].visual_start_beat;
 
-            // Douze nœuds sur deux temps : six par temps, donc plusieurs dans
-            // le même quart.
+            // Douze nÅ“uds sur deux temps : six par temps, donc plusieurs dans
+            // le mÃªme quart.
             let drawn: Vec<(f64, f64)> = (0..12)
                 .map(|step| {
                     let beat = start + 1.0 + f64::from(step) / 6.0;
@@ -4396,7 +4562,7 @@ mod tests {
                 1.0,
             )
             .expect("the stroke should be written");
-            // Les douze du trait, plus les deux ancres du dépôt, que le trait
+            // Les douze du trait, plus les deux ancres du dÃ©pÃ´t, que le trait
             // ne recouvre pas.
             assert_eq!(painted.pan_nodes.len(), drawn.len() + 2);
             assert_eq!(painted.draw_groups.len(), 1);
@@ -4447,8 +4613,8 @@ mod tests {
         }
     }
 
-    /// Le trait libre écrit ce qu'on lui donne, et rien d'autre : il remplace
-    /// sa plage d'un seul coup et laisse en place ce qui est au-delà.
+    /// Le trait libre Ã©crit ce qu'on lui donne, et rien d'autre : il remplace
+    /// sa plage d'un seul coup et laisse en place ce qui est au-delÃ .
     #[test]
     fn a_freehand_filter_stroke_replaces_its_range_and_nothing_else() {
         let suffix = SystemTime::now()
@@ -4522,13 +4688,13 @@ mod tests {
         }
     }
 
-    /// Décuire doit rendre exactement ce que cuire a emporté.
+    /// DÃ©cuire doit rendre exactement ce que cuire a emportÃ©.
     ///
     /// C'est la promesse du bouton : sans elle, `BAKE` est un aller simple, et
-    /// un bouton dont on ne revient pas ne se clique plus. Le test vérifie les
-    /// trois automations à la fois — le volume, le panoramique et le filtre —
-    /// parce que la troisième porte une colonne de plus et qu'une boucle
-    /// écrite pour deux l'oublie sans rien dire.
+    /// un bouton dont on ne revient pas ne se clique plus. Le test vÃ©rifie les
+    /// trois automations Ã  la fois â€” le volume, le panoramique et le filtre â€”
+    /// parce que la troisiÃ¨me porte une colonne de plus et qu'une boucle
+    /// Ã©crite pour deux l'oublie sans rien dire.
     #[test]
     fn a_bake_gives_back_exactly_what_it_took() {
         let suffix = SystemTime::now()
@@ -4596,19 +4762,19 @@ mod tests {
             assert_eq!(spec.plan.clips.len(), 1, "un seul clip est cuit");
             assert!(
                 !spec.plan.limiter_enabled && !spec.plan.compressor_enabled,
-                "le bus général n'entre pas dans un clip"
+                "le bus gÃ©nÃ©ral n'entre pas dans un clip"
             );
             assert!(
                 !spec.plan.clips[0].is_sidechain_key,
                 "le sidechain reste vivant"
             );
-            // Le rapport d'étirement vaut un : le tempo de rendu est celui de
-            // la source, sinon le fichier cuit serait étiré une seconde fois.
+            // Le rapport d'Ã©tirement vaut un : le tempo de rendu est celui de
+            // la source, sinon le fichier cuit serait Ã©tirÃ© une seconde fois.
             assert!((spec.plan.project_bpm - 120.0).abs() < 1e-9);
             let before = super::snapshot(&store.connection).expect("snapshot");
-            // Compté sur l'état réel plutôt qu'écrit en dur : poser un clip
-            // sème déjà des nœuds à ses bornes, et un nombre fixe ne dirait
-            // que la date à laquelle le test a été écrit.
+            // ComptÃ© sur l'Ã©tat rÃ©el plutÃ´t qu'Ã©crit en dur : poser un clip
+            // sÃ¨me dÃ©jÃ  des nÅ“uds Ã  ses bornes, et un nombre fixe ne dirait
+            // que la date Ã  laquelle le test a Ã©tÃ© Ã©crit.
             let in_range =
                 |beat: f64| beat >= spec.removed.from_beat && beat <= spec.removed.to_beat;
             let expected_volume = before
@@ -4635,9 +4801,9 @@ mod tests {
             .expect("the bake should commit");
 
             assert!(after.clips[0].is_baked, "le clip se dit cuit");
-            // La voie est plate sur l'étendue cuite : il ne reste que les deux
-            // ancres de repos, sans quoi ce qui suit le clip hériterait d'une
-            // rampe que personne n'a demandée.
+            // La voie est plate sur l'Ã©tendue cuite : il ne reste que les deux
+            // ancres de repos, sans quoi ce qui suit le clip hÃ©riterait d'une
+            // rampe que personne n'a demandÃ©e.
             let inside: Vec<_> = after
                 .volume_nodes
                 .iter()
@@ -4658,7 +4824,7 @@ mod tests {
                     .volume_nodes
                     .iter()
                     .any(|node| (node.beat - outside).abs() < 1e-9 && node.gain_db == Some(-3.0)),
-                "le nœud hors du clip est resté"
+                "le nÅ“ud hors du clip est restÃ©"
             );
 
             let (restored, removed_file) =
@@ -4700,7 +4866,7 @@ mod tests {
             assert_eq!(
                 key(&restored),
                 key(&before),
-                "l'automation revient exactement comme elle était"
+                "l'automation revient exactement comme elle Ã©tait"
             );
         }
 
@@ -4713,12 +4879,12 @@ mod tests {
         }
     }
 
-    /// Scinder un clip séparé doit donner deux clips séparés.
+    /// Scinder un clip sÃ©parÃ© doit donner deux clips sÃ©parÃ©s.
     ///
-    /// Les deux moitiés viennent de la même source, et le fichier de stem couvre
-    /// déjà leur étendue commune : elles le partagent. Sans cela la moitié
+    /// Les deux moitiÃ©s viennent de la mÃªme source, et le fichier de stem couvre
+    /// dÃ©jÃ  leur Ã©tendue commune : elles le partagent. Sans cela la moitiÃ©
     /// droite retombait sur le morceau complet tout en gardant sa touche
-    /// allumée — l'affichage et le son se contredisaient.
+    /// allumÃ©e â€” l'affichage et le son se contredisaient.
     #[test]
     fn splitting_a_clip_carries_its_stems_to_both_halves() {
         let suffix = SystemTime::now()
@@ -4750,7 +4916,7 @@ mod tests {
                 .expect("clip should be added");
             let clip = placed.clips[0].id;
 
-            // Un stem factice, comme la séparation en poserait un.
+            // Un stem factice, comme la sÃ©paration en poserait un.
             let stem_file = database_path.with_extension("stem.wav");
             fs::write(&stem_file, []).expect("fake stem should be created");
             store
@@ -4770,11 +4936,11 @@ mod tests {
             assert_eq!(after.clips.len(), 2);
 
             for half in &after.clips {
-                assert_eq!(half.stem, "vocals", "les deux moitiés jouent la voix");
-                assert!(half.has_stems, "les deux moitiés ont leur stem");
+                assert_eq!(half.stem, "vocals", "les deux moitiÃ©s jouent la voix");
+                assert!(half.has_stems, "les deux moitiÃ©s ont leur stem");
             }
-            // Et le décalage de source voyage avec, sans quoi la moitié droite
-            // jouerait à côté de sa grille.
+            // Et le dÃ©calage de source voyage avec, sans quoi la moitiÃ© droite
+            // jouerait Ã  cÃ´tÃ© de sa grille.
             let offsets: Vec<i64> = store
                 .connection
                 .prepare("SELECT source_from_ms FROM clip_stems ORDER BY clip_id")
@@ -4783,7 +4949,7 @@ mod tests {
                         .query_map([], |row| row.get::<_, i64>(0))?
                         .collect::<Result<Vec<_>, _>>()
                 })
-                .expect("les décalages devraient se lire");
+                .expect("les dÃ©calages devraient se lire");
             assert_eq!(offsets, vec![1500, 1500]);
 
             let _ = fs::remove_file(&stem_file);
@@ -4799,14 +4965,14 @@ mod tests {
         }
     }
 
-    /// Un Undo ne doit jamais coûter un stem, quel que soit le geste annulé.
+    /// Un Undo ne doit jamais coÃ»ter un stem, quel que soit le geste annulÃ©.
     ///
-    /// Le premier cas trouvé passait par un nœud de panoramique, mais le geste
-    /// n'y était pour rien : `restore_snapshot` remplace **tous** les clips, et
-    /// tout ce qui pend à eux tombe avec. Le test pose donc les trois lignes
+    /// Le premier cas trouvÃ© passait par un nÅ“ud de panoramique, mais le geste
+    /// n'y Ã©tait pour rien : `restore_snapshot` remplace **tous** les clips, et
+    /// tout ce qui pend Ã  eux tombe avec. Le test pose donc les trois lignes
     /// d'automation, annule chacune, et exige que le stem et sa forme d'onde
-    /// soient toujours là — plutôt que de vérifier celle par laquelle le défaut
-    /// s'est manifesté.
+    /// soient toujours lÃ  â€” plutÃ´t que de vÃ©rifier celle par laquelle le dÃ©faut
+    /// s'est manifestÃ©.
     #[test]
     fn undoing_any_automation_leaves_the_stems_untouched() {
         let suffix = SystemTime::now()
@@ -4839,7 +5005,7 @@ mod tests {
                 .expect("clip should be added");
             let clip = placed.clips[0].id;
 
-            // Un stem complet : le fichier, son décalage, et sa forme d'onde.
+            // Un stem complet : le fichier, son dÃ©calage, et sa forme d'onde.
             store
                 .connection
                 .execute(
@@ -4869,12 +5035,12 @@ mod tests {
                     .iter()
                     .find(|candidate| candidate.id == clip)
                     .unwrap_or_else(|| {
-                        panic!("le clip devrait survivre à l'annulation d'un {label}")
+                        panic!("le clip devrait survivre Ã  l'annulation d'un {label}")
                     });
-                assert_eq!(clip_after.stem, "vocals", "après un {label}");
+                assert_eq!(clip_after.stem, "vocals", "aprÃ¨s un {label}");
                 assert!(
                     clip_after.has_stems,
-                    "le stem devrait rester après un {label}"
+                    "le stem devrait rester aprÃ¨s un {label}"
                 );
 
                 let (path, offset, buckets): (String, i64, Option<i64>) = store
@@ -4885,13 +5051,13 @@ mod tests {
                         [clip],
                         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                     )
-                    .unwrap_or_else(|_| panic!("le stem devrait être lisible après un {label}"));
-                assert_eq!(path, stem_file.to_string_lossy(), "après un {label}");
-                assert_eq!(offset, 1500, "le décalage devrait survivre à un {label}");
+                    .unwrap_or_else(|_| panic!("le stem devrait Ãªtre lisible aprÃ¨s un {label}"));
+                assert_eq!(path, stem_file.to_string_lossy(), "aprÃ¨s un {label}");
+                assert_eq!(offset, 1500, "le dÃ©calage devrait survivre Ã  un {label}");
                 assert_eq!(
                     buckets,
                     Some(4),
-                    "la forme d'onde du stem devrait survivre à un {label}"
+                    "la forme d'onde du stem devrait survivre Ã  un {label}"
                 );
             }
         }
@@ -4907,11 +5073,11 @@ mod tests {
         }
     }
 
-    /// La fenêtre d'un clip commence au début du fichier, pré-roll compris.
+    /// La fenÃªtre d'un clip commence au dÃ©but du fichier, prÃ©-roll compris.
     ///
-    /// Le cas qui a mordu : un morceau dont le premier temps détecté tombe à
+    /// Le cas qui a mordu : un morceau dont le premier temps dÃ©tectÃ© tombe Ã
     /// 2 min 46. Le clip joue ces deux minutes quarante-six, et un stem qui ne
-    /// les contient pas est muet là où l'on attend du son.
+    /// les contient pas est muet lÃ  oÃ¹ l'on attend du son.
     #[test]
     fn a_clip_window_starts_at_the_file_not_at_the_first_beat() {
         let suffix = SystemTime::now()
@@ -4946,14 +5112,14 @@ mod tests {
                 super::clip_source_window_ms(clip).expect("the window should be known");
             assert!(
                 from.abs() < 1.0,
-                "un clip non rogné commence au début du fichier, pas à {from} ms"
+                "un clip non rognÃ© commence au dÃ©but du fichier, pas Ã  {from} ms"
             );
             assert!(
                 to > 298_000.0,
-                "la fenêtre doit couvrir tout le morceau : {to} ms"
+                "la fenÃªtre doit couvrir tout le morceau : {to} ms"
             );
-            // Et le premier temps tombe bien au milieu de cette fenêtre, ce qui
-            // est tout l'intérêt du cas.
+            // Et le premier temps tombe bien au milieu de cette fenÃªtre, ce qui
+            // est tout l'intÃ©rÃªt du cas.
             assert!(from < 165_689.0 && 165_689.0 < to);
         }
 

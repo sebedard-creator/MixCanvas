@@ -185,6 +185,48 @@ Un portable ne se construit jamais avec `cargo build` seul : Rust y produit corr
 
 **Le GPU a ensuite été mis hors de cause par la mesure.** Le relevé du 2026-07-31, inspecteur ouvert sur la machine de développement, donne 535 contre 541 ms de rendu par seconde entre `--gpu-safe` et `--gpu` : moins de deux pour cent d'écart. Le moteur n'était pas le problème, et remettre l'accélération n'aurait rien gagné. Le flash observé le 2026-07-29 était réel, mais il ne représentait pas le coût, seulement un artefact visible; la charge venait d'ailleurs, et la section du 2026-08-02 dit d'où.
 
+## Le tempo change sur les temps — 2026-08-03
+
+La rampe entre deux cibles de BPM était **continue** : `bpm_at_beat` renvoyait
+une interpolation linéaire évaluée à n'importe quel endroit, donc le tempo
+différait d'un échantillon au suivant. C'était juste au sens mathématique, et
+faux au sens musical.
+
+**Ce que ça produisait.** Le ratio d'étirement de chaque clip bougeait en
+permanence. Sur un seul morceau, on entendait la vitesse glisser — un
+accelerando que la musique enregistrée ne fait jamais. Sur deux clips
+superposés, chacun était étiré par un ratio différent et mouvant : leurs
+transitoires dérivaient l'une contre l'autre au lieu de rester verrouillées,
+ce qui est exactement le contraire de ce qu'on cherche en mixant.
+
+**Le principe qui corrige.** Un changement de tempo au milieu d'un temps est à
+nu. Un changement à la **frontière** d'un temps est masqué par la transitoire
+qui s'y trouve. Le tempo est donc désormais constant à l'intérieur d'un temps et
+ne change qu'à son bord : la rampe est échantillonnée au début de chaque temps
+entier et tient jusqu'au suivant.
+
+Une ancre posée sur un temps entier est honorée exactement. Une ancre posée
+entre deux temps voit son changement prendre effet à la frontière suivante — ce
+qui est le comportement voulu, et non une approximation subie.
+
+**Ce que ça coûte en calcul, et pourquoi une table.** Un temps dure exactement
+`60 / bpm`, mais ce BPM change d'un temps à l'autre le long d'une rampe : la
+somme des durées n'a pas de forme close, contrairement à l'intégrale
+logarithmique qu'elle remplace. Elle est donc accumulée **une fois par édition**
+dans `beat_seconds`, et relue par dichotomie.
+
+Ce détail n'est pas un raffinement. `beat_at_seconds` est appelée depuis
+`source_position_at_timeline_frame`, sur le chemin audio, une fois par grain
+WSOLA — quelques centaines de fois par seconde et par clip. Une boucle sur les
+trente mille temps d'un long mix y aurait coûté ce que la recherche WSOLA a déjà
+coûté une fois cette semaine : une régression audible, trouvée après coup.
+
+**Les trois fonctions doivent changer ensemble.** `bpm_at_beat`,
+`seconds_at_beat` et `beat_at_seconds` décrivent un seul modèle. Quantifier la
+première en laissant les autres intégrer une rampe continue ferait diverger la
+cadence réellement jouée de la position calculée — une panne silencieuse, de la
+même famille que les deux cartes de tempo divergentes du handoff.
+
 ## Ce que coûte une image — mesures du 2026-07-31 au 2026-08-02
 
 Trois jours de relevés sur la machine de développement, inspecteur ouvert,
@@ -324,7 +366,7 @@ L'application demeure organisée en deux moitiés :
 - React 19, TypeScript 7 et Vite 8 pour l'interface;
 - Tauri 2 et Rust 2024 pour la persistance, l'analyse, le transport et tout le
   chemin audio;
-- SQLite embarqué, en schéma **26**, pour la session courante;
+- SQLite embarqué, en schéma **27**, pour la session courante;
 - JSON versionné, au format `mixcanvas-project` version **1**, pour les fichiers
   `.mixcanvas`;
 - cinquante-trois commandes Tauri enregistrées comme frontière IPC.
@@ -657,7 +699,7 @@ Le quatorzième flux vertical remplace le BPM maître constant par une unique ca
 1. le BPM saisi ou produit par Tap Tempo crée le point de départ virtuel à `beat = 0`;
 2. chaque clip analysé crée automatiquement une cible à son ancre turquoise, égale à son BPM source effectif;
 3. les points sont triés par position musicale; si plusieurs clips partagent exactement une ancre, le clip ajouté le plus récemment devient l'autorité à cet endroit;
-4. le BPM est interpolé linéairement dans l'espace des beats entre deux cibles, puis demeure constant après la dernière;
+4. le BPM progresse vers la cible suivante par **paliers d'un temps** — la rampe est échantillonnée au début de chaque temps entier et tient jusqu'au suivant —, puis demeure constant après la dernière cible;
 5. la conversion beat vers secondes intègre exactement `60 / BPM(beat)`; sa fonction inverse retrouve le beat depuis le temps audio avec l'inverse exponentielle du même segment;
 6. le transport, le Seek, le playhead et les trois pistes utilisent cette même paire de conversions, ce qui empêche des horloges indépendantes de diverger;
 7. le moteur de time-stretch recalcule la position source cible à chaque hop depuis la carte de tempo, puis le WSOLA aligne le raccord sur la waveform locale tout en convergeant vers cette autorité temporelle;
@@ -763,7 +805,7 @@ Les clics droits Volume sont résolus au niveau du conteneur des trois paires de
 
 Le moteur applique le filtre après le time-stretch, avant l'automation de volume et avant la sommation master. Ce jalon utilise un biquad Butterworth à Q fixe (`0,707`) : la valeur positive pilote un passe-haut de 50 Hz à 12 kHz, la valeur négative un passe-bas de 18 kHz à 90 Hz. Ces bornes évitent des extrêmes peu musicaux. Un mix sec/filtré maintient le bypass exact; un gain de compensation progressif est appliqué ensuite pour limiter la sensation de perte de niveau : 0 à +4,5 dB en passe-haut et 0 à +6 dB en passe-bas. La rampe est linéaire en dB, donc proche d'une progression régulière de niveau perçu. La valeur audio est lissée sur 8 ms pour éviter un pop lors d'une automation abrupte ou d'un passage de LP à HP. La tension du node de départ d'un segment est persistante et s'édite avec `Shift + molette` sur ce segment. React échantonne la courbe de puissance et Rust applique exactement la même fonction : `progress ^ (2 ^ (tension × 2))`. La courbe dessinée est donc celle entendue, sans segments droits d'automation.
 
-La courbe globale demeure, pour ce jalon, linéaire en BPM dans l'espace des beats. Elle n'est pas linéaire en secondes : une rampe ascendante parcourt davantage de beats par seconde à mesure que son BPM augmente. Cette définition correspond à l'axe musical de la timeline et ses intégrales sont exactes. Une éventuelle option « linéaire en temps écoulé » devra modifier ensemble `bpm_at_beat`, `seconds_at_beat`, leur inverse et le tracé React; elle ne doit pas être simulée dans le seul time-stretcher.
+La courbe globale reste définie en BPM dans l'espace des beats — l'axe musical de la timeline —, mais elle est **échantillonnée par temps** et non évaluée en continu : voir « Le tempo change sur les temps » plus bas. Toute autre définition de la courbe devra modifier ensemble `bpm_at_beat`, `seconds_at_beat`, leur inverse et le tracé React; elle ne doit jamais être simulée dans le seul time-stretcher.
 
 Le WSOLA réduit fortement les artéfacts du prototype pour les écarts de tempo usuels d'un mix DJ. L'architecture conserve néanmoins le moteur derrière sa frontière interne : si les essais musicaux montrent que les ratios extrêmes ou les sources harmoniques soutenues exigent un phase-vocoder à verrouillage de phase et gestion des transitoires, ce remplacement ne devra toucher ni la carte de tempo, ni le projet SQLite, ni l'interface.
 
@@ -958,7 +1000,7 @@ Pour chaque portion audio traitée, le moteur doit :
 
 Play, Pause et le repositionnement de la tête de lecture doivent tous reprendre à une position déterministe et alignée à l'échantillon près. La fluidité visuelle de la tête de lecture est secondaire à la stabilité de l'audio.
 
-Dans le jalon 0.0.14, `TempoMap` est l'autorité commune. Une rampe linéaire du BPM dans l'espace musical n'est pas linéaire en secondes : l'intégrale logarithmique fournit donc le temps exact d'un beat, et son inverse exponentielle fournit le beat exact d'un temps audio. La source Rodio demande toujours les échantillons en ordre; chaque clip actif met en cache les débuts sources de deux grains, effectue l'interpolation PCM et leur fondu croisé, puis les trois pistes sont additionnées en `f32`. La protection de niveau et la sortie restent elles aussi en float32. Aucun buffer du mix complet, resampling varispeed ou changement de hauteur n'est produit.
+Dans le jalon 0.0.14, `TempoMap` est l'autorité commune. Elle a d'abord intégré une rampe **continue** : le BPM variant linéairement dans l'espace musical, le temps exact d'un beat venait d'une intégrale logarithmique et son inverse d'une exponentielle. Ces deux formes closes ont disparu avec la quantification par temps — un temps durant exactement `60 / bpm`, la somme s'accumule une fois pour toutes dans une table et se relit par dichotomie. Voir « Le tempo change sur les temps ». La source Rodio demande toujours les échantillons en ordre; chaque clip actif met en cache les débuts sources de deux grains, effectue l'interpolation PCM et leur fondu croisé, puis les trois pistes sont additionnées en `f32`. La protection de niveau et la sortie restent elles aussi en float32. Aucun buffer du mix complet, resampling varispeed ou changement de hauteur n'est produit.
 
 ### 8. Effets et routage
 

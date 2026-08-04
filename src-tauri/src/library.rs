@@ -104,6 +104,20 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
                          CHECK (is_sidechain_key IN (0, 1)),
         stem             TEXT NOT NULL DEFAULT 'full'
                          CHECK (stem IN ('full', 'vocals', 'instrumental')),
+        -- Le tempo que la courbe globale doit viser à l'ancre de ce clip.
+        --
+        -- `NULL` veut dire « le BPM du morceau », ce qui est le cas ordinaire :
+        -- poser un clip cale le projet sur sa vitesse native et il joue à un
+        -- pour un. Une valeur ici est une décision de **mix** — « je veux que ce
+        -- clip aille à tant, ici » — et le clip est alors étiré vers elle.
+        --
+        -- Séparé du BPM du morceau parce que ce sont deux idées différentes :
+        -- corriger une analyse fausse appartient à la bibliothèque, décider
+        -- d'une vitesse appartient au clip. Les avoir confondues faisait qu'un
+        -- réglage de tempo réécrivait l'analyse du morceau et déplaçait la
+        -- courbe sous tous les autres clips — le beatmatching était perdu, et
+        -- la correction d'analyse avec.
+        tempo_target_bpm REAL,
         created_at       INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
@@ -196,14 +210,14 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
         created_at     INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
-    PRAGMA user_version = 26;
+    PRAGMA user_version = 27;
 "#;
 
 /// Schema version described by `CURRENT_DATABASE_SCHEMA`. The constant and the
 /// `PRAGMA user_version` above must move together: the schema is also replayed
 /// after a migration, so a stale value there would push the database back down
 /// and replay the last migrations on every start.
-const LATEST_SCHEMA_VERSION: i64 = 26;
+const LATEST_SCHEMA_VERSION: i64 = 27;
 
 const MIGRATE_VERSION_1_TO_2: &str = r#"
     BEGIN IMMEDIATE;
@@ -1553,6 +1567,15 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
                     )
                     .map_err(database_write_error)?;
                 version = 26;
+            }
+            26 => {
+                // Nullable, donc les projets existants gardent exactement leur
+                // comportement : sans valeur, la cible reste le BPM du morceau.
+                ensure_column(connection, "timeline_clips", "tempo_target_bpm", "REAL")?;
+                connection
+                    .execute_batch("PRAGMA user_version = 27;")
+                    .map_err(database_write_error)?;
+                version = 27;
             }
             _ => {
                 let (target_version, migration) = match version {
