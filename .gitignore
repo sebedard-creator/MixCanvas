@@ -53,6 +53,10 @@ scripts/export-logs/
 prereleasechangelog.md
 handoff.md
 
+# Le texte d'une release, écrit pour être collé dans GitHub puis oublié.
+# Le journal versionné, lui, garde la trace de ce que chaque version apporte.
+RELEASE-NOTES-*.md
+
 # Traces de l'inspecteur Chromium. Elles ont porté toute la campagne de
 # performances de fin juillet et sont précieuses le temps d'une comparaison —
 # mais elles pèsent une centaine de mégaoctets pour une poignée de secondes,
