@@ -1,194 +1,237 @@
 # MixCanvas
 
-MixCanvas est un éditeur de mix DJ desktop, gratuit et open source, centré sur une timeline musicale simple. Le projet fournit maintenant une chaîne de travail complète allant de la bibliothèque et de l'analyse BPM jusqu'à l'édition multipiste, la sauvegarde de projet, le bounce et la séparation voix/instrumental, avec un moteur audio Rust en float32.
+**A DJ mix editor for people who would rather build a set than perform one.**
 
-## État actuel
+MixCanvas is free, open source software for Windows. You drop tracks onto a
+musical timeline, line them up, draw what they do, and hear the result straight
+away. Nothing is rendered in advance: the audio engine, written in Rust, works
+it all out during playback.
 
-Les manifestes portent `0.0.17`, mais le développement a dépassé cette numérotation : voir « État d'implémentation » dans `architecture.md`. Fonctions disponibles :
+Decks reward the right gesture at the right moment. MixCanvas offers the
+opposite — you can go back to a transition, take it again, compare, until it is
+the one you meant.
 
-- application desktop Tauri 2;
-- interface React et TypeScript;
-- ajout de plusieurs MP3 ou exploration récursive d'un dossier;
-- bibliothèque SQLite persistante sans serveur externe;
-- détection des fichiers déplacés ou manquants;
-- retrait non destructif d'une entrée de la bibliothèque;
-- analyse BPM automatique en arrière-plan dès l'importation, guidée par un modèle
-  beat/downbeat puis ajustée à une grille DJ rigide sur le morceau complet;
-- optimisation robuste de la période, de la phase, de la beatgrid uniforme et
-  du premier temps des mesures 4/4, sans dérive après un beat manquant;
-- indice de confiance et état d'analyse par morceau;
-- correction manuelle du BPM avec commandes ×2 et ÷2;
-- Tap Tempo stabilisé par la médiane des frappes;
-- commande Snap to beat qui transforme le tap approximatif en grille exacte;
-- définition manuelle du premier temps depuis la position de la Preview;
-- restauration de l'analyse automatique originale;
-- trois pistes stéréo sur une timeline zoomable en beats et en mesures;
-- glisser-déposer depuis la bibliothèque vers la piste choisie, avec surbrillance de la cible;
-- ajout par clic sur les pistes A, B et C en rotation, en retenant la première réellement libre au playhead;
-- déplacement de clips avec snapping du premier temps sur les mesures de quatre beats;
-- déplacement vertical ou horizontal des clips, y compris pendant Play, avec sauvegarde et actualisation audio immédiates;
-- colonne fixe de boutons Mute et Solo persistants, indépendante du zoom et utilisable pendant la lecture;
-- conservation visuelle du pré-roll avant le premier beat;
-- carte de tempo globale : BPM de départ modifiable par saisie ou Tap Tempo, puis cible automatique à chaque ancre turquoise;
-- accélération ou décélération entre les cibles BPM successives, **par paliers
-  d'un temps** : le tempo tient d'un bout à l'autre d'un temps et ne change qu'à
-  sa frontière, là où la transitoire le masque;
-- persistance SQLite des clips et de leur position musicale;
-- poste de travail plein écran avec timeline centrale, bibliothèque latérale défilable et Preview compacte;
-- zoom continu atomique avec la molette et recentrage sur le playhead après la nouvelle mise en page;
-- zoom extérieur calculé pour rendre le mix complet visible;
-- playhead positionnable par clic et transport Play/Pause piloté par Rust;
-- raccourci Espace pour basculer le transport principal;
-- lecture audible des clips de la timeline;
-- time-stretch maison conservant la tonalité, fondé sur un recouvrement temporel stéréo;
-- adaptation automatique de chaque tempo source au BPM courant de la courbe globale;
-- affichage de la rampe turquoise et du BPM cible de chaque clip dans la règle;
-- mixage des clips superposés en float32 et protection du niveau de sortie;
-- VU-mètre master stéréo analogique au centre de l'interface, alimenté par le vrai signal float32 de sortie;
-- automation de volume indépendante sur les pistes A, B et C, éditable par Volume Nodes de −∞ à +12 dB;
-- automation de panoramique à puissance constante et formes dessinées;
-- limiteur master stéréo-lié commutable par le bouton `LIMIT`, à la place de l'écrêtage brut de la sortie;
-- témoin vintage `OL` mesuré après le limiteur : il ne signale qu'un écrêtage réellement subi;
-- décodage MP3 en continu dans une petite fenêtre PCM, avec lecture, mixage et time-stretch calculés en temps réel;
-- changements de BPM, déplacements, reprises et Seek sans décodage préalable de la chanson complète;
-- waveforms stéréo DAW haute définition à 16 384 colonnes, avec crêtes min/max et corps RMS;
-- pyramide de détail sélectionnée automatiquement selon le zoom du clip;
-- rattrapage en arrière-plan des waveforms pour tous les anciens morceaux de la bibliothèque;
-- exclusion mutuelle entre la Preview et la lecture principale;
-- décodage MP3 avec Symphonia par l'intermédiaire de Rodio;
-- sortie audio native CPAL;
-- indicateur Preview conditionnel avec Play/Pause;
-- barre de Preview cliquable et déplaçable pour avancer ou reculer dans le morceau;
-- affichage de la durée, de la progression et du format source;
-- scission d'un clip à la touche `B`, sur la piste armée au pointeur, en deux sous-clips autonomes;
-- rognage du début ou de la fin d'un clip en saisissant son extrémité, réversible et calé sur le tempo;
-- raccourcis `Shift+S` et `Shift+M` pour le solo et le mute de la piste armée;
-- historique Undo/Redo sur 50 niveaux, `Ctrl+Z` et `Ctrl+Y`;
-- égaliseur trois bandes par clip, réglable en temps réel pendant la lecture;
-- Smart Filter bipolaire par piste, dessiné au pinceau, redimensionnable et supprimable au clic droit;
-- sauvegarde et chargement de projets `.mixcanvas`;
-- bounce WAV stéréo 16 bits / 44,1 kHz avec dither TPDF;
-- Undo/Redo sur 50 niveaux;
-- séparation locale voix/instrumental par Open-Unmix et ONNX Runtime;
-- compresseur de collage master, teinte de console et saturation commutés par le bouton `COMP`;
-- compression sidechain : un clip devient la clé, se tait là où il en recouvre d'autres et y impose son pompage;
-- bouton `CLEAR TIMELINE` qui vide la timeline sans toucher à la bibliothèque;
-- glisser-déposer de MP3 depuis l'explorateur directement dans la bibliothèque;
-- outil contextuel sur les clips : le curseur annonce ce que le clic fera selon
-  l'endroit survolé, et `Delete` retire le clip sous le pointeur;
-- `BAKE` : rendu d'un clip seul avec ses effets, réversible, qui retire son
-  automation et la restitue au dégel;
-- `AUTOPLAY` : un clic dans la timeline lance la lecture, ou ne fait que
-  déplacer le playhead lorsqu'on place des clips à l'oreille;
-- réglage du BPM d'un nœud de tempo par clic droit, et repère `EDITED` sur un
-  BPM corrigé à la main;
-- tri « In Use » de la bibliothèque suivant l'ordre réel dans la timeline;
-- dessin logiciel par défaut, avec les drapeaux `--gpu` et `--gpu-safe` pour
-  activer l'accélération sur une machine qui y gagne (voir ci-dessous).
+**Nothing leaves your machine.** The program makes no network request of any
+kind. Beat detection and vocal separation run locally.
 
-Le moteur ne rend pas la timeline complète et ne décode pas une chanson complète avant Play. Chaque ancre turquoise devient une cible du tempo global égale au BPM source de son clip; le BPM progresse vers cette cible **par paliers d'un temps** et demeure constant après la dernière. Le tempo est donc constant à l'intérieur d'un temps et ne change qu'à sa frontière : un changement au milieu d'un temps s'entend, un changement sur le temps est couvert par la transitoire qui s'y trouve. Chaque clip ouvre son MP3 seulement lorsqu'il devient actif et conserve une fenêtre PCM bornée autour de la position courante. La source audio convertit continuellement la position temporelle en beat de projet, puis en position source. Un moteur WSOLA stéréo-lié recherche une waveform corrélée avant chaque raccord, applique un fondu cosinus et conserve la tonalité sans varispeed; l'interpolation cubique remplace l'ancien rééchantillonnage linéaire. La timeline travaille directement à la fréquence réelle du périphérique audio afin d'éviter une double conversion 44,1↔48 kHz. Le transport, les trois pistes et le playhead utilisent la même conversion beat↔temps. Les pistes A/B/C reçoivent leur automation de volume en dB avant d'être sommées dans le bus stéréo float32; leurs états Mute/Solo agissent par masque atomique sans redécodage. Le bus master traverse ensuite le sidechain, le compresseur de collage, la teinte de console et sa saturation, la mesure, puis le limiteur; la borne physique de 0,98 ne sert plus que de dernier recours, et le témoin `OL` est mesuré après le limiteur afin de ne signaler qu'un écrêtage réellement subi. Un ajout ou un déplacement pendant Play remplace uniquement le plan compact de relations temporelles et reprend au même beat musical, sans rendu ni décodage complet. La limite de sécurité actuelle est de quatre heures et les ratios de time-stretch vont de 0,5× à 2×.
+---
 
-Depuis le jalon 0.0.16, le bus master alimente deux enveloppes de mesure indépendantes avant la borne de sortie. Le témoin `OL` est mesuré séparément, après le limiteur master : il ne s'allume que sur un écrêtage réellement subi, et reste donc éteint tant que le limiteur retient les crêtes. Les barres de LED L/R ont une attaque de type VU et une retombée plus lente; elles observent le signal sans le modifier. Les LED, les boutons mécaniques Play/Pause et le témoin de surcharge poursuivent la direction visuelle « studio vintage » de MixCanvas.
+## The timeline
 
-Après une mise à niveau, les ancres de timeline et le schéma sont migrés automatiquement. Les analyses mises en cache portent désormais une version : MixCanvas réanalyse seul les résultats anciens une seule fois, sans demander « Analyser tout ». Une correction manuelle existante demeure volontairement prioritaire.
+Three stereo tracks, a ruler in bars and beats, continuous zoom on the wheel.
+Tracks come in from the library by dragging, or with a click that takes the
+first lane actually free at the playhead.
 
-Tout ce que MixCanvas écrit vit dans un seul dossier posé **à côté de l'exécutable**, nommé `MixCanvas Files` : la base de la bibliothèque, les ressources extraites de l'exécutable, et les fichiers WAV des stems séparés et des clips cuits. On copie le programme et ce dossier, on a déménagé son installation entière; on efface le dossier, on repart d'une installation neuve. Rien n'est caché dans `%APPDATA%`. Une bibliothèque héritée d'une version antérieure est adoptée au premier lancement, sans réanalyse.
+A clip moves horizontally to change when it plays and vertically to change
+lane — **including during playback**, without a gap. Its first downbeat snaps to
+four-beat bars on its own, and the pre-roll, whatever comes before the track's
+first beat, stays visible rather than clipped.
 
-Chaque projet reçoit son propre sous-dossier, nommé d'après lui; une session non enregistrée vit dans `Scratch` jusqu'à ce qu'on la nomme, et ses médias suivent. À la fermeture, les fichiers auxquels plus rien ne renvoie sont supprimés — un fichier encore référencé n'est jamais touché, que la session courante s'en serve ou non.
+The cursor tells you what a click will do from where you hover: move in the
+middle, trim near an edge. `B` splits a clip into two independent halves,
+`Delete` removes the one under the pointer, and right-clicking its name opens
+its menu.
 
-Seule exception : un exécutable posé là où il n'a pas le droit d'écrire — `Program Files`, un partage en lecture seule — se replie sur le dossier de données applicatives, parce que refuser de démarrer serait pire.
+Removing a clip **takes with it the automation that only existed for it** — but
+not a neighbour's, where one shares the same span.
 
-La base contient l'index et les métadonnées; les MP3 de la bibliothèque restent à leur emplacement d'origine.
+## Tempo
 
-## Mode de rendu de l'interface
+Every clip puts a **tempo target** on the global curve — the turquoise node —
+which you can drag along the ruler. Between two targets the tempo moves **in
+whole-beat steps**: it holds for the length of a beat and only changes at the
+boundary, where the transient covers it. A tempo change mid-beat is audible; on
+the beat, it is not.
 
-MixCanvas dessine son interface **en logiciel par défaut**, et c'est un choix
-délibéré plutôt qu'un repli. Sur les machines profilées, activer l'accélération
-matérielle n'a produit aucune différence mesurable sur le comportement de la
-timeline, tandis que certains pilotes font déchirer le compositeur matériel de
-WebView2 pendant un zoom. Entre aucun gain et un artefact possible, la justesse
-l'emporte.
+Right-clicking a node sets **the speed this clip plays at here**. That is not
+the track's BPM: the track keeps whatever the analysis says, and the clip is
+stretched towards the target instead. *Follow track* gives it its native speed
+back.
 
-Rien de l'audio n'en dépend : lecture, analyse, mixage et bounce sont du Rust
-natif et ne touchent jamais au moteur de rendu du navigateur.
+Stretching preserves pitch — no varispeed. A stereo-linked WSOLA engine looks
+for a correlated waveform before each splice and applies a cosine crossfade,
+within a range of 0.5× to 2×.
 
-Le mode se choisit **au lancement**, sans recompilation. Le dernier drapeau
-reconnu de la ligne l'emporte.
+## Finding the beat
 
-| Drapeau | Effet |
+On import, every track goes through **Beat This!**, a neural beat tracker, run
+locally. Its events are then fitted to a rigid grid — a DJ needs a constant
+clock, not a list of musical events — and the first downbeat is placed where the
+kick actually enters, so an ambient intro does not push the grid off.
+
+When the model cannot run, a correlation-based analyser takes over. Either way
+the result is only a starting point: the **Beatgrid Editor** lets you tap the
+tempo, nudge it, halve or double it, set the first downbeat from what you hear —
+and hand everything back to the automatic analysis.
+
+A manual correction **survives** re-analysis. It represents your work, and the
+program never overwrites it on its own.
+
+## Automation
+
+Three lanes per track, drawn straight onto the timeline.
+
+**Volume**, from −∞ to +12 dB. **Pan**, at constant power. **Filter**, bipolar:
+upward is a high-pass, downward a low-pass, the middle is bypass.
+
+You can place nodes one at a time, or draw a whole shape: `V` and `P` pick the
+lane, `S` the shape — step, sine, triangle — and `D` its period. The filter band
+takes the bubble brush, a symmetrical triangle with `Shift`, and freehand with
+`Ctrl`.
+
+Every curve can be resized by its edges and deleted with a right click.
+
+## Effects
+
+A **three-band EQ per clip**, adjustable while it plays.
+
+On the master bus, in console order: **sidechain compression** — one clip
+becomes the key, goes quiet where it overlaps others and pumps them instead — a
+**glue compressor**, **console colour** with its saturation, metering, then a
+stereo-linked **limiter**. The `OL` lamp is measured *after* the limiter: it
+only lights on clipping you actually suffered.
+
+The analogue VU meter in the middle reads the real float32 output.
+
+## Vocals and instrumental
+
+**Open-Unmix** splits a clip into vocals and instrumental, locally. Each clip
+then chooses what it plays: the whole track, vocals alone, instrumental alone.
+Only the window the clip actually uses is separated, so you do not wait on a
+passage you will never hear.
+
+## Baking a clip
+
+`BAKE` renders a clip **on its own, with its effects**, into a file. The clip
+then plays that file instead of recomputing its chain on every pass, which
+lightens a busy mix.
+
+It is **reversible**: the automation removed at bake time is kept exactly as it
+was and handed back when you thaw. A button with no way back stops being
+pressed.
+
+## Playing, saving, exporting
+
+`Space` starts and stops. A click in the timeline places the playhead, and
+`AUTOPLAY` decides whether that click also starts playback — handy when you are
+placing clips by ear.
+
+Nothing is decoded in advance: each clip opens its file when it becomes active
+and keeps only a window around the current position. Changing a tempo, moving a
+clip or jumping through the mix therefore needs no render.
+
+`SAVE` and `LOAD` write a portable `.mixcanvas` project. **`BOUNCE MIX`**
+exports the whole mix as 16-bit / 44.1 kHz stereo WAV, with TPDF dither.
+
+Undo history holds fifty levels — `Ctrl+Z`, `Ctrl+Y`.
+
+---
+
+## Where your files live
+
+**Everything MixCanvas writes lives in one folder beside the program**, called
+`MixCanvas Files`: the library database, the resources unpacked from the
+executable, and the WAV files for separated stems and baked clips.
+
+Copy the program and that folder and you have moved your whole setup. Delete the
+folder and you are back to a fresh install. Nothing is hidden away in
+`%APPDATA%`.
+
+Each project gets a folder of its own; an unsaved session lives in `Scratch`
+until you name it, and its media follow. On exit, files that nothing refers to
+any more are deleted — a file still referenced is never touched.
+
+Your MP3s stay where they are. The library keeps only their path and metadata,
+and can tell you which ones have gone missing or moved.
+
+*One exception: a program placed somewhere it may not write — `Program Files`, a
+read-only share — falls back to the application data folder, because refusing to
+start would be worse.*
+
+## How the interface draws
+
+MixCanvas draws its interface **in software**, deliberately. On the machines we
+profiled, hardware acceleration made no measurable difference, while some
+graphics drivers make WebView2's compositor tear during a zoom. Given a choice
+between no gain and a possible artefact, correctness wins.
+
+Nothing about your audio depends on this. Playback, analysis, mixing and
+bouncing are native Rust and never touch the browser's renderer.
+
+The mode is chosen at launch, with no rebuild — the last flag wins:
+
+| Flag | Effect |
 |---|---|
-| *(aucun)* ou `--no-gpu` | tout en logiciel — le défaut |
-| `--gpu-safe` | la carte dessine, la composition reste logicielle |
-| `--gpu` | accélération matérielle complète |
+| *(none)* or `--no-gpu` | everything in software — the default |
+| `--gpu-safe` | the card draws, compositing stays in software |
+| `--gpu` | full hardware acceleration |
 
 ```powershell
 .\MixCanvas.exe --gpu-safe
 ```
 
-Le dossier `portable` contient un raccourci `.cmd` par mode, qui prend
-automatiquement le build le plus récent posé à côté de lui. `--gpu-safe` est
-l'entre-deux à essayer en premier : il conserve le dessin matériel tout en
-évitant la famille d'artefacts qui vient de la composition.
+The `portable` folder ships a `.cmd` shortcut for each mode, which picks up the
+most recent build sitting beside it.
 
-Si une machine se révèle gagnante avec l'accélération, le drapeau suffit — mais
-il faut le vérifier par une mesure, sur deux enregistrements de gestes
-semblables, et non au ressenti.
+---
 
-## Prérequis de développement Windows
+## Building from source
 
-- Node.js avec Corepack;
-- Rustup avec la toolchain indiquée dans `rust-toolchain.toml`;
-- Microsoft C++ Build Tools avec le workload « Desktop development with C++ »;
-- Microsoft Edge WebView2, déjà présent sur les versions modernes de Windows.
-
-Les utilisateurs d'une version compilée n'auront pas besoin de ces outils.
-
-## Installation des dépendances
+You need Node.js with Corepack, the Rust toolchain named in
+`rust-toolchain.toml`, the Microsoft C++ Build Tools with the "Desktop
+development with C++" workload, and WebView2 — already present on recent
+Windows.
 
 ```powershell
-.\install.cmd
+.\install.cmd    # dependencies, kept inside the repo: nothing installs globally
+.\dev.cmd        # run in development
+.\check.cmd      # tsc, tests, cargo test, fmt, clippy
 ```
 
-Le script utilise Corepack, fourni avec Node.js, pour télécharger la version verrouillée de pnpm dans `.corepack`. Le store pnpm est configuré dans `.pnpm-store` par `pnpm-workspace.yaml`, et les crates Cargo dans `.cargo-home`. Ces dossiers, `node_modules` et les sorties de compilation restent locaux et sont exclus de Git. Les versions reproductibles sont conservées dans `pnpm-lock.yaml` et `Cargo.lock`.
+`install.cmd` fetches pnpm into `.corepack` and keeps the caches inside the
+repository. Nothing touches your `PATH`. Both beat-tracking models are part of
+the repository, so a fresh clone can analyse without any download.
 
-Il n'est pas nécessaire d'installer pnpm globalement ni de modifier le `PATH` Windows.
-Les deux modèles de beat/downbeat nécessaires à l'analyse font partie du dépôt
-et du paquet; aucun environnement Python, service externe ou téléchargement au
-premier lancement n'est requis.
+**Close MixCanvas before `check.cmd`** — the running executable locks the ONNX
+Runtime DLL it embeds.
 
-## Lancement
+The single-file portable build is made like this:
 
 ```powershell
-.\dev.cmd
+npx tauri build --no-bundle -f embed-resources
 ```
 
-## Vérifications
+`embed-resources` bundles the models and ONNX Runtime into the executable.
+Without it the binary carries neither the frontend nor the models.
 
-```powershell
-.\check.cmd
-```
+Verified for 1.0.0: TypeScript, 230 frontend tests across 27 files, 174 Rust
+tests, formatting and Clippy — `check.cmd` exits 0.
 
-État de référence vérifié le 2026-08-03 : TypeScript, **230** tests frontend
-répartis sur 27 fichiers et 168 tests Rust réussis; quatre tests d'intégration
-ou de mesure longue restent ignorés explicitement. La production frontend Vite
-se construit également. `cargo fmt --check` signale toutefois un formatage Rust
-préexistant à appliquer dans `src-tauri/src/timeline.rs`; Clippy n'est pas
-exécuté par `check.cmd` tant que cette étape échoue. Les détails et les limites
-connues sont consignés dans `handoff.md`.
+## Under the hood
 
-L'application doit être fermée avant de lancer la vérification : l'exécutable
-verrouille la DLL ONNX Runtime qu'il embarque, et l'étape de compilation ne peut
-alors pas la réécrire.
+- **Tauri 2**, React and TypeScript interface, Rust engine.
+- **Symphonia** through **Rodio** for decoding, **CPAL** for native output.
+- Embedded **SQLite**, no server: library, timeline and automation.
+- **RTen** runs Beat This!, **ONNX Runtime** runs Open-Unmix.
+- The mix is computed in `f32` throughout, at the device's real sample rate, to
+  avoid a double 44.1 ↔ 48 kHz conversion.
 
-## Documentation du projet
-
-- `architecture.md` décrit la mécanique interne et les décisions techniques;
-- `changelog.md` consigne quotidiennement les modifications;
-- `handoff.md` résume l'état vérifié du dépôt à la fin de la dernière session;
-- `THIRD_PARTY_NOTICES.md` conserve les licences et les empreintes SHA-256 des
-  modèles et des binaires distribués avec le programme;
-- `LICENSE` contient la GNU Affero General Public License version 3.
+`architecture.md` explains the *why* behind each technical decision. It is
+written in French, as are the source comments.
 
 ## Licence
 
-MixCanvas est distribué sous la licence [GNU AGPL version 3 uniquement](LICENSE), identifiée par l'expression SPDX `AGPL-3.0-only`.
+MixCanvas is released under the [GNU AGPL version 3 only](LICENSE), identified
+by the SPDX expression `AGPL-3.0-only`.
+
+You may use, study, share and modify it. If you distribute a modified version —
+including over a network — you must offer its source code under the same
+licence.
+
+Forks are welcome. The licence already asks you to keep the copyright notices
+and to state what you changed. Beyond that, and as a courtesy rather than a
+condition, naming MixCanvas and linking back to the original project would be
+genuinely appreciated.
+
+`THIRD_PARTY_NOTICES.md` holds the licences and SHA-256 digests of the models
+and binaries shipped with the program.

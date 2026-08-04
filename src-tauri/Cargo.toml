@@ -1,6 +1,6 @@
 [package]
 name = "mixcanvas"
-version = "0.0.17"
+version = "1.0.0"
 description = "A focused, timeline-based DJ mix editor"
 authors = ["MixCanvas contributors"]
 edition = "2024"

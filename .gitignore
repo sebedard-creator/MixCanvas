@@ -43,6 +43,16 @@ src-tauri/resources/models/*
 # Journaux d'export ONNX : volumineux, propres à une machine.
 scripts/export-logs/
 
+# Les deux documents de travail d'avant la 1.0.
+#
+# Le journal consigne des décisions au jour le jour; le handoff décrit l'état
+# du dépôt pour qui reprend le contexte. Les deux sont précieux à qui développe
+# et sans intérêt à qui clone le programme — et le handoff dit franchement ce
+# qui reste ouvert, ce qui n'a pas sa place dans une vitrine publique. Ils
+# restent sur la machine de l'auteur.
+prereleasechangelog.md
+handoff.md
+
 # Traces de l'inspecteur Chromium. Elles ont porté toute la campagne de
 # performances de fin juillet et sont précieuses le temps d'une comparaison —
 # mais elles pèsent une centaine de mégaoctets pour une poignée de secondes,

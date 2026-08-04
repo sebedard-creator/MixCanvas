@@ -1611,10 +1611,175 @@ pub fn set_clip_tempo_target(
     snapshot(connection)
 }
 
-pub fn remove_clip(connection: &Connection, clip_id: i64) -> Result<TimelineSnapshot, String> {
-    connection
+/// Les morceaux de `span` que rien dans `covers` ne recouvre.
+///
+/// Une voie accepte des clips qui se chevauchent dès qu'on lui en nomme une :
+/// la plage d'un clip retiré peut donc appartenir aussi à son voisin, et son
+/// automation avec. On n'efface que ce qui n'était qu'à lui.
+fn uncovered_intervals(span: (f64, f64), covers: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut open = vec![span];
+    for &(cover_start, cover_end) in covers {
+        let mut next = Vec::with_capacity(open.len() + 1);
+        for (start, end) in open {
+            // À côté : le morceau survit entier.
+            if cover_end <= start || cover_start >= end {
+                next.push((start, end));
+                continue;
+            }
+            if cover_start > start {
+                next.push((start, cover_start));
+            }
+            if cover_end < end {
+                next.push((cover_end, end));
+            }
+        }
+        open = next;
+    }
+    // Un reste large de rien n'a aucun nœud à contenir.
+    open.retain(|(start, end)| end - start > 1.0e-9);
+    open
+}
+
+/// La voie et la portée visible de chaque clip, pour une voie donnée.
+fn lane_clip_spans(connection: &Connection, lane: i64) -> Result<Vec<(i64, f64, f64)>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT clips.id, tracks.duration_ms,
+                    COALESCE(tracks.manual_bpm, tracks.bpm),
+                    COALESCE(tracks.manual_first_beat_ms, tracks.first_beat_ms),
+                    clips.anchor_beat, clips.trim_start_beats, clips.trim_end_beats
+             FROM timeline_clips AS clips
+             JOIN library_tracks AS tracks ON tracks.id = clips.library_track_id
+             WHERE clips.lane = ?1",
+        )
+        .map_err(database_read_error)?;
+    let spans = statement
+        .query_map([lane], |row| {
+            let geometry = clip_geometry(
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<f64>>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, f64>(5)?,
+                row.get::<_, f64>(6)?,
+            );
+            Ok((
+                row.get::<_, i64>(0)?,
+                geometry.visual_start_beat,
+                geometry.visual_end_beat,
+            ))
+        })
+        .map_err(database_read_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(database_read_error)?;
+    Ok(spans)
+}
+
+/// Retire un clip **et l'automation qui n'existait que pour lui**.
+///
+/// L'automation vit sur la voie, pas sur le clip : elle lui survivait donc, et
+/// une courbe de filtre restait à travailler un endroit où plus rien ne joue.
+/// Elle part avec lui — mais seulement là où aucun autre clip de la voie ne
+/// couvre la même plage, faute de quoi retirer un clip détruirait le travail
+/// fait pour son voisin.
+///
+/// Les nœuds de filtre demandent un soin de plus. Les effacer en travers d'une
+/// bulle laisserait ses bords survivre de part et d'autre, et la courbe
+/// interpolerait droit à travers le vide : le filtre resterait engagé là où on
+/// vient justement de tout retirer. Un nœud de bypass est donc reposé à chaque
+/// bord de ce qu'on efface, dès qu'il reste quelque chose à border.
+pub fn remove_clip(connection: &mut Connection, clip_id: i64) -> Result<TimelineSnapshot, String> {
+    let Some((lane, span_start, span_end)) = connection
+        .query_row(
+            "SELECT clips.lane, tracks.duration_ms,
+                    COALESCE(tracks.manual_bpm, tracks.bpm),
+                    COALESCE(tracks.manual_first_beat_ms, tracks.first_beat_ms),
+                    clips.anchor_beat, clips.trim_start_beats, clips.trim_end_beats
+             FROM timeline_clips AS clips
+             JOIN library_tracks AS tracks ON tracks.id = clips.library_track_id
+             WHERE clips.id = ?1",
+            [clip_id],
+            |row| {
+                let geometry = clip_geometry(
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<f64>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, f64>(5)?,
+                    row.get::<_, f64>(6)?,
+                );
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    geometry.visual_start_beat,
+                    geometry.visual_end_beat,
+                ))
+            },
+        )
+        .optional()
+        .map_err(database_read_error)?
+    else {
+        // Déjà parti : rien à faire, et surtout rien à effacer au hasard.
+        return snapshot(connection);
+    };
+
+    let transaction = connection.transaction().map_err(database_write_error)?;
+    transaction
         .execute("DELETE FROM timeline_clips WHERE id = ?1", [clip_id])
         .map_err(database_write_error)?;
+
+    let survivors: Vec<(f64, f64)> = lane_clip_spans(&transaction, lane)?
+        .into_iter()
+        .map(|(_, start, end)| (start, end))
+        .collect();
+
+    for (start, end) in uncovered_intervals((span_start, span_end), &survivors) {
+        for table in [
+            "timeline_volume_nodes",
+            "timeline_pan_nodes",
+            "timeline_filter_nodes",
+        ] {
+            transaction
+                .execute(
+                    &format!("DELETE FROM {table} WHERE lane = ?1 AND beat >= ?2 AND beat <= ?3"),
+                    params![lane, start, end],
+                )
+                .map_err(database_write_error)?;
+        }
+
+        // Un geste Draw dont il ne reste plus aucun point n'a plus de courbe à
+        // représenter, et encombrerait son menu contextuel.
+        transaction
+            .execute(
+                "DELETE FROM timeline_draw_groups
+                 WHERE lane = ?1 AND start_beat >= ?2 AND end_beat <= ?3",
+                params![lane, start, end],
+            )
+            .map_err(database_write_error)?;
+
+        let remaining_filter: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM timeline_filter_nodes WHERE lane = ?1",
+                [lane],
+                |row| row.get(0),
+            )
+            .map_err(database_read_error)?;
+        if remaining_filter > 0 {
+            let mut insert = transaction
+                .prepare(
+                    "INSERT INTO timeline_filter_nodes (lane, beat, value, tension)
+                     VALUES (?1, ?2, 0.0, 0.0)
+                     ON CONFLICT(lane, beat) DO UPDATE SET value = 0.0, tension = 0.0",
+                )
+                .map_err(database_write_error)?;
+            for edge in [start, end] {
+                insert
+                    .execute(params![lane, edge])
+                    .map_err(database_write_error)?;
+            }
+        }
+    }
+
+    transaction.commit().map_err(database_write_error)?;
     snapshot(connection)
 }
 
@@ -3641,7 +3806,7 @@ mod tests {
                 .find(|clip| clip.lane == 1 && clip.anchor_beat < 100)
                 .expect("lane B should still hold its original clip")
                 .id;
-            remove_clip(&store.connection, stray).expect("the stray clip should be removed");
+            remove_clip(&mut store.connection, stray).expect("the stray clip should be removed");
             let reused = add_clip(&mut store.connection, track_id, Some(8.0), None)
                 .expect("the freed lane should be available again");
             assert_eq!(
@@ -3946,7 +4111,7 @@ mod tests {
                 .map(|clip| clip.id)
                 .find(|id| *id != clip_id)
                 .expect("the split creates a right subclip");
-            super::remove_clip(&store.connection, right_id).expect("subclip should be removed");
+            super::remove_clip(&mut store.connection, right_id).expect("subclip should be removed");
             assert_agrees(&store.connection, "after removing the trimmed tail");
 
             let (_, end_beat) = project_timing(&store.connection).expect("timing should read");
@@ -4059,6 +4224,41 @@ mod tests {
                 fs::remove_file(candidate).expect("test database should be removed");
             }
         }
+    }
+
+    #[test]
+    fn what_a_removed_clip_takes_with_it_stops_where_a_neighbour_begins() {
+        // Rien autour : toute la plage part.
+        assert_eq!(
+            super::uncovered_intervals((8.0, 24.0), &[]),
+            vec![(8.0, 24.0)]
+        );
+
+        // Un voisin qui mord la fin : seul le début lui appartenait.
+        assert_eq!(
+            super::uncovered_intervals((8.0, 24.0), &[(16.0, 40.0)]),
+            vec![(8.0, 16.0)]
+        );
+
+        // Un voisin au milieu coupe la plage en deux morceaux.
+        assert_eq!(
+            super::uncovered_intervals((0.0, 32.0), &[(12.0, 20.0)]),
+            vec![(0.0, 12.0), (20.0, 32.0)]
+        );
+
+        // Entièrement recouvert : on n'efface rien du tout, sinon retirer un
+        // clip détruirait l'automation faite pour celui qui reste.
+        assert!(super::uncovered_intervals((8.0, 24.0), &[(0.0, 40.0)]).is_empty());
+
+        // Deux voisins qui se rejoignent exactement ne laissent pas un reste
+        // large de rien entre eux.
+        assert!(super::uncovered_intervals((8.0, 24.0), &[(0.0, 16.0), (16.0, 40.0)]).is_empty());
+
+        // Un voisin qui touche le bord sans le franchir ne retire rien.
+        assert_eq!(
+            super::uncovered_intervals((8.0, 24.0), &[(24.0, 40.0)]),
+            vec![(8.0, 24.0)]
+        );
     }
 
     #[test]
