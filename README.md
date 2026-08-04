@@ -65,7 +65,11 @@ audible, guided, and repeatable.*
 - Drag clips, trim either edge, split a clip, remove it, or undo/redo up to
   fifty edits.
 - Floating Mute and Solo controls per lane.
-- Global tempo map with draggable tempo targets and gradual ramps between them.
+- Global tempo map with draggable tempo targets. Between two targets the tempo
+  moves in whole-beat steps rather than sliding continuously, so a tempo change
+  lands on a beat where the transient hides it instead of drifting audibly.
+- Right-click a tempo target to set the speed that clip plays at, without
+  touching the track's analysed BPM.
 - Every clip follows the project tempo through pitch-preserving stereo-linked
   time-stretching, rather than varispeed, across a safe 0.5×–2× range.
 - Play/Pause transport, Spacebar control, optional Autoplay, and live timeline
@@ -87,8 +91,9 @@ MixCanvas lets you draw transitions directly where they happen.
   clutter the timeline with hundreds of visible nodes.
 - Under the hood, Draw still preserves the detailed automation points required
   by the audio engine. The simplified line is only a clearer way to edit it.
-- Automation that belongs to a moved clip follows that clip, so a beatmatching
-  adjustment does not destroy the transition you already made.
+- Automation belongs to the lane, not to the clip: it stays at the beats where
+  you drew it when a clip moves. Removing a clip does clear the automation that
+  was only its own, without touching a neighbour's.
 
 ## Sound and mix tools
 
