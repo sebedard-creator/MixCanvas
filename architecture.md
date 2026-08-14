@@ -373,7 +373,7 @@ L'application demeure organisée en deux moitiés :
 - SQLite embarqué, en schéma **34**, pour la session courante;
 - JSON versionné, au format `mixcanvas-project` version **1**, pour les fichiers
   `.mixcanvas`;
-- soixante-et-une commandes Tauri enregistrées comme frontière IPC.
+- soixante commandes Tauri enregistrées comme frontière IPC.
 
 Les responsabilités principales sont les suivantes :
 
@@ -1153,13 +1153,51 @@ déjà convertir une abscisse en beat.
 Comme toutes les autres couches, les régions sont **fenêtrées** : seules celles
 qui touchent la vue entrent dans le document.
 
-### Le panneau
+### La baie, et le panneau qu'elle remplace
 
-Posé sur la colonne de la bibliothèque, sans fond, transparent aux évènements —
-la timeline reste lisible et cliquable partout où il ne se trouve pas. Des
-pastilles carrées à icône, au dessin des touches du transport.
+Les pastilles ont d'abord vécu dans un panneau flottant, posé sur la colonne de
+la bibliothèque, qu'une touche `MIX FX` ouvrait et refermait. Elles sont
+maintenant **dans la console**, à côté du transport.
 
-**Aucun raccourci clavier.** Il en a porté quinze, qui empiétaient sur ceux de
+Ce qui a rendu la place : la barre du haut portait 201 px morts entre le
+VU-mètre et `BOUNCE MIX`, et les deux touches `MIX FX` et `AUTO` en occupaient
+138 de plus. Les 339 px qui en résultent tiennent la grille entière — trois
+voies de cinq pastilles. `AUTO` n'a pas disparu pour autant : l'autoplay est
+une règle sur ce que fait un clic dans la timeline, donc il est descendu sur le
+transport, en une bande de 15 px au bas de `PLAY`.
+
+Cette coque est un `div` et non un `button`. Un bouton dans un bouton n'est pas
+du HTML valide, mais la vraie raison est ailleurs : `PLAY` se refuse pendant la
+lecture, et un élément portant `disabled` cesse de recevoir les évènements du
+pointeur. La bande aurait été morte au moment précis où elle sert. Le refus
+passe donc par `aria-disabled` et par la poignée — la même correction que celle
+déjà faite sur les pastilles, pour la même raison.
+
+Ce qu'on y perd est la taille : 57 × 22 px au lieu de 52 carrés. La hauteur de
+la barre est le facteur qui limite, et elle ne bouge pas — l'agrandir prendrait
+à la timeline, qui est précisément ce qu'on regarde en jouant.
+
+Ce qu'on y gagne dépasse la place. Un panneau qu'il faut ouvrir est un panneau
+qu'on oublie de fermer, et celui-ci masquait la colonne qu'il recouvrait. Il
+emporte aussi ses propres commandes : `REW` et `FFWD` n'existaient que parce
+que sortir du panneau pour rejouer une passe cassait le fil. Les pastilles
+étant désormais à côté du transport, le problème qu'elles réglaient a disparu,
+et le défilement rapide a été retiré jusque dans le moteur.
+
+**Aucun raccourci clavier.** Il y en a eu quinze, qui empiétaient sur ceux de
 la timeline et ont coûté trois correctifs successifs avant d'être retirés
 entièrement. Le compromis assumé : à la souris, on ne tient qu'un bouton à la
 fois.
+
+### Ce que la barre du haut a appris
+
+Ses quatre ensembles mesuraient 64, 77, 64 et 82 px. L'alignement vertical a
+changé deux fois — calé en haut, puis centré — sans qu'aucun des deux ne
+puisse marcher : avec dix-huit pixels d'écart, calés en haut les plus courts
+creusent un trou en dessous, et centrés chacun flotte à sa propre hauteur.
+
+Ce n'était pas une règle d'alignement à trouver, mais des hauteurs à
+rapprocher. Les touches passent de 54 à 68 px, ce qui porte les plaques à 78 —
+la hauteur de la **colonne** du VU-mètre, résumé compris, et non celle du seul
+bloc de diodes qu'elles suivaient. Les quatre blocs font 78, 77, 82 et 82, et
+leurs hauts tiennent dans deux pixels et demi.

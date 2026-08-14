@@ -7,16 +7,25 @@ export const UNDO_HISTORY_LIMIT = 50;
  * so a rejected edit never leaves a step that undoes to the current state.
  * The caller passes the state it is leaving to `undo`/`redo`, which keeps the
  * two stacks consistent even when several steps are taken back to back.
+ *
+ * `store` décide **ce qui est gardé** d'un état, et s'applique au seul endroit
+ * où un état entre dans une pile. Un appelant qui allégerait ses états
+ * lui-même devrait le faire aux trois entrées — `push`, et les deux bascules
+ * de `undo` et `redo` — et une liste tenue à la main finit toujours par
+ * s'écarter de ce qu'elle décrit.
  */
 export class UndoRedoHistory<T> {
   private undoStack: T[] = [];
   private redoStack: T[] = [];
 
-  constructor(private readonly limit: number = UNDO_HISTORY_LIMIT) {}
+  constructor(
+    private readonly limit: number = UNDO_HISTORY_LIMIT,
+    private readonly store: (state: T) => T = (state) => state,
+  ) {}
 
   /** Records the state that preceded a successful edit. */
   push(previousState: T): void {
-    this.undoStack = [previousState, ...this.undoStack].slice(0, this.limit);
+    this.undoStack = [this.store(previousState), ...this.undoStack].slice(0, this.limit);
     this.redoStack = [];
   }
 
@@ -26,7 +35,7 @@ export class UndoRedoHistory<T> {
     if (previous === undefined) {
       return null;
     }
-    this.redoStack = [currentState, ...this.redoStack].slice(0, this.limit);
+    this.redoStack = [this.store(currentState), ...this.redoStack].slice(0, this.limit);
     return previous;
   }
 
@@ -36,7 +45,7 @@ export class UndoRedoHistory<T> {
     if (next === undefined) {
       return null;
     }
-    this.undoStack = [currentState, ...this.undoStack].slice(0, this.limit);
+    this.undoStack = [this.store(currentState), ...this.undoStack].slice(0, this.limit);
     return next;
   }
 

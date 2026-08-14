@@ -7,7 +7,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BeatgridEditor } from "./components/BeatgridEditor";
 import { ClipEqModal } from "./components/ClipEqModal";
 import { LibraryPanel } from "./components/LibraryPanel";
-import { MixEffectsScreen } from "./components/MixEffectsScreen";
 import { TimelinePanel } from "./components/TimelinePanel";
 import { formatDuration } from "./lib/formatDuration";
 import {
@@ -17,7 +16,7 @@ import {
 } from "./lib/formatImportSummary";
 import { createLiveTransport } from "./lib/liveTransport";
 import type { PlayedEffect } from "./lib/mixEffects";
-import { UndoRedoHistory } from "./lib/undoRedo";
+import { UNDO_HISTORY_LIMIT, UndoRedoHistory } from "./lib/undoRedo";
 import {
   DEFAULT_LIBRARY_SORT,
   LIBRARY_SORT_PREFERENCE,
@@ -212,7 +211,6 @@ function App() {
     [],
   );
 
-  const [showMixEffects, setShowMixEffects] = useState(false);
 
   // The history reads the timeline through a ref so that every edit callback
   // stays referentially stable. A callback rebuilt on each snapshot would make
@@ -229,7 +227,26 @@ function App() {
      rythme. */
   const timelineTransportRef = useRef(timelineTransport);
   timelineTransportRef.current = timelineTransport;
-  const history = useRef(new UndoRedoHistory<TimelineSnapshot>());
+  /**
+   * L'historique ne garde pas les waveforms.
+   *
+   * Un instantané embarque ses clips, et un clip embarque les crêtes dessinées
+   * de tout son audio. Sur cinquante niveaux d'annulation, la même image
+   * décodée était donc recopiée cinquante fois en mémoire — de très loin le
+   * plus gros poste du programme, pour une donnée que la restauration n'ouvre
+   * jamais : `restore_snapshot` ne lit pas `clip.waveform`, et l'interface se
+   * redessine à partir de l'instantané que le Rust **renvoie**, relu de la
+   * base, pas à partir de celui qu'on lui a envoyé.
+   *
+   * `null` plutôt qu'un champ retiré : le champ est un `Option` côté Rust, et
+   * une forme qui reste valable traverse la frontière sans rien demander.
+   */
+  const history = useRef(
+    new UndoRedoHistory<TimelineSnapshot>(UNDO_HISTORY_LIMIT, (snapshot) => ({
+      ...snapshot,
+      clips: snapshot.clips.map((clip) => (clip.waveform === null ? clip : { ...clip, waveform: null })),
+    })),
+  );
   const historyBusy = useRef(false);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
@@ -1155,20 +1172,6 @@ function App() {
   }, []);
 
   /**
-   * Le défilement rapide, tenu au bouton.
-   *
-   * Comme les touches de reverb : aucun instantané dans l'historique, aucun
-   * plan reconstruit. Un geste tenu ne peut pas se permettre un aller-retour
-   * par appui.
-   */
-  const setTimelineScrubForward = useCallback(async (scrubbing: boolean) => {
-    try {
-      await invoke("set_timeline_scrub_forward", { scrubbing });
-    } catch (scrubError) {
-      setError(errorMessage(scrubError));
-    }
-  }, []);
-
   /**
    * Écrit une passe d'effet au relâchement du bouton.
    *
@@ -1609,9 +1612,14 @@ function App() {
             timeline={timeline}
             transport={timelineTransport}
             liveTransport={liveTransport}
-            onToggleMixEffects={() => setShowMixEffects((open) => !open)}
-            mixEffectsOpen={showMixEffects}
             livePasses={livePasses}
+            onSetEffectKeys={(effect, keys) => void setTimelineEffectKeys(effect, keys)}
+            onSetErasing={(lanes) => void setTimelineEffectErase(lanes)}
+            onLivePass={trackLivePass}
+            onWriteEffectSpan={(effect, lane, startBeat, endBeat) =>
+              void writeTimelineEffectSpan(effect, lane, startBeat, endBeat)}
+            onEraseEffectSpan={(lane, startBeat, endBeat) =>
+              clearTimelineEffectRange(null, lane, startBeat, endBeat)}
             onClearEffectRange={clearTimelineEffectRange}
             busy={timelineBusy || timelinePreparing}
             preparing={timelinePreparing}
@@ -1702,31 +1710,6 @@ function App() {
           onTogglePreview={() => void runTransportCommand(isPlaying ? "pause_preview" : "play_preview")}
           onSeekPreview={(positionMs) => void seekPreview(positionMs)}
           onRemove={(track) => void removeLibraryTrack(track)}
-        />
-
-        <MixEffectsScreen
-          isOpen={showMixEffects}
-          onClose={() => setShowMixEffects(false)}
-          onSetKeys={(effect, keys) => void setTimelineEffectKeys(effect, keys)}
-          onSetErasing={(lanes) => void setTimelineEffectErase(lanes)}
-          transportStatus={timelineTransport.status}
-          onTogglePlayback={() => void toggleTimelineTransport()}
-          onSeek={(beat) => void seekTimeline(beat)}
-          onScrubForward={(scrubbing) => void setTimelineScrubForward(scrubbing)}
-          onLivePass={trackLivePass}
-          onWriteSpan={(effect, lane, startBeat, endBeat) =>
-            void writeTimelineEffectSpan(effect, lane, startBeat, endBeat)}
-          onEraseSpan={(lane, startBeat, endBeat) =>
-            clearTimelineEffectRange(null, lane, startBeat, endBeat)}
-          nodesByEffect={{
-            reverb: timeline.reverbNodes,
-            flanger: timeline.flangerNodes,
-            bitcrush: timeline.bitcrushNodes,
-            delay: timeline.delayNodes,
-          }}
-          liveTransport={liveTransport}
-          canPlay={timeline.clips.length > 0}
-          busy={timelineBusy || timelinePreparing}
         />
       </div>
       </div>

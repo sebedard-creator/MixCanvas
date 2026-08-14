@@ -3985,6 +3985,103 @@ mod tests {
     /// endroits qui les Ã©numÃ¨rent : `clear_timeline` et `restore_snapshot`. Le
     /// panoramique avait Ã©tÃ© oubliÃ© dans les deux â€” CLEAR le laissait derriÃ¨re,
     /// et un Undo rÃ©Ã©crivait tout sauf lui.
+    /// L'historique d'annulation n'envoie **pas** les waveforms, et il ne le
+    /// doit pas : un clip porte les crêtes dessinées de tout son audio, et
+    /// cinquante niveaux d'annulation en gardaient cinquante copies.
+    ///
+    /// Toute l'économie repose sur ce que ce test vérifie : la restauration ne
+    /// lit jamais `clip.waveform`, et l'instantané qu'elle **renvoie** est
+    /// relu de la base, donc il les rapporte. Si un jour la restauration se
+    /// mettait à écrire ce champ, elle effacerait les waveforms au premier
+    /// `Ctrl+Z` — et ce test tomberait avant l'utilisateur.
+    #[test]
+    fn restoring_without_waveforms_gives_them_back_from_the_database() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-history-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+        let fake_mp3 = database_path.with_extension("mp3");
+        fs::write(&fake_mp3, []).expect("fake MP3 should be created");
+
+        {
+            let mut store = LibraryStore::open(&database_path).expect("database should open");
+            store
+                .connection
+                .execute(
+                    "INSERT INTO library_tracks
+                     (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                      bpm, first_beat_ms, beat_count, analysis_status)
+                     VALUES (?1, ?2, 'history.mp3', 60000, 44100, 2, 120.0, 0, 120, 'analyzed')",
+                    params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+                )
+                .expect("track should be inserted");
+            let track_id = store.connection.last_insert_rowid();
+            store
+                .connection
+                .execute(
+                    "INSERT INTO track_waveforms
+                     (track_id, bucket_count, left_min, left_max, left_rms, right_min,
+                      right_max, right_rms)
+                     VALUES (?1, 2, ?2, ?3, ?4, ?2, ?3, ?4)",
+                    params![
+                        track_id,
+                        super::encode_waveform_values(&[-0.5, -0.25]),
+                        super::encode_waveform_values(&[0.5, 0.25]),
+                        super::encode_waveform_values(&[0.3, 0.15]),
+                    ],
+                )
+                .expect("a waveform should be stored");
+            add_clip(&mut store.connection, track_id, Some(0.0), Some(0))
+                .expect("a clip should be added");
+
+            let full = snapshot(&store.connection).expect("a snapshot should be read");
+            assert!(
+                full.clips.iter().all(|clip| clip.waveform.is_some()),
+                "le décor du test doit bien porter une waveform"
+            );
+
+            // Ce que l'historique garde : le même instantané, sans les crêtes.
+            let lightened = TimelineSnapshot {
+                clips: full
+                    .clips
+                    .iter()
+                    .map(|clip| super::TimelineClip {
+                        waveform: None,
+                        ..clip.clone()
+                    })
+                    .collect(),
+                ..full.clone()
+            };
+
+            let restored = restore_snapshot(&mut store.connection, &lightened)
+                .expect("a lightened snapshot should restore");
+
+            assert_eq!(restored.clips.len(), full.clips.len());
+            assert!(
+                restored.clips.iter().all(|clip| clip.waveform.is_some()),
+                "la restauration doit rapporter les waveforms de la base"
+            );
+            assert_eq!(
+                restored
+                    .clips
+                    .iter()
+                    .map(|clip| clip.waveform.as_ref().map(|peaks| peaks.left_max.clone()))
+                    .collect::<Vec<_>>(),
+                full.clips
+                    .iter()
+                    .map(|clip| clip.waveform.as_ref().map(|peaks| peaks.left_max.clone()))
+                    .collect::<Vec<_>>(),
+            );
+        }
+
+        let _ = fs::remove_file(&database_path);
+        let _ = fs::remove_file(&fake_mp3);
+    }
+
     #[test]
     fn clearing_and_restoring_account_for_every_automation_table() {
         let suffix = SystemTime::now()

@@ -29,9 +29,6 @@ export type TransportGlyphName =
   | "draw-triangle"
   | "sidechain"
   | "autoplay"
-  | "rewind"
-  | "forward"
-  | "mixfx"
   | "fx-reverb"
   | "fx-flanger"
   | "fx-bitcrush"
@@ -74,31 +71,11 @@ export function TransportGlyph({ name }: { name: TransportGlyphName }) {
   return (
     <svg className="transport-glyph" viewBox="0 0 12 12" aria-hidden="true" focusable="false">
       {name === "play" && <path d="M3.6 2.4 9.4 6 3.6 9.6Z" fill="currentColor" />}
-      {/* Deux triangles accolés : la marque universelle du saut, et elle se
-          lit à cette taille là où une flèche seule se confondrait avec le
-          play. */}
-      {name === "rewind" && (
-        <>
-          <path d="M6.1 3 6.1 9 1.9 6Z" fill="currentColor" />
-          <path d="M10.5 3 10.5 9 6.3 6Z" fill="currentColor" />
-        </>
-      )}
-      {name === "forward" && (
-        <>
-          <path d="M1.5 3 1.5 9 5.7 6Z" fill="currentColor" />
-          <path d="M5.9 3 5.9 9 10.1 6Z" fill="currentColor" />
-        </>
-      )}
-      {/* Une onde qui s'élargit en s'éloignant : ce que fait une pièce à un
-          son. Trois arcs plutôt qu'un, pour que la marque tienne au petit
-          format sans devenir un simple trait courbe. */}
-      {name === "mixfx" && (
-        <>
-          <path {...STROKE} d="M2.6 4.2A4.4 4.4 0 0 1 2.6 7.8" />
-          <path {...STROKE} d="M5.2 2.6A7 7 0 0 1 5.2 9.4" />
-          <path {...STROKE} d="M7.8 1.6A9 9 0 0 1 7.8 10.4" />
-        </>
-      )}
+      {/* Il y a eu ici trois autres marques : deux triangles accolés pour le
+          saut d'une mesure, en arrière et en avant, et une onde qui s'élargit
+          pour `MIX FX`. Les trois touches ont disparu avec le panneau flottant
+          — les pastilles sont désormais à côté du transport, donc rejouer une
+          passe ne demande plus de commande à soi. */}
       {/* Les quatre effets joués, dessinés comme **ce qu'ils font au signal**
           plutôt que comme des symboles à apprendre. Sur une pastille carrée de
           quarante pixels, une marque figurative se reconnaît d'un coup d'œil là

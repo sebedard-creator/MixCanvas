@@ -873,20 +873,6 @@ fn set_timeline_effect_erase(
 
 /// Le défilement rapide vers l'avant, tenu au bouton.
 ///
-/// Rien n'est écrit en base et le plan n'est pas reconstruit : c'est un geste,
-/// et il doit prendre effet à l'instant où le doigt tombe.
-#[tauri::command]
-fn set_timeline_scrub_forward(
-    scrubbing: bool,
-    playback_state: State<'_, TimelinePlaybackState>,
-) -> Result<(), String> {
-    playback_state
-        .lock()
-        .map_err(|_| "The timeline audio engine is in an invalid state.".to_owned())?
-        .set_scrub_forward(scrubbing);
-    Ok(())
-}
-
 /// Écrit une passe d'effet jouée à la main, entre deux beats.
 ///
 /// Appelée au **relâchement** du bouton : le geste est fini, on connaît ses deux
@@ -2140,7 +2126,6 @@ pub fn run() {
             set_timeline_clip_tempo_target,
             set_timeline_effect_keys,
             set_timeline_effect_erase,
-            set_timeline_scrub_forward,
             write_timeline_effect_span,
             clear_timeline_effect_range,
             remove_timeline_clip,

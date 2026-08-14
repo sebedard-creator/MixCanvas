@@ -155,8 +155,10 @@ const MAX_PROJECT_SECONDS: f64 = 4.0 * 60.0 * 60.0;
 const MIN_STRETCH_RATIO: f64 = 0.5;
 const MAX_STRETCH_RATIO: f64 = 2.0;
 const OUTPUT_CEILING: f32 = 0.98;
-const VU_ATTACK_SECONDS: f32 = 0.065;
-const VU_RELEASE_SECONDS: f32 = 0.3;
+/// La chute du mètre, en constante de temps : environ dix décibels par
+/// seconde, la cadence d'un crête-mètre de studio. L'attaque, elle, n'a pas de
+/// constante — voir `vu_envelope`.
+const VU_RELEASE_SECONDS: f32 = 0.85;
 const METER_PUBLISH_FRAMES: usize = 128;
 const FILTER_SMOOTHING_SECONDS: f32 = 0.008;
 const FILTER_Q: f32 = 0.707_106_77;
@@ -1748,12 +1750,6 @@ pub(crate) struct TimelineMixSource {
     effect_erase: Arc<AtomicU8>,
     /// Vrai tant que `FFWD` est tenu.
     ///
-    /// Le défilement rapide saute une image sur deux : la timeline avance donc
-    /// deux fois plus vite, et la hauteur monte comme sur une bande qu'on
-    /// accélère. C'est le son qu'on attend d'un `FFWD`, et surtout c'est un
-    /// simple pas d'avance — rien dans le rendu d'une image ne change, donc
-    /// aucun risque pour le fil audio.
-    scrub_forward: Arc<AtomicBool>,
     /// Le gain d'envoi réellement appliqué, qui rejoint la consigne par une
     /// rampe.
     ///
@@ -1784,6 +1780,13 @@ pub(crate) struct TimelineMixSource {
     meter_left_envelope: f32,
     meter_right_envelope: f32,
     meter_pending_left: f32,
+    /// Le coefficient de chute du mètre, calculé une fois.
+    ///
+    /// Il ne dépend que de la fréquence de sortie et d'une constante, et il
+    /// était pourtant recalculé à chaque échantillon — une exponentielle sur
+    /// le fil temps réel, quarante-huit mille fois par seconde et par canal,
+    /// pour toujours rendre le même nombre.
+    meter_release: f32,
     overload_hold_frames: usize,
 }
 
@@ -1829,7 +1832,6 @@ impl Clone for TimelineMixSource {
             bitcrush_keys: Arc::clone(&self.bitcrush_keys),
             delay_keys: Arc::clone(&self.delay_keys),
             effect_erase: Arc::clone(&self.effect_erase),
-            scrub_forward: Arc::clone(&self.scrub_forward),
             reverb_sends: [0.0; 3],
             flanger_sends: [0.0; 3],
             bitcrush_sends: [0.0; 3],
@@ -1843,6 +1845,7 @@ impl Clone for TimelineMixSource {
             meter_left_envelope: 0.0,
             meter_right_envelope: 0.0,
             meter_pending_left: 0.0,
+            meter_release: meter_release_coefficient(self.output_sample_rate),
             overload_hold_frames: 0,
         };
         source.rebuild_active_clips(source.position_sample / OUTPUT_CHANNELS as usize);
@@ -1911,7 +1914,6 @@ impl TimelineMixSource {
             bitcrush_keys: Arc::new(AtomicU8::new(0)),
             delay_keys: Arc::new(AtomicU8::new(0)),
             effect_erase: Arc::new(AtomicU8::new(0)),
-            scrub_forward: Arc::new(AtomicBool::new(false)),
             reverb_sends: [0.0; 3],
             flanger_sends: [0.0; 3],
             bitcrush_sends: [0.0; 3],
@@ -1925,6 +1927,7 @@ impl TimelineMixSource {
             meter_left_envelope: 0.0,
             meter_right_envelope: 0.0,
             meter_pending_left: 0.0,
+            meter_release: meter_release_coefficient(output_sample_rate),
             overload_hold_frames: 0,
         }
     }
@@ -1999,10 +2002,6 @@ impl TimelineMixSource {
         self.effect_erase.store(lanes, Ordering::Relaxed);
     }
 
-    fn set_scrub_forward(&self, scrubbing: bool) {
-        self.scrub_forward.store(scrubbing, Ordering::Relaxed);
-    }
-
     fn set_compressor_enabled(&self, compressor_enabled: bool) {
         self.compressor_enabled
             .store(compressor_enabled, Ordering::Relaxed);
@@ -2040,16 +2039,10 @@ impl TimelineMixSource {
             return;
         }
 
-        self.meter_left_envelope = vu_envelope(
-            self.meter_left_envelope,
-            self.meter_pending_left,
-            self.output_sample_rate,
-        );
-        self.meter_right_envelope = vu_envelope(
-            self.meter_right_envelope,
-            sample.abs(),
-            self.output_sample_rate,
-        );
+        self.meter_left_envelope =
+            vu_envelope(self.meter_left_envelope, self.meter_pending_left, self.meter_release);
+        self.meter_right_envelope =
+            vu_envelope(self.meter_right_envelope, sample.abs(), self.meter_release);
         if frame.is_multiple_of(METER_PUBLISH_FRAMES) {
             self.meter
                 .store(self.meter_left_envelope, self.meter_right_envelope);
@@ -2433,15 +2426,6 @@ impl Iterator for TimelineMixSource {
 
         let output = self.pending_frame[channel];
         self.position_sample += 1;
-        // Une image sautée après chaque image rendue, tant que `FFWD` est
-        // tenu. Le saut a lieu à la fin de l'image pour que les deux canaux
-        // sortent bien de la même, sans quoi l'image stéréo se déchirerait.
-        if channel + 1 == OUTPUT_CHANNELS as usize && self.scrub_forward.load(Ordering::Relaxed) {
-            self.position_sample = self
-                .position_sample
-                .saturating_add(OUTPUT_CHANNELS as usize)
-                .min(total_samples);
-        }
         Some(output)
     }
 
@@ -2673,13 +2657,6 @@ impl TimelinePlaybackEngine {
     pub fn set_effect_erase(&self, lanes: u8) {
         if let Some(cache) = &self.cached {
             cache.source.set_effect_erase(lanes);
-        }
-    }
-
-    /// Le défilement rapide vers l'avant, tant que le bouton est tenu.
-    pub fn set_scrub_forward(&self, scrubbing: bool) {
-        if let Some(cache) = &self.cached {
-            cache.source.set_scrub_forward(scrubbing);
         }
     }
 
@@ -2993,14 +2970,28 @@ fn stretch_duration_ratio(source_bpm: f64, project_bpm: f64) -> f64 {
     source_bpm / project_bpm
 }
 
-fn vu_envelope(current: f32, input: f32, sample_rate: u32) -> f32 {
-    let time_constant = if input > current {
-        VU_ATTACK_SECONDS
-    } else {
-        VU_RELEASE_SECONDS
-    };
-    let coefficient = (-1.0 / (sample_rate as f32 * time_constant)).exp();
-    input + coefficient * (current - input)
+/// Le suiveur du VU-mètre : **attaque instantanée**, chute lente.
+///
+/// L'attaque avait une constante de 65 ms, et c'était une erreur de nature et
+/// pas seulement de réglage. Un filtre à un pôle appliqué à `|x|` ne converge
+/// pas vers le maximum du signal mais vers sa **moyenne** : il ne mesurait
+/// donc pas des crêtes, il les moyennait. Un morceau masterisé, dont les
+/// crêtes dépassent la moyenne d'une douzaine de décibels, touchait le plein
+/// niveau en n'affichant que les deux tiers de la barre — le mètre annonçait
+/// un niveau confortable pendant que le limiteur travaillait.
+///
+/// Une crête est maintenant prise telle quelle, à l'échantillon. Ce que la
+/// barre montre est le plus haut niveau atteint récemment, ce qui est la seule
+/// chose qu'on lui demande avant l'écrêtage.
+fn meter_release_coefficient(sample_rate: u32) -> f32 {
+    (-1.0 / (sample_rate as f32 * VU_RELEASE_SECONDS)).exp()
+}
+
+fn vu_envelope(current: f32, input: f32, release_coefficient: f32) -> f32 {
+    if input >= current {
+        return input;
+    }
+    input + release_coefficient * (current - input)
 }
 
 fn validate_plan(plan: &TimelineRenderPlan) -> Result<(), String> {
@@ -3119,7 +3110,8 @@ mod tests {
         TimelineMixSource, TimelinePlaybackEngine, VolumeAutomation, VolumeFramePoint,
         WSOLA_MAX_SEARCH_FRAMES, best_wsola_offset, cubic_interpolate, equal_power_pan,
         filter_cutoff_hz, filter_makeup_gain, playback_signature, prepare_timeline,
-        sidechain_pan_weight, smooth_crossfade, stretch_duration_ratio, vu_envelope,
+        meter_release_coefficient, sidechain_pan_weight, smooth_crossfade,
+        stretch_duration_ratio, vu_envelope,
     };
     use crate::{
         tempo::{TempoMap, TempoPoint},
@@ -4408,17 +4400,48 @@ mod tests {
     }
 
     #[test]
-    fn vu_ballistics_reach_nominal_level_then_release_slowly() {
-        let mut envelope = 0.0_f32;
-        for _ in 0..13_230 {
-            envelope = vu_envelope(envelope, 1.0, FALLBACK_OUTPUT_SAMPLE_RATE);
-        }
-        assert!(envelope > 0.98);
+    fn vu_ballistics_catch_a_peak_at_once_then_fall_slowly() {
+        // Une seule crête suffit : c'est ce que « attaque instantanée » veut
+        // dire, et c'est ce qui manquait.
+        let release = meter_release_coefficient(FALLBACK_OUTPUT_SAMPLE_RATE);
+        let envelope = vu_envelope(0.0, 1.0, release);
+        assert_eq!(envelope, 1.0);
 
-        for _ in 0..13_230 {
-            envelope = vu_envelope(envelope, 0.0, FALLBACK_OUTPUT_SAMPLE_RATE);
+        // Puis environ dix décibels par seconde.
+        let mut falling = envelope;
+        for _ in 0..FALLBACK_OUTPUT_SAMPLE_RATE {
+            falling = vu_envelope(falling, 0.0, release);
         }
-        assert!((0.34..0.39).contains(&envelope));
+        let decibels = 20.0 * falling.log10();
+        assert!(
+            (-11.0..-9.5).contains(&decibels),
+            "la chute vaut {decibels} dB par seconde"
+        );
+    }
+
+    /// Le défaut que l'attaque instantanée corrige, écrit comme un test.
+    ///
+    /// Un signal dont les crêtes touchent le plein niveau doit **afficher** le
+    /// plein niveau, quelle que soit sa moyenne. Avec l'ancienne attaque de
+    /// 65 ms, une sinusoïde pleine échelle se lisait à sa moyenne — 2/π, soit
+    /// près de 4 dB trop bas — et un morceau réel bien davantage.
+    #[test]
+    fn a_signal_that_touches_full_scale_reads_as_full_scale() {
+        let rate = FALLBACK_OUTPUT_SAMPLE_RATE;
+        let release = meter_release_coefficient(rate);
+        let mut envelope = 0.0_f32;
+        for index in 0..rate {
+            let phase = std::f32::consts::TAU * 1_000.0 * index as f32 / rate as f32;
+            envelope = vu_envelope(envelope, phase.sin().abs(), release);
+        }
+        assert!(
+            envelope > 0.99,
+            "une sinusoïde pleine échelle se lit {envelope}"
+        );
+
+        // La moyenne de |sin| vaut 2/pi : c'est ce que l'ancien suiveur
+        // affichait, et le nouveau doit s'en écarter franchement.
+        assert!(envelope > 2.0 / std::f32::consts::PI + 0.3);
     }
 
     /// Les budgets de queue doivent valoir la **même durée** à toute fréquence

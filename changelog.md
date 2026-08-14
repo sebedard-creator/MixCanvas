@@ -12,6 +12,72 @@ wrote it. What changed, and what it means when you sit down to build a mix.
 
 ---
 
+## 1.5.1 — Unreleased
+
+The four effects move out of their panel and into the console.
+
+### Changed
+
+- **The effect pads live in the top bar now.** `MIX FX` opened a panel over the
+  Library column; the pads sit in the console instead, beside the transport,
+  five per track. There is nothing to open and nothing to put away, and the
+  Library is never covered. They are smaller for it — a flat key rather than a
+  square one — because the bar's height is what had to stay fixed, and giving
+  them more room would have taken it from the timeline.
+- **`AUTO` is a strip along the bottom of `PLAY`.** Autoplay is a rule about
+  what a click does to the transport, so it now rides on the transport rather
+  than holding a key of its own two blocks away.
+- **The transport keys are taller.** They were 54 px, which matched the height
+  of the VU lamps but not the VU column. At 68 they match the column, and the
+  four groups across the bar come within a few pixels of each other instead of
+  eighteen.
+- **The VU meter is graduated evenly, in dBFS.** It borrowed the spacing of a
+  needle faceplate, where ten decibels were squeezed into the first four lamps
+  and three were spread across the last six — 2.31 dB per lamp at the bottom
+  against 0.50 at the top. That spacing is for a dial with printed numbers
+  under the needle; on a bare row of lamps each one silently meant something
+  different from its neighbour. Every lamp is now worth the same 1.67 dB, from
+  −40 to 0. The blue-to-amber boundary has not moved in level — it is the same
+  −16 dBFS as before — but you can now see how much of the range sits below it.
+- **`DRAW` is off unless `VIEW` shows one line.** With both on screen there was
+  nothing sensible for the pencil to draw.
+
+### Fixed
+
+- **The top bar lines up again.** Its four groups measured 64, 77, 64 and 82 px
+  and were centred on a common axis, so each one floated at its own height and
+  none met its neighbour — the 1.0 bar had started them all from a common top
+  edge. Evening out the heights fixes what no alignment rule could.
+- **The meter shows peaks instead of averaging them away.** Its follower had a
+  65 ms attack, which is not a slow peak detector but a different instrument
+  altogether: a one-pole filter on |x| settles on the *mean* of the signal, not
+  its maximum. A mastered track, whose peaks stand a dozen decibels above its
+  mean, could touch full scale while the bar showed two thirds — the meter
+  reported a comfortable level while the limiter was working. A peak is now
+  taken as it arrives, and the bar falls back at about 10 dB per second.
+- **The meter shows the last six decibels before clipping.** Its top mark was
+  +3 VU against a reference of 0.35, which is −6.1 dBFS: a full bar and a mix
+  about to clip looked exactly the same. The bar is read before the limiter, so
+  those are the decibels worth seeing. The top of the scale is full scale now.
+- **One drag no longer writes two automations.** With `VIEW` showing volume and
+  pan together, a single stroke across a clip wrote a volume shape *and* a pan
+  shape — the pointer's height read as decibels for one and as a stereo
+  position for the other. Two edits from one gesture, one of them unasked for.
+
+- **Undo no longer keeps a copy of every waveform.** A snapshot carries its
+  clips, and a clip carries the drawn peaks of its whole audio; fifty levels of
+  undo held fifty copies of the same decoded picture. Measured on a twenty-clip
+  session, that is about 15 MiB per level and roughly 0.7 GiB across the
+  history. The peaks are dropped on the way into the history now — restoring
+  never read them, and the timeline redraws from the snapshot the backend
+  returns, which is re-read from the database.
+
+### Removed
+
+- **`REW` and `FFWD`.** They were added to the effects panel because leaving it
+  to replay a passage broke the thread. The pads are next to the transport now,
+  so the problem they solved no longer exists.
+
 ## 1.5.0 — 2026-08-13
 
 Mix Effects: four effects you play by hand onto a track, and they write

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import type { LiveTransport } from "../lib/liveTransport";
-import { vuDecibels, vuMeterPosition, vuSegmentZone } from "../lib/vuMeter";
+import { VU_RANGE_DB, vuDecibels, vuMeterPosition, vuSegmentZone } from "../lib/vuMeter";
 
 interface StereoVuMeterProps {
   /** Le VU-mètre lit la lecture directement, plutôt que d'attendre un rendu. */
@@ -28,8 +28,8 @@ function LedVuMeter({ channel, level }: { channel: "L" | "R"; level: number }) {
         className="led-vu-track"
         role="meter"
         aria-label={`Master level ${channel === "L" ? "left" : "right"}`}
-        aria-valuemin={-20}
-        aria-valuemax={3}
+        aria-valuemin={VU_RANGE_DB.min}
+        aria-valuemax={VU_RANGE_DB.max}
         aria-valuenow={Number(vuDecibels(level).toFixed(1))}
       >
         {Array.from({ length: LED_SEGMENT_COUNT }, (_, index) => (

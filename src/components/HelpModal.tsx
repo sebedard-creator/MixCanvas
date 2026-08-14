@@ -64,8 +64,8 @@ const SHORTCUTS: ShortcutItem[] = [
   { surface: "key", group: "On the selected track", keys: ["Shift", "M"], description: "Mute" },
 
   { surface: "key", group: "Automation lines", keys: ["E"], description: "Cycle what is shown: pan, volume, both, hidden" },
-  { surface: "key", group: "Automation lines", keys: ["S"], description: "Cycle the pencil shape — needs a line on screen" },
-  { surface: "key", group: "Automation lines", keys: ["D"], description: "Cycle the pencil period — needs a line on screen" },
+  { surface: "key", group: "Automation lines", keys: ["S"], description: "Cycle the pencil shape — needs volume or pan on screen, not both" },
+  { surface: "key", group: "Automation lines", keys: ["D"], description: "Cycle the pencil period — needs volume or pan on screen, not both" },
 
   { surface: "key", group: "History", keys: ["Ctrl", "Z"], description: "Undo" },
   { surface: "key", group: "History", keys: ["Ctrl", "Y"], description: "Redo" },
@@ -79,7 +79,7 @@ const SHORTCUTS: ShortcutItem[] = [
   // zones, de haut en bas du clip, pour qu'on lise la règle et pas trois cas.
   { surface: "pointer", group: "Clips", keys: ["Drag an edge"], description: "Trim the head or tail — the audio under the rest stays put, and dragging back out restores it" },
   { surface: "pointer", group: "Clips", keys: ["Drag the title bar"], description: "Move along the timeline, or onto another track" },
-  { surface: "pointer", group: "Clips", keys: ["Drag the body"], description: "Draw the pencil's shape across the drag, live, on both lines at once — nothing to arm" },
+  { surface: "pointer", group: "Clips", keys: ["Drag the body"], description: "Draw the pencil's shape across the drag, live, onto whichever line VIEW is showing — nothing to arm" },
   { surface: "pointer", group: "Clips", keys: ["Drag from library"], description: "Drop a track straight onto the lane you want" },
 
   { surface: "pointer", group: "Automation", keys: ["Right click"], description: "Add a volume or pan node; right-click a node to delete it" },
@@ -104,8 +104,10 @@ const SHORTCUTS: ShortcutItem[] = [
   { surface: "control", group: "Transport rail", keys: ["COMP"], description: "Master glue compressor and its console colour" },
   { surface: "control", group: "Transport rail", keys: ["LIMIT"], description: "Master limiter on the output bus" },
   { surface: "control", group: "Transport rail", keys: ["VIEW"], description: "Cycle the automation lines shown" },
-  { surface: "control", group: "Transport rail", keys: ["DRAW"], description: "What the pencil draws — shape on the left, period on the right" },
-  { surface: "control", group: "Transport rail", keys: ["AUTO"], description: "Autoplay — off, a click in the timeline only moves the playhead" },
+  { surface: "control", group: "Transport rail", keys: ["DRAW"], description: "What the pencil draws — shape on the left, period on the right. Off unless VIEW shows volume or pan on its own" },
+  { surface: "control", group: "Transport rail", keys: ["AUTO"], description: "Autoplay, along the bottom of PLAY — off, a click in the timeline only moves the playhead" },
+  { surface: "control", group: "Transport rail", keys: ["Effect pads"], description: "Hold one while the mix runs — reverb, flange, crush or delay onto that track. Let go and the pass is written onto the timeline" },
+  { surface: "control", group: "Transport rail", keys: ["Eraser"], description: "The last pad on each track — sweep it while the music runs to wipe every effect it passes over" },
 
   { surface: "control", group: "Project", keys: ["BOUNCE MIX"], description: "Render the whole timeline offline to a 16-bit 44.1 kHz stereo WAV" },
   { surface: "control", group: "Project", keys: ["SAVE", "LOAD"], description: "Write or reopen a .mixcanvas file — library, beatgrids and timeline together" },

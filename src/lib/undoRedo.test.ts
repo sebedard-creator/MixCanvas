@@ -57,6 +57,37 @@ describe("UndoRedoHistory", () => {
     expect(history.undo(-1)).toBe(UNDO_HISTORY_LIMIT + 24);
   });
 
+  /* Ce que l'application en fait : retirer les waveforms des clips avant de
+     les empiler. Le crochet doit valoir aux **trois** entrées, sinon la moitié
+     des états gardés resteraient lourds sans que rien ne le signale. */
+  it("keeps only what the store hook returns, at every entrance", () => {
+    const seen: string[] = [];
+    const history = new UndoRedoHistory<{ tag: string; heavy: number[] | null }>(
+      50,
+      (state) => {
+        seen.push(state.tag);
+        return { ...state, heavy: null };
+      },
+    );
+
+    history.push({ tag: "pushed", heavy: [1, 2, 3] });
+    // `undo` bascule l'état courant vers la pile redo : deuxième entrée.
+    const undone = history.undo({ tag: "undone", heavy: [4, 5, 6] });
+    // `redo` le rebascule vers la pile undo : troisième entrée.
+    const redone = history.redo({ tag: "redone", heavy: [7, 8, 9] });
+
+    expect(undone).toEqual({ tag: "pushed", heavy: null });
+    expect(redone).toEqual({ tag: "undone", heavy: null });
+    expect(seen).toEqual(["pushed", "undone", "redone"]);
+  });
+
+  it("leaves states untouched when no hook is given", () => {
+    const history = new UndoRedoHistory<{ heavy: number[] }>();
+    const state = { heavy: [1, 2, 3] };
+    history.push(state);
+    expect(history.undo({ heavy: [] })).toBe(state);
+  });
+
   it("clears both branches", () => {
     const history = new UndoRedoHistory<string>();
     history.push("A");

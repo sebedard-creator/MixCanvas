@@ -98,16 +98,18 @@ MixCanvas lets you draw transitions directly where they happen.
 
 ## Play effects by hand
 
-`MIX FX` opens a small panel over the Library column. Hold a pad while the mix
-runs and the effect goes onto that track; let go and the pass is written onto
-the timeline as automation you can keep, undo, or replay over.
+Five pads per track sit in the console, beside the transport. Hold one while
+the mix runs and the effect goes onto that track; let go and the pass is
+written onto the timeline as automation you can keep, undo, or replay over.
+Nothing to open and nothing to put away.
 
 <p align="center">
   <img src="assets/screenshots/mix-fx.png" width="310"
-       alt="The Mix FX panel: reverb, flange, crush, delay, and eraser pads on tracks A, B, and C, with reverb and delay lit on A, flange on B, and crush on C">
+       alt="The Mix FX pads in the console: reverb, flange, crush, delay, and eraser on tracks A, B, and C, with reverb and delay lit on A, flange on B, and crush on C">
   <br>
-  <em>Five pads per track, and the transport within reach. A pad lights while
-  its effect is sounding — here reverb and delay on A, flange on B, crush on C.</em>
+  <em>Five pads per track, in the console beside the transport. A pad lights
+  while its effect is sounding — here reverb and delay on A, flange on B,
+  crush on C.</em>
 </p>
 
 - **Reverb** — a shared room. Bright and generous, sitting well behind the
@@ -131,6 +133,9 @@ the timeline as automation you can keep, undo, or replay over.
   removing while you remove it.
 - A pad lights whenever its effect is sounding — under your finger, or under the
   playhead when a recorded pass plays back.
+- The pads have no keyboard shortcuts. With a mouse that means one effect at a
+  time, which is the honest trade: the fifteen shortcuts they used to carry
+  collided with the timeline's own.
 
 ## Sound and mix tools
 

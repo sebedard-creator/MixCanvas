@@ -9,6 +9,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { formatDuration } from "../lib/formatDuration";
+import { MixFxBay } from "./MixFxBay";
 import { timelineLaneFromPointer } from "../lib/timelineLane";
 import {
   resolveTimelinePointerDrop,
@@ -231,18 +232,19 @@ interface TimelinePanelProps {
   /** Le tempo visé à l'ancre d'un clip. `null` lui rend la vitesse de son
    *  morceau. Ne touche jamais la bibliothèque. */
   onSetClipTempoTarget: (clipId: number, bpm: number | null) => Promise<void>;
-  /** Ouvre ou referme le panneau des effets joués. */
-  onToggleMixEffects: () => void;
   /**
-   * Vrai tant que le panneau des effets est ouvert : le bouton s'allume.
+   * Les effets joués, désormais dans la console plutôt que dans un panneau.
    *
-   * Il servait aussi à **museler** les raccourcis de ce panneau, parce que les
-   * touches des effets tombaient également ici — `R` et `T` zoomaient, `V`
-   * changeait la vue, `B` coupait un clip. Le panneau n'a plus de raccourcis du
-   * tout, donc plus rien à disputer : la garde est retirée et la timeline reste
-   * pilotable au clavier pendant qu'on joue.
+   * Ces cinq entrées servaient une fenêtre flottante que `MIX FX` ouvrait; la
+   * baie est maintenant posée dans la barre du haut, donc elles descendent
+   * ici. Elle n'a aucun raccourci clavier — il y en a eu quinze, qui
+   * empiétaient sur ceux de la timeline — et rien à museler en retour.
    */
-  mixEffectsOpen: boolean;
+  onSetEffectKeys: (effect: PlayedEffect, keys: number) => void;
+  onSetErasing: (lanes: number) => void;
+  onWriteEffectSpan: (effect: PlayedEffect, lane: number, startBeat: number, endBeat: number) => void;
+  onEraseEffectSpan: (lane: number, startBeat: number, endBeat: number) => void | Promise<void>;
+  onLivePass: (effect: PlayedEffect, lane: number, startBeat: number | null) => void;
   /**
    * Les passes qu'on est **en train** de jouer, dessinées en direct.
    *
@@ -437,8 +439,11 @@ export function TimelinePanel({
   onTogglePlayback,
   onSeek,
   onSetClipTempoTarget,
-  onToggleMixEffects,
-  mixEffectsOpen,
+  onSetEffectKeys,
+  onSetErasing,
+  onWriteEffectSpan,
+  onEraseEffectSpan,
+  onLivePass,
   livePasses,
   onClearEffectRange,
   selectedLane,
@@ -491,10 +496,16 @@ export function TimelinePanel({
     { lane: number; startBeat: number; endBeat: number; units: number } | null
   >(null);
   const showVolumeAutomation = automationView === "both" || automationView === "volume";
-  /* Rien d'affiché, rien à dessiner : la touche s'éteint plutôt que de s'armer
-     pour rien. */
   const showPanAutomation = automationView === "both" || automationView === "pan";
-  const drawArmable = automationView !== "none";
+  /* Le crayon veut **une seule** ligne à l'écran.
+
+     Rien d'affiché, rien à dessiner : la touche s'éteint plutôt que de s'armer
+     pour rien. Mais les deux lignes ensemble ne valaient pas mieux, et
+     silencieusement : un seul trait écrivait alors deux automations d'un coup,
+     et la hauteur du pointeur était lue comme des décibels pour l'une et comme
+     une position stéréo pour l'autre. Deux édits pour un geste, dont un que
+     personne n'avait demandé. */
+  const drawArmable = automationView === "volume" || automationView === "pan";
   const [panDrafts, setPanDrafts] = useState<Record<number, { beat: number; value: number }>>({});
   const [filterBubbleDraft, setFilterBubbleDraft] = useState<FilterBubbleDraft | null>(null);
   /* Le trait de filtre à main levée : la valeur peinte à chaque quart de temps
@@ -2295,24 +2306,31 @@ export function TimelinePanel({
     timeline.panNodes,
   ]);
 
+  /* Les nœuds rangés par effet. Deux lecteurs s'en servent — les régions
+     dessinées sur la piste et les pastilles de la baie — et ils doivent lire
+     la même chose : une pastille qui s'allume sans région, ou l'inverse, se
+     lit comme une panne. */
+  const nodesByEffect = useMemo<Record<PlayedEffect, readonly TimelineReverbNode[]>>(
+    () => ({
+      reverb: timeline.reverbNodes,
+      flanger: timeline.flangerNodes,
+      bitcrush: timeline.bitcrushNodes,
+      delay: timeline.delayNodes,
+    }),
+    [timeline.bitcrushNodes, timeline.delayNodes, timeline.flangerNodes, timeline.reverbNodes],
+  );
+
   /* Une région par passe, par voie et par effet. Ne dépend que des nœuds : ni
      du survol, ni de la tête de lecture. */
   const allEffectRegions = useMemo(
-    () => {
-      const nodes: Record<PlayedEffect, readonly TimelineReverbNode[]> = {
-        reverb: timeline.reverbNodes,
-        flanger: timeline.flangerNodes,
-        bitcrush: timeline.bitcrushNodes,
-        delay: timeline.delayNodes,
-      };
-      return PLAYED_EFFECTS.flatMap((effect) =>
+    () =>
+      PLAYED_EFFECTS.flatMap((effect) =>
         TIMELINE_LANES.flatMap((lane) =>
-          reverbSpans(nodes[effect].filter((node) => node.lane === lane))
+          reverbSpans(nodesByEffect[effect].filter((node) => node.lane === lane))
             .map((span) => ({ ...span, lane, effect })),
         ),
-      );
-    },
-    [timeline.bitcrushNodes, timeline.delayNodes, timeline.flangerNodes, timeline.reverbNodes],
+      ),
+    [nodesByEffect],
   );
 
   /* Seules celles qu'on voit entrent dans le document. La lecture des nœuds
@@ -2362,6 +2380,10 @@ export function TimelinePanel({
     timeline.filterNodes,
   ]);
 
+  /* Le play refuse dans sa poignée plutôt que par `disabled` : la bande AUTO
+     partage sa coque, et un parent désactivé lui couperait le pointeur. */
+  const playUnavailable = busy || timeline.clips.length === 0 || transport.status === "playing";
+
   return (
     <section className="timeline-panel" aria-label="Timeline">
       <div className="timeline-header">
@@ -2374,19 +2396,60 @@ export function TimelinePanel({
                   commandes qu'on presse cent fois par séance. */}
               <div className="transport-stack">
                 <div className="analog-transport">
-                <button
-                  className={`analog-transport-button analog-play${transport.status === "playing" ? " is-active" : ""}`}
-                  type="button"
-                  disabled={busy || timeline.clips.length === 0 || transport.status === "playing"}
-                  onClick={() => void onTogglePlayback()}
-                  title="Play · Spacebar"
-                >
-                  <div className="transport-led-socket">
-                    <i className={`transport-led transport-play-led${transport.status === "playing" ? " is-active" : ""}`} aria-hidden="true" />
-                  </div>
-                  <TransportGlyph name={preparing ? "busy" : "play"} />
-                  <span className="transport-button-label">PLAY</span>
-                </button>
+                {/* Une seule touche, deux commandes : le play, et sous lui
+                    une mince bande pour l'autoplay.
+
+                    La coque est un `div` et non un `button`. Deux raisons, et
+                    la seconde est la vraie : un bouton dans un bouton n'est
+                    pas du HTML valide, et surtout PLAY se désactive pendant la
+                    lecture — un élément désactivé cesse de recevoir le
+                    pointeur, si bien que la bande serait morte exactement au
+                    moment où l'on s'en sert. Le play porte donc
+                    `aria-disabled` et refuse dans sa poignée, comme les
+                    pastilles de la baie. */}
+                <div className={`analog-transport-button analog-play-stack${transport.status === "playing" ? " is-active" : ""}`}>
+                  <button
+                    className="analog-play"
+                    type="button"
+                    aria-disabled={playUnavailable}
+                    onClick={() => {
+                      if (playUnavailable) return;
+                      void onTogglePlayback();
+                    }}
+                    aria-label="Play"
+                    title="Play · Spacebar"
+                  >
+                    <div className="transport-led-socket">
+                      <i className={`transport-led transport-play-led${transport.status === "playing" ? " is-active" : ""}`} aria-hidden="true" />
+                    </div>
+                    <TransportGlyph name={preparing ? "busy" : "play"} />
+                    <span className="transport-button-label">PLAY</span>
+                  </button>
+                  {/* Ce que fait un clic dans la timeline : une règle de
+                      conduite du transport, donc posée sur le transport.
+                      Non persistée, comme les réglages de vue — allumé est
+                      l'état qu'on veut retrouver au lancement, et c'est le
+                      défaut. */}
+                  <button
+                    className={`analog-auto-strip${autoplay ? " is-active" : ""}`}
+                    type="button"
+                    aria-pressed={autoplay}
+                    onClick={() => onSetAutoplay(!autoplay)}
+                    aria-label={
+                      autoplay
+                        ? "Autoplay on: clicking the timeline starts playback"
+                        : "Autoplay off: clicking the timeline only moves the playhead"
+                    }
+                    title={
+                      autoplay
+                        ? "Autoplay on — a click starts playback"
+                        : "Autoplay off — a click only moves the playhead"
+                    }
+                  >
+                    <i className="analog-auto-led" aria-hidden="true" />
+                    <span>AUTO</span>
+                  </button>
+                </div>
                 <button
                   className={`analog-transport-button analog-pause${transport.status === "paused" ? " is-active" : ""}`}
                   type="button"
@@ -2514,7 +2577,9 @@ export function TimelinePanel({
                   aria-label={
                     drawArmable
                       ? `Pencil: ${drawShape} — click to cycle, or press S`
-                      : "Show a line first — VIEW"
+                      : automationView === "both"
+                        ? "Show volume or pan on its own — VIEW"
+                        : "Show a line first — VIEW"
                   }
                 >
                   <div className="transport-led-socket">
@@ -2552,7 +2617,13 @@ export function TimelinePanel({
                   <strong>Pencil</strong>
                   <span>Left half the shape, right half the period</span>
                   <span><kbd>S</kbd> shape · <kbd>D</kbd> period</span>
-                  <span>{drawArmable ? "Drag a clip's body to draw" : "Show a line first — VIEW"}</span>
+                  <span>
+                    {drawArmable
+                      ? "Drag a clip's body to draw"
+                      : automationView === "both"
+                        ? "Show volume or pan on its own — VIEW"
+                        : "Show a line first — VIEW"}
+                  </span>
                 </span>
                 </span>
               </div>
@@ -2572,64 +2643,25 @@ export function TimelinePanel({
           </div>
         </div>
 
-        {/* Ce que fait un clic dans la timeline. Ce n'est ni un réglage
-            d'affichage ni un traitement du son : une règle de conduite du
-            transport, à part du reste et posée après le VU-mètre.
-            Non persisté, comme les réglages de vue — allumé est l'état qu'on
-            veut retrouver au lancement, et c'est le défaut. */}
-        <div className="analog-transport autoplay-bay">
-          <span className="transport-hint">
-            <button
-              className={`analog-transport-button analog-autoplay${autoplay ? " is-active" : ""}`}
-              type="button"
-              aria-pressed={autoplay}
-              onClick={() => onSetAutoplay(!autoplay)}
-              aria-label={
-                autoplay
-                  ? "Autoplay on: clicking the timeline starts playback"
-                  : "Autoplay off: clicking the timeline only moves the playhead"
-              }
-            >
-              <div className="transport-led-socket">
-                <i
-                  className={`transport-led autoplay-led${autoplay ? " is-active" : ""}`}
-                  aria-hidden="true"
-                />
-              </div>
-              <TransportGlyph name="autoplay" />
-              <span className="transport-button-label">AUTO</span>
-            </button>
-            <span className="lane-hint-tip" aria-hidden="true">
-              <strong>Autoplay</strong>
-              <span>{autoplay ? "On — a click starts playback" : "Off — a click only moves the playhead"}</span>
-              <span>Clicking the timeline, whatever else is playing</span>
-            </span>
-          </span>
-          {/* Un vrai bouton de la console, à côté d'AUTO : il ouvre l'écran des
-              effets joués, qui appartient au transport plus qu'aux réglages. */}
-          <span className="transport-hint">
-            <button
-              className={`analog-transport-button analog-mixfx${mixEffectsOpen ? " is-active" : ""}`}
-              type="button"
-              onClick={onToggleMixEffects}
-              aria-pressed={mixEffectsOpen}
-              aria-label="Mix Effects"
-            >
-              <div className="transport-led-socket">
-                <i
-                  className={`transport-led mixfx-led${mixEffectsOpen ? " is-active" : ""}`}
-                  aria-hidden="true"
-                />
-              </div>
-              <TransportGlyph name="mixfx" />
-              <span className="transport-button-label">MIX FX</span>
-            </button>
-            <span className="lane-hint-tip" aria-hidden="true">
-              <strong>Mix Effects</strong>
-              <span>Open the effects panel — press again to put it away</span>
-            </span>
-          </span>
-        </div>
+        {/* Les effets joués, à demeure dans la console.
+
+            Ils vivaient dans un panneau qu'une touche `MIX FX` ouvrait par
+            dessus la bibliothèque, et `AUTO` occupait la plaque d'à côté. Les
+            deux touches sont parties : la barre avait déjà 201 px morts entre
+            le VU-mètre et `BOUNCE MIX`, elles en rendent 138, et les 339 px
+            qui en résultent tiennent la grille entière. Un panneau qu'il faut
+            ouvrir est un panneau qu'on oublie de fermer. */}
+        <MixFxBay
+          onSetKeys={onSetEffectKeys}
+          onSetErasing={onSetErasing}
+          transportStatus={transport.status}
+          onLivePass={onLivePass}
+          onWriteSpan={onWriteEffectSpan}
+          onEraseSpan={onEraseEffectSpan}
+          nodesByEffect={nodesByEffect}
+          liveTransport={liveTransport}
+          busy={busy}
+        />
 
         <div className="timeline-controls">
           {/* Le rendu hors ligne relit tous les clips de bout en bout : il
