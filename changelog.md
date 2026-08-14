@@ -12,6 +12,108 @@ wrote it. What changed, and what it means when you sit down to build a mix.
 
 ---
 
+## 1.5.0 — 2026-08-13
+
+Mix Effects: four effects you play by hand onto a track, and they write
+themselves onto the timeline.
+
+### Added
+
+- **Mix Effects: play four effects onto a track by hand.** A `MIX FX` button
+  toggles a panel that sits over the library column rather than covering the
+  timeline — square icon pads, four per track, drawn like the transport keys.
+  Press `MIX FX` again to put it away. Hold reverb for a shared room, flange
+  for a sweeping comb, crush to drop the track to eight bits, or delay for an
+  echo. Reverb, flange and delay keep ringing after you let go, because they
+  sit on sends — hold the delay, cut the track, and the echo
+  carries the transition. Crush replaces the sound only while you hold it,
+  because it sits inline; the other three are taken after it, so you hear the
+  room around the crushed sound.
+- **The delay follows the project tempo.** A dotted-eighth echo, recomputed from
+  the tempo map on every frame, so it stays on the beat even through a tempo
+  ramp — where an echo set in milliseconds would drift off it. It ping-pongs
+  across the ears — first repeat left, second right, third left — and each
+  repeat comes back a little darker, so it sits behind the music instead of
+  fighting it.
+- **A played pass is written onto the timeline.** Release the pad and the pass
+  becomes automation you can keep: a coloured region on the track — purple for
+  reverb, green for flange, magenta for crush, orange for delay — whose shading
+  is the automation curve itself. It fades in and out exactly where the ramp
+  does, on a long pass and a short one alike. Where effects overlap on one
+  track, the region is hatched in their colours rather than blended into one
+  that means none of them. `Ctrl+Z` undoes a pass like any other edit, and
+  replaying over a region corrects it instead of stacking a second one.
+  Right-click a region for **Delete Mix FX Automation**, which clears every
+  effect under the cursor in one undoable step.
+- **An eraser you play like an effect.** A last pad on each track, held the
+  same way: sweep it over automation while the music runs and it wipes every
+  effect it passes, in one undoable step. The track falls silent under the
+  eraser as you sweep, so you hear what you are removing while you remove it
+  rather than after you let go. To remove just one effect, right-click its
+  region on the timeline instead.
+- **The pass draws itself while you play it.** A coloured band grows from where
+  you pressed and follows the playhead, so you can see how far you have taken
+  it. The finished region, with its fades, takes over the moment you let go.
+- **The pad follows the timeline, not just your finger.** When a recorded pass
+  plays back under the playhead, its pad lights up the same way it does when
+  held — the panel tells you what you are hearing.
+- **`REW` and `FFWD` on the Mix Effects panel.** Replaying a pass you just
+  missed is the most common thing to do here, and leaving the panel to do it
+  broke the thread. A click jumps one bar — musical rather than a number of
+  seconds — and **holding `FFWD` fast-forwards at 2×**.
+
+### Changed
+
+- **The library remembers how you sorted it.** It went back to sorting by artist
+  every time the program started. Your choice is now kept beside the executable,
+  with everything else the program writes.
+- **The delay carries.** Seven repeats, each quieter than the last so the echo
+  tails off on its own, and the loudest return of the four — a repeat is a
+  single event with one moment to be heard, where a reverb tail has seconds.
+- **Crush sits under the track instead of on top of it.** It was the only one of
+  the four running at full level — the others are all mixed in under the dry
+  sound — so it came across louder than its neighbours. It is 3 dB quieter now.
+- **The reverb has more air, and sits further back.** It was missing high end:
+  the tail now keeps its highs far longer, and the return is lifted about 3 dB
+  above 3 kHz, with a ceiling at 12 kHz so the lift does not turn into hiss.
+  The return itself is 6 dB quieter to make room for it — brighter, and sitting
+  further behind the music than it used to.
+
+### Fixed
+
+- **Effect tails last the same time on any audio device.** Their budgets were
+  written in frames at 48 kHz, so on a 96 kHz interface they were cut in half —
+  the delay's echo would have stopped dead partway through on a slow track.
+- **The Beatgrid Editor's `Save` waits for `Snap to beat` to finish.** Snapping
+  rewrites the tempo and downbeat when it lands, so saving mid-snap quietly kept
+  the values from before it ran. `Restore Automatic` and `Reanalyze` wait for
+  the same reason.
+- **Clicking the timeline moves the playhead again.** The coloured effect
+  regions were catching the click meant for the track underneath, so once you
+  had played a few passes much of the timeline stopped responding. A tint is a
+  background now, not a control; right-click still removes the region under the
+  cursor.
+- **Reverb and delay fade away when you let go instead of stopping dead.**
+  Releasing a pad writes the pass, and writing used to rebuild the mix from
+  scratch — which emptied the room and the echo line at the exact moment their
+  tail should have started.
+- **A pad lights only while its effect is sounding.** It used to keep a coloured
+  mark once you had used it during the session — a second meaning on the same
+  button, and one that never went away. A pad and its coloured region on the
+  timeline now say the same thing at the same moment.
+- **A pad no longer stays lit after you stop.** The transport is only polled
+  during playback, so pausing inside a recorded pass left its pad on with
+  nothing left to turn it off — the reverb pad in particular looked stuck on.
+  A pad shows what you are hearing, and stopped you hear nothing.
+- **A held pad can always be released.** If an edit started while you were
+  holding one, the pad went disabled mid-gesture and never saw your finger lift,
+  leaving the effect open.
+- **`Ctrl+Z` now undoes a played effect pass.** It undid every other kind of
+  edit, but a reverb pass stayed on the timeline and kept playing.
+- **`CLEAR TIMELINE` now clears played effect automation too.** It was left
+  behind with no clip to carry it — invisible, since there was nothing to tint —
+  and came back audible as soon as you dropped a clip in the same place.
+
 ## 1.0.0 — 2026-08-04
 
 First release.

@@ -86,6 +86,26 @@ pub struct TimelineSnapshot {
     pub pan_nodes: Vec<TimelinePanNode>,
     pub draw_groups: Vec<TimelineDrawGroup>,
     pub filter_nodes: Vec<TimelineFilterNode>,
+    /// L'envoi de reverb par voie, écrit en jouant.
+    pub reverb_nodes: Vec<TimelineReverbNode>,
+    /// L'envoi de flanger par voie, écrit de la même façon.
+    ///
+    /// Le même type de nœud que la reverb : les effets se jouent tous du même
+    /// geste et s'écrivent de la même forme — zéro, un, un, zéro. Un second
+    /// type identique n'aurait rien dit de plus.
+    pub flanger_nodes: Vec<TimelineReverbNode>,
+    /// Le dosage du bitcrush par voie.
+    ///
+    /// Même forme et même geste que les deux autres. Ce qui le distingue vit
+    /// dans le moteur : c'est un **insert**, pas un départ — il remplace le son
+    /// au lieu de s'y ajouter. La base n'a pas à connaître cette différence.
+    pub bitcrush_nodes: Vec<TimelineReverbNode>,
+    /// L'envoi de delay par voie.
+    ///
+    /// Un départ comme la reverb, mais dont la **longueur suit le tempo** : le
+    /// moteur la recalcule à chaque image depuis la carte de tempo, si bien que
+    /// l'écho reste sur le temps même pendant une rampe de BPM.
+    pub delay_nodes: Vec<TimelineReverbNode>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -130,6 +150,58 @@ pub struct TimelineFilterNode {
     pub beat: f64,
     pub value: f64,
     pub tension: f64,
+}
+
+/// Un point de l'envoi d'un effet joué, de zéro à un.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineReverbNode {
+    pub id: i64,
+    pub lane: i64,
+    pub beat: f64,
+    pub value: f64,
+}
+
+/// Les effets qu'on joue à la main sur l'écran des effets.
+///
+/// Un paramètre plutôt qu'un jeu de fonctions par effet. Chacun a sa table, sa
+/// couleur et son envoi, mais **le geste est le même** : on tient, ça monte, on
+/// relâche, ça redescend, et quatre nœuds s'écrivent. Dupliquer l'écriture pour
+/// chaque effet garantissait qu'ils finiraient par diverger sur un détail que
+/// personne n'aurait décidé — le programme porte déjà six traces de cette
+/// erreur-là.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlayedEffect {
+    Reverb,
+    Flanger,
+    Bitcrush,
+    Delay,
+}
+
+impl PlayedEffect {
+    /// Tous les effets, pour les gestes qui les emportent ensemble.
+    pub const ALL: [PlayedEffect; 4] = [
+        PlayedEffect::Reverb,
+        PlayedEffect::Flanger,
+        PlayedEffect::Bitcrush,
+        PlayedEffect::Delay,
+    ];
+
+    /// La table qui porte son automation.
+    ///
+    /// Ces noms sont des constantes du programme, jamais du texte reçu de
+    /// l'interface : c'est ce qui rend leur interpolation dans une requête sûre,
+    /// et l'énumération est là pour qu'aucun appelant ne puisse en fournir
+    /// d'autres.
+    fn table(self) -> &'static str {
+        match self {
+            PlayedEffect::Reverb => "timeline_reverb_nodes",
+            PlayedEffect::Flanger => "timeline_flanger_nodes",
+            PlayedEffect::Bitcrush => "timeline_bitcrush_nodes",
+            PlayedEffect::Delay => "timeline_delay_nodes",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -205,6 +277,26 @@ pub(crate) struct TimelineRenderPlan {
     pub volume_nodes: Vec<TimelineVolumeNode>,
     pub pan_nodes: Vec<TimelinePanNode>,
     pub filter_nodes: Vec<TimelineFilterNode>,
+    /// L'envoi de reverb par voie, écrit en jouant.
+    pub reverb_nodes: Vec<TimelineReverbNode>,
+    /// L'envoi de flanger par voie, écrit de la même façon.
+    ///
+    /// Le même type de nœud que la reverb : les effets se jouent tous du même
+    /// geste et s'écrivent de la même forme — zéro, un, un, zéro. Un second
+    /// type identique n'aurait rien dit de plus.
+    pub flanger_nodes: Vec<TimelineReverbNode>,
+    /// Le dosage du bitcrush par voie.
+    ///
+    /// Même forme et même geste que les deux autres. Ce qui le distingue vit
+    /// dans le moteur : c'est un **insert**, pas un départ — il remplace le son
+    /// au lieu de s'y ajouter. La base n'a pas à connaître cette différence.
+    pub bitcrush_nodes: Vec<TimelineReverbNode>,
+    /// L'envoi de delay par voie.
+    ///
+    /// Un départ comme la reverb, mais dont la **longueur suit le tempo** : le
+    /// moteur la recalcule à chaque image depuis la carte de tempo, si bien que
+    /// l'écho reste sur le temps même pendant une rampe de BPM.
+    pub delay_nodes: Vec<TimelineReverbNode>,
 }
 
 #[derive(Clone, Debug)]
@@ -408,6 +500,10 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
     let pan_nodes = pan_nodes(connection)?;
     let draw_groups = draw_groups(connection)?;
     let filter_nodes = filter_nodes(connection)?;
+    let reverb_nodes = effect_nodes(connection, PlayedEffect::Reverb)?;
+    let flanger_nodes = effect_nodes(connection, PlayedEffect::Flanger)?;
+    let bitcrush_nodes = effect_nodes(connection, PlayedEffect::Bitcrush)?;
+    let delay_nodes = effect_nodes(connection, PlayedEffect::Delay)?;
     Ok(TimelineSnapshot {
         project_bpm,
         limiter_enabled,
@@ -419,6 +515,10 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
         pan_nodes,
         draw_groups,
         filter_nodes,
+        reverb_nodes,
+        flanger_nodes,
+        bitcrush_nodes,
+        delay_nodes,
     })
 }
 
@@ -563,6 +663,32 @@ fn draw_groups(connection: &Connection) -> Result<Vec<TimelineDrawGroup>, String
                 end_beat: row.get(4)?,
                 shape: row.get(5)?,
                 period: row.get(6)?,
+            })
+        })
+        .map_err(database_read_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(database_read_error)
+}
+
+fn effect_nodes(
+    connection: &Connection,
+    effect: PlayedEffect,
+) -> Result<Vec<TimelineReverbNode>, String> {
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT id, lane, beat, value
+             FROM {}
+             ORDER BY lane, beat, id",
+            effect.table()
+        ))
+        .map_err(database_read_error)?;
+    statement
+        .query_map([], |row| {
+            Ok(TimelineReverbNode {
+                id: row.get(0)?,
+                lane: row.get(1)?,
+                beat: row.get(2)?,
+                value: row.get(3)?,
             })
         })
         .map_err(database_read_error)?
@@ -811,6 +937,10 @@ pub(crate) fn render_plan(connection: &Connection) -> Result<TimelineRenderPlan,
         volume_nodes: timeline.volume_nodes,
         pan_nodes: timeline.pan_nodes,
         filter_nodes: timeline.filter_nodes,
+        reverb_nodes: timeline.reverb_nodes,
+        flanger_nodes: timeline.flanger_nodes,
+        bitcrush_nodes: timeline.bitcrush_nodes,
+        delay_nodes: timeline.delay_nodes,
     })
 }
 
@@ -1688,6 +1818,123 @@ fn lane_clip_spans(connection: &Connection, lane: i64) -> Result<Vec<(i64, f64, 
 /// interpolerait droit à travers le vide : le filtre resterait engagé là où on
 /// vient justement de tout retirer. Un nœud de bypass est donc reposé à chaque
 /// bord de ce qu'on efface, dès qu'il reste quelque chose à border.
+/// Les deux rampes d'une passe de reverb, en temps.
+///
+/// Elles ne sont pas symétriques, et c'est voulu : appuyer sur le temps doit
+/// s'entendre **sur** le temps, donc la montée est courte; relâcher ne doit pas
+/// couper net, donc la descente prend une croche pointée.
+///
+/// Ce sont les valeurs que le moteur applique au geste vivant — voir
+/// `REVERB_ATTACK_SECONDS` et `REVERB_RELEASE_BEATS`. Les faire diverger
+/// donnerait une passe enregistrée qui ne ressemble pas à ce qu'on a joué.
+const REVERB_SPAN_RAMP_IN_BEATS: f64 = 0.125;
+const REVERB_SPAN_RAMP_OUT_BEATS: f64 = 0.75;
+
+/// Écrit une passe d'effet jouée à la main sur une voie.
+///
+/// Quatre nœuds : zéro, un, un, zéro. Les deux rampes tombent **à l'intérieur**
+/// de la passe quand elle est assez longue, pour que le geste couvre bien ce
+/// qu'on visait; sur une passe très courte elles se partagent la place plutôt
+/// que de déborder sur ce qui précède et ce qui suit.
+///
+/// Les nœuds déjà présents dans la plage sont remplacés : rejouer par-dessus
+/// corrige, sans empiler deux courbes que rien ne distinguerait.
+///
+/// La même fonction pour tous les effets : ils se jouent du même geste, et deux
+/// écritures jumelles n'auraient fait que se donner l'occasion de diverger.
+pub fn write_effect_span(
+    connection: &mut Connection,
+    effect: PlayedEffect,
+    lane: i64,
+    start_beat: f64,
+    end_beat: f64,
+) -> Result<TimelineSnapshot, String> {
+    validate_lane(lane)?;
+    if !start_beat.is_finite() || !end_beat.is_finite() || start_beat < 0.0 {
+        return Err("That effect pass is outside the timeline.".to_owned());
+    }
+    let start = start_beat.max(0.0);
+    let end = end_beat.min(MAX_TIMELINE_BEAT);
+    if end - start < 1.0e-6 {
+        // Un appui sans durée n'écrit rien : mieux vaut ne rien laisser qu'un
+        // point que personne ne saura attraper.
+        return snapshot(connection);
+    }
+
+    // Les deux rampes se partagent la passe quand elle est trop courte pour les
+    // contenir, chacune au prorata : elles gardent alors leur rapport plutôt que
+    // de se croiser.
+    let wanted = REVERB_SPAN_RAMP_IN_BEATS + REVERB_SPAN_RAMP_OUT_BEATS;
+    let room = (end - start).min(wanted) / wanted;
+    let ramp_in = REVERB_SPAN_RAMP_IN_BEATS * room;
+    let ramp_out = REVERB_SPAN_RAMP_OUT_BEATS * room;
+    let points = [
+        (start, 0.0_f64),
+        (start + ramp_in, 1.0),
+        (end - ramp_out, 1.0),
+        (end, 0.0),
+    ];
+
+    let table = effect.table();
+    let transaction = connection.transaction().map_err(database_write_error)?;
+    transaction
+        .execute(
+            &format!("DELETE FROM {table} WHERE lane = ?1 AND beat >= ?2 AND beat <= ?3"),
+            params![lane, start, end],
+        )
+        .map_err(database_write_error)?;
+    {
+        let mut insert = transaction
+            .prepare(&format!(
+                "INSERT INTO {table} (lane, beat, value)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(lane, beat) DO UPDATE SET value = excluded.value"
+            ))
+            .map_err(database_write_error)?;
+        for (beat, value) in points {
+            insert
+                .execute(params![lane, beat, value])
+                .map_err(database_write_error)?;
+        }
+    }
+    transaction.commit().map_err(database_write_error)?;
+    snapshot(connection)
+}
+
+/// Efface l'envoi d'un effet — ou de tous — sur une plage d'une voie.
+///
+/// `None` emporte tout : c'est ce que fait la gomme de l'écran des effets, qui
+/// est un seul geste et doit donc être une seule édition, annulable d'un seul
+/// `Ctrl+Z`. Un clic droit sur une région, lui, ne vise que l'effet de cette
+/// région.
+pub fn clear_effect_range(
+    connection: &mut Connection,
+    effect: Option<PlayedEffect>,
+    lane: i64,
+    start_beat: f64,
+    end_beat: f64,
+) -> Result<TimelineSnapshot, String> {
+    validate_lane(lane)?;
+    if !start_beat.is_finite() || !end_beat.is_finite() || end_beat < start_beat {
+        return Err("That effect range is outside the timeline.".to_owned());
+    }
+    let start = start_beat.max(0.0);
+    let transaction = connection.transaction().map_err(database_write_error)?;
+    for target in effect.map_or(PlayedEffect::ALL.to_vec(), |one| vec![one]) {
+        transaction
+            .execute(
+                &format!(
+                    "DELETE FROM {} WHERE lane = ?1 AND beat >= ?2 AND beat <= ?3",
+                    target.table()
+                ),
+                params![lane, start, end_beat],
+            )
+            .map_err(database_write_error)?;
+    }
+    transaction.commit().map_err(database_write_error)?;
+    snapshot(connection)
+}
+
 pub fn remove_clip(connection: &mut Connection, clip_id: i64) -> Result<TimelineSnapshot, String> {
     let Some((lane, span_start, span_end)) = connection
         .query_row(
@@ -1737,6 +1984,10 @@ pub fn remove_clip(connection: &mut Connection, clip_id: i64) -> Result<Timeline
             "timeline_volume_nodes",
             "timeline_pan_nodes",
             "timeline_filter_nodes",
+            PlayedEffect::Reverb.table(),
+            PlayedEffect::Flanger.table(),
+            PlayedEffect::Bitcrush.table(),
+            PlayedEffect::Delay.table(),
         ] {
             transaction
                 .execute(
@@ -1792,6 +2043,14 @@ pub fn clear_timeline(connection: &Connection) -> Result<TimelineSnapshot, Strin
              DELETE FROM timeline_pan_nodes;
              DELETE FROM timeline_draw_groups;
              DELETE FROM timeline_filter_nodes;
+             -- Les effets joués manquaient à cette liste : vider la timeline
+             -- laissait derrière lui des passes de reverb sans un clip pour les
+             -- porter, invisibles puisqu'il n'y avait plus rien à teinter, et
+             -- qui revenaient sonner dès qu'on reposait un clip au même endroit.
+             DELETE FROM timeline_reverb_nodes;
+             DELETE FROM timeline_flanger_nodes;
+             DELETE FROM timeline_bitcrush_nodes;
+             DELETE FROM timeline_delay_nodes;
              UPDATE timeline_lanes SET is_muted = 0, is_solo = 0;
              COMMIT;",
         )
@@ -2525,6 +2784,30 @@ pub fn restore_snapshot(
             .map_err(database_write_error)?;
     }
 
+    // Les effets joués manquaient à cette restauration : `Ctrl+Z` défaisait
+    // tout sauf une passe de reverb, qui restait sur la timeline et continuait
+    // de sonner. L'instantané la portait pourtant — seule la remise en base
+    // l'oubliait.
+    for (effect, nodes) in [
+        (PlayedEffect::Reverb, &target.reverb_nodes),
+        (PlayedEffect::Flanger, &target.flanger_nodes),
+        (PlayedEffect::Bitcrush, &target.bitcrush_nodes),
+        (PlayedEffect::Delay, &target.delay_nodes),
+    ] {
+        let table = effect.table();
+        transaction
+            .execute(&format!("DELETE FROM {table}"), [])
+            .map_err(database_write_error)?;
+        for node in nodes {
+            transaction
+                .execute(
+                    &format!("INSERT INTO {table} (id, lane, beat, value) VALUES (?1, ?2, ?3, ?4)"),
+                    params![node.id, node.lane, node.beat, node.value],
+                )
+                .map_err(database_write_error)?;
+        }
+    }
+
     transaction.commit().map_err(database_write_error)?;
 
     snapshot(connection)
@@ -2582,6 +2865,23 @@ fn validate_restored_snapshot(target: &TimelineSnapshot) -> Result<(), String> {
         validate_restored_beat(node.beat)?;
         validate_filter_value(node.value)?;
         validate_filter_tension(node.tension)?;
+    }
+
+    // L'instantané vient de l'interface : un envoi hors bornes passerait la
+    // contrainte SQL en erreur au milieu d'une restauration, et l'historique
+    // resterait à moitié appliqué.
+    for node in target
+        .reverb_nodes
+        .iter()
+        .chain(&target.flanger_nodes)
+        .chain(&target.bitcrush_nodes)
+        .chain(&target.delay_nodes)
+    {
+        validate_lane(node.lane)?;
+        validate_restored_beat(node.beat)?;
+        if !node.value.is_finite() || !(0.0..=1.0).contains(&node.value) {
+            return Err("This history entry holds an effect send out of range.".to_owned());
+        }
     }
 
     Ok(())
@@ -3162,6 +3462,10 @@ pub(crate) fn prepare_bake(connection: &Connection, clip_id: i64) -> Result<Bake
         end_beat: geometry.visual_end_beat,
         audible_lane_mask: 1 << clip.lane,
         limiter_enabled: false,
+        reverb_nodes: Vec::new(),
+        flanger_nodes: Vec::new(),
+        bitcrush_nodes: Vec::new(),
+        delay_nodes: Vec::new(),
         compressor_enabled: false,
         clips: vec![TimelineRenderClip {
             id: clip.id,
@@ -3575,6 +3879,10 @@ mod tests {
             pan_nodes: Vec::new(),
             draw_groups: Vec::new(),
             filter_nodes: Vec::new(),
+            reverb_nodes: Vec::new(),
+            flanger_nodes: Vec::new(),
+            bitcrush_nodes: Vec::new(),
+            delay_nodes: Vec::new(),
         };
         assert_eq!(audible_lane_mask(&snapshot), 0b101);
 
@@ -3708,6 +4016,30 @@ mod tests {
             add_volume_node(&store.connection, 0, 4.0).expect("a volume node");
             add_pan_node(&store.connection, 0, 4.0).expect("a pan node");
             add_filter_node(&store.connection, 0, 4.0, 0.5).expect("a filter node");
+            super::write_effect_span(
+                &mut store.connection,
+                super::PlayedEffect::Reverb,
+                0,
+                2.0,
+                10.0,
+            )
+            .expect("a reverb pass");
+            super::write_effect_span(
+                &mut store.connection,
+                super::PlayedEffect::Flanger,
+                0,
+                3.0,
+                9.0,
+            )
+            .expect("a flanger pass");
+            super::write_effect_span(
+                &mut store.connection,
+                super::PlayedEffect::Bitcrush,
+                0,
+                5.0,
+                7.0,
+            )
+            .expect("a bitcrush pass");
 
             let full = snapshot(&store.connection).expect("the timeline should read");
             assert!(
@@ -3721,6 +4053,14 @@ mod tests {
             assert!(cleared.volume_nodes.is_empty(), "volume nodes should go");
             assert!(cleared.filter_nodes.is_empty(), "filter nodes should go");
             assert!(cleared.pan_nodes.is_empty(), "pan nodes should go too");
+            // Les effets joués manquaient à ce balayage : vider la timeline
+            // laissait des passes derrière lui, sans clip pour les porter.
+            assert!(cleared.reverb_nodes.is_empty(), "reverb passes should go");
+            assert!(cleared.flanger_nodes.is_empty(), "flanger passes should go");
+            assert!(
+                cleared.bitcrush_nodes.is_empty(),
+                "bitcrush passes should go"
+            );
 
             let restored =
                 restore_snapshot(&mut store.connection, &full).expect("the history should restore");
@@ -3730,6 +4070,23 @@ mod tests {
                 "an Undo should bring the pan automation back"
             );
             assert_eq!(restored.volume_nodes.len(), full.volume_nodes.len());
+            // Et les effets joués aussi : `Ctrl+Z` défaisait tout sauf eux, qui
+            // restaient sur la timeline et continuaient de sonner.
+            assert_eq!(
+                restored.reverb_nodes.len(),
+                full.reverb_nodes.len(),
+                "an Undo should bring a played reverb pass back"
+            );
+            assert_eq!(
+                restored.flanger_nodes.len(),
+                full.flanger_nodes.len(),
+                "and the flanger with it"
+            );
+            assert_eq!(
+                restored.bitcrush_nodes.len(),
+                full.bitcrush_nodes.len(),
+                "and the bitcrush too"
+            );
         }
 
         let _ = fs::remove_file(&fake_mp3);
@@ -4259,6 +4616,164 @@ mod tests {
             super::uncovered_intervals((8.0, 24.0), &[(24.0, 40.0)]),
             vec![(8.0, 24.0)]
         );
+    }
+
+    /// Une passe jouée s'écrit en quatre nœuds, avec ses deux rampes.
+    ///
+    /// C'est cette forme qui donne le dégradé aux extrémités, à l'écran comme
+    /// à l'oreille : sans elle, la reverb s'ouvrirait et se fermerait d'un
+    /// coup, ce qui ne se fait pas musicalement.
+    #[test]
+    fn a_played_reverb_pass_ramps_in_and_out() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-reverb-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+
+        {
+            let mut store = LibraryStore::open(&database_path).expect("database should open");
+
+            let after = super::write_effect_span(
+                &mut store.connection,
+                super::PlayedEffect::Reverb,
+                1,
+                8.0,
+                24.0,
+            )
+            .expect("the pass should be written");
+            let nodes: Vec<_> = after
+                .reverb_nodes
+                .iter()
+                .map(|node| (node.beat, node.value))
+                .collect();
+            assert_eq!(
+                nodes,
+                vec![(8.0, 0.0), (8.125, 1.0), (23.25, 1.0), (24.0, 0.0)],
+                "quatre nœuds, montée courte et descente longue"
+            );
+            assert!(after.reverb_nodes.iter().all(|node| node.lane == 1));
+
+            // Une passe très courte partage la place au lieu de déborder sur ce
+            // qui l'entoure.
+            super::clear_effect_range(&mut store.connection, None, 1, 0.0, 64.0)
+                .expect("the range should clear");
+            let short = super::write_effect_span(
+                &mut store.connection,
+                super::PlayedEffect::Reverb,
+                1,
+                4.0,
+                4.4,
+            )
+            .expect("a short pass should be written");
+            let beats: Vec<f64> = short.reverb_nodes.iter().map(|node| node.beat).collect();
+            assert!(
+                beats.first() == Some(&4.0) && beats.last() == Some(&4.4),
+                "la passe courte doit rester dans ses bornes : {beats:?}"
+            );
+
+            // Rejouer par-dessus corrige au lieu d'empiler.
+            let again = super::write_effect_span(
+                &mut store.connection,
+                super::PlayedEffect::Reverb,
+                1,
+                4.0,
+                4.4,
+            )
+            .expect("replaying should be allowed");
+            assert_eq!(again.reverb_nodes.len(), short.reverb_nodes.len());
+
+            // Un appui sans durée n'écrit rien à attraper.
+            super::clear_effect_range(&mut store.connection, None, 1, 0.0, 64.0)
+                .expect("the range should clear");
+            let empty = super::write_effect_span(
+                &mut store.connection,
+                super::PlayedEffect::Reverb,
+                1,
+                12.0,
+                12.0,
+            )
+            .expect("a zero-length pass is not an error");
+            assert!(empty.reverb_nodes.is_empty());
+
+            // Les deux effets vivent dans deux tables : jouer l'un ne touche
+            // pas l'autre, et une seule fonction les écrit tous les deux.
+            super::clear_effect_range(&mut store.connection, None, 1, 0.0, 64.0)
+                .expect("the range should clear");
+            super::write_effect_span(
+                &mut store.connection,
+                super::PlayedEffect::Reverb,
+                1,
+                8.0,
+                24.0,
+            )
+            .expect("a reverb pass should be written");
+            let both = super::write_effect_span(
+                &mut store.connection,
+                super::PlayedEffect::Flanger,
+                1,
+                16.0,
+                32.0,
+            )
+            .expect("a flanger pass should be written");
+            assert_eq!(both.reverb_nodes.len(), 4, "la reverb reste intacte");
+            assert_eq!(both.flanger_nodes.len(), 4, "le flanger a sa propre table");
+            assert_eq!(both.flanger_nodes.first().map(|node| node.beat), Some(16.0));
+
+            // Nommer un effet ne touche que lui…
+            let one = super::clear_effect_range(
+                &mut store.connection,
+                Some(super::PlayedEffect::Reverb),
+                1,
+                0.0,
+                64.0,
+            )
+            .expect("one effect should clear");
+            assert!(one.reverb_nodes.is_empty());
+            assert_eq!(one.flanger_nodes.len(), 4, "le flanger n'était pas visé");
+
+            // …et n'en nommer aucun les emporte tous, ce que fait la gomme.
+            let none = super::clear_effect_range(&mut store.connection, None, 1, 0.0, 64.0)
+                .expect("every effect should clear");
+            assert!(none.reverb_nodes.is_empty() && none.flanger_nodes.is_empty());
+        }
+
+        for suffix in ["", "-wal", "-shm"] {
+            let candidate =
+                std::path::PathBuf::from(format!("{}{}", database_path.to_string_lossy(), suffix));
+            if candidate.exists() {
+                fs::remove_file(candidate).expect("test database should be removed");
+            }
+        }
+    }
+
+    /// Le nom de chaque effet est un **contrat entre deux langages** : le
+    /// frontend l'écrit dans `PLAYED_EFFECTS`, cette énumération le reçoit. Une
+    /// divergence ne se verrait ni à la compilation ni à l'œil — la commande
+    /// échouerait à l'exécution, et l'effet serait simplement muet.
+    #[test]
+    fn every_effect_name_matches_the_one_the_interface_sends() {
+        for (name, expected) in [
+            ("reverb", super::PlayedEffect::Reverb),
+            ("flanger", super::PlayedEffect::Flanger),
+            ("bitcrush", super::PlayedEffect::Bitcrush),
+            ("delay", super::PlayedEffect::Delay),
+        ] {
+            let parsed: super::PlayedEffect = serde_json::from_str(&format!("\"{name}\""))
+                .unwrap_or_else(|error| panic!("« {name} » devrait se lire : {error}"));
+            assert_eq!(parsed, expected);
+        }
+
+        // Et chacun a bien sa table, toutes distinctes : deux effets qui
+        // partageraient la leur se marcheraient dessus sans rien signaler.
+        let tables: std::collections::BTreeSet<&str> = super::PlayedEffect::ALL
+            .iter()
+            .map(|effect| effect.table())
+            .collect();
+        assert_eq!(tables.len(), super::PlayedEffect::ALL.len());
     }
 
     #[test]

@@ -25,8 +25,6 @@ interface LibraryContextMenu {
   y: number;
 }
 
-const DEFAULT_SORT: LibrarySort = { key: "artist", direction: "ascending" };
-
 const SORT_OPTIONS: Array<{ key: LibrarySortKey; label: string }> = [
   { key: "artist", label: "Artist" },
   { key: "title", label: "Track" },
@@ -36,6 +34,9 @@ const SORT_OPTIONS: Array<{ key: LibrarySortKey; label: string }> = [
 
 interface LibraryPanelProps {
   tracks: LibraryTrack[];
+  /** Le tri en cours, retenu d'une séance à l'autre. */
+  sort: LibrarySort;
+  onSortChange: (update: (current: LibrarySort) => LibrarySort) => void;
   libraryBusy: boolean;
   analysisBusy: boolean;
   timelineAddBusy: boolean;
@@ -66,6 +67,8 @@ interface LibraryPanelProps {
 
 export function LibraryPanel({
   tracks,
+  sort,
+  onSortChange,
   libraryBusy,
   analysisBusy,
   timelineAddBusy,
@@ -94,7 +97,10 @@ export function LibraryPanel({
   const pointerDrag = useRef<PointerDragCandidate | null>(null);
   const suppressClickUntil = useRef(0);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
-  const [sort, setSort] = useState<LibrarySort>(DEFAULT_SORT);
+  /* Le tri est **détenu plus haut**, parce qu'il survit à la fermeture du
+     programme. Ce panneau le montre et demande à en changer; il n'a aucune
+     raison d'en être la source, et l'y garder aurait fait vivre l'état à un
+     endroit et sa persistance à un autre. */
   const [contextMenu, setContextMenu] = useState<LibraryContextMenu | null>(null);
   const sortedTracks = useMemo(
     () => sortLibraryTracks(tracks, timelineTrackOrder, sort),
@@ -102,7 +108,7 @@ export function LibraryPanel({
   );
 
   const selectSort = (key: LibrarySortKey) => {
-    setSort((current) => {
+    onSortChange((current) => {
       if (current.key === key) {
         return {
           key,

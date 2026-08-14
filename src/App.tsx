@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BeatgridEditor } from "./components/BeatgridEditor";
 import { ClipEqModal } from "./components/ClipEqModal";
 import { LibraryPanel } from "./components/LibraryPanel";
+import { MixEffectsScreen } from "./components/MixEffectsScreen";
 import { TimelinePanel } from "./components/TimelinePanel";
 import { formatDuration } from "./lib/formatDuration";
 import {
@@ -15,7 +16,15 @@ import {
   formatImportSummary,
 } from "./lib/formatImportSummary";
 import { createLiveTransport } from "./lib/liveTransport";
+import type { PlayedEffect } from "./lib/mixEffects";
 import { UndoRedoHistory } from "./lib/undoRedo";
+import {
+  DEFAULT_LIBRARY_SORT,
+  LIBRARY_SORT_PREFERENCE,
+  parseLibrarySort,
+  serializeLibrarySort,
+  type LibrarySort,
+} from "./lib/librarySort";
 import type { LibraryPointerDrag } from "./lib/timelinePointerDrag";
 import { snapTimelineBeat } from "./lib/timelineSnap";
 import { resolveLaneShortcut, resolveSpaceTarget, shouldCaptureTimelineSpace } from "./lib/timelineShortcut";
@@ -68,6 +77,10 @@ const EMPTY_TIMELINE: TimelineSnapshot = {
     panNodes: [],
     drawGroups: [],
     filterNodes: [],
+    reverbNodes: [],
+    flangerNodes: [],
+    bitcrushNodes: [],
+    delayNodes: [],
 };
 
 const EMPTY_TIMELINE_TRANSPORT: TimelineTransportSnapshot = {
@@ -151,6 +164,55 @@ function App() {
    * il n'y en a pas.
    */
   const [renderKind, setRenderKind] = useState<"stems" | "bake">("stems");
+  /** L'écran des effets joués. Non persisté : on l'ouvre pour un geste. */
+  /**
+   * Le tri de la bibliothèque, retenu d'une séance à l'autre.
+   *
+   * Détenu ici et non dans le panneau : c'est une préférence du programme, elle
+   * doit être chargée au démarrage et réécrite à chaque changement. Faire vivre
+   * l'état dans le panneau et sa persistance ici aurait donné deux sources pour
+   * une même chose.
+   */
+  const [librarySort, setLibrarySort] = useState<LibrarySort>(DEFAULT_LIBRARY_SORT);
+
+  const changeLibrarySort = useCallback(
+    (update: (current: LibrarySort) => LibrarySort) => {
+      setLibrarySort((current) => {
+        const next = update(current);
+        /* Écrit sans attendre : un tri qu'on ne peut pas retenir n'a pas à
+           empêcher de trier. L'échec est signalé, le choix s'applique. */
+        void invoke("write_app_preference", {
+          key: LIBRARY_SORT_PREFERENCE,
+          value: serializeLibrarySort(next),
+        }).catch((preferenceError) => setError(errorMessage(preferenceError)));
+        return next;
+      });
+    },
+    [],
+  );
+
+  /**
+   * Les passes que l'on est **en train** de jouer, pour que la timeline les
+   * dessine avant même qu'elles ne soient écrites.
+   *
+   * Une liste plate plutôt qu'une table par effet : elle se parcourt telle
+   * quelle au rendu, et il n'y en a jamais plus de douze.
+   */
+  const [livePasses, setLivePasses] = useState<
+    Array<{ effect: PlayedEffect; lane: number; startBeat: number }>
+  >([]);
+
+  const trackLivePass = useCallback(
+    (effect: PlayedEffect, lane: number, startBeat: number | null) => {
+      setLivePasses((current) => {
+        const rest = current.filter((pass) => pass.effect !== effect || pass.lane !== lane);
+        return startBeat === null ? rest : [...rest, { effect, lane, startBeat }];
+      });
+    },
+    [],
+  );
+
+  const [showMixEffects, setShowMixEffects] = useState(false);
 
   // The history reads the timeline through a ref so that every edit callback
   // stays referentially stable. A callback rebuilt on each snapshot would make
@@ -347,12 +409,16 @@ function App() {
 
     const loadInitialState = async () => {
       try {
-        const [tracks, timelineSnapshot, transportSnapshot] = await Promise.all([
+        const [tracks, timelineSnapshot, transportSnapshot, preferences] = await Promise.all([
           invoke<LibraryTrack[]>("list_library_tracks"),
           invoke<TimelineSnapshot>("timeline_snapshot"),
           invoke<TimelineTransportSnapshot>("timeline_transport_snapshot"),
+          invoke<Record<string, string>>("read_app_preferences"),
         ]);
         if (!cancelled) {
+          /* Posé avant la liste : le tri doit être en place quand les morceaux
+             arrivent, sinon on les verrait se réordonner sous les yeux. */
+          setLibrarySort(parseLibrarySort(preferences[LIBRARY_SORT_PREFERENCE]));
           setLibrary(tracks);
           setTimeline(timelineSnapshot);
           publishTransport(transportSnapshot);
@@ -1058,6 +1124,95 @@ function App() {
     );
   }, [runTimelineEdit]);
 
+  /**
+   * Les boutons d'effet tenus, envoyés tels quels au moteur.
+   *
+   * Ne passe **pas** par `runTimelineEdit` : rien n'est écrit en base, il n'y a
+   * pas d'instantané à empiler dans l'historique, et un aller-retour par appui
+   * ferait manquer le temps. C'est un geste joué, pas une édition.
+   */
+  const setTimelineEffectKeys = useCallback(async (effect: PlayedEffect, keys: number) => {
+    try {
+      await invoke("set_timeline_effect_keys", { effect, keys });
+    } catch (keyError) {
+      setError(errorMessage(keyError));
+    }
+  }, []);
+
+  /**
+   * Les pistes sous la gomme, envoyées au moteur pour qu'il les taise.
+   *
+   * Le balayage ne s'écrit qu'au relâchement — sa longueur n'est connue qu'à la
+   * fin — donc le plan en cours porte encore la passe qu'on retire. Sans ce
+   * masque, on entendait l'effet continuer sous la gomme.
+   */
+  const setTimelineEffectErase = useCallback(async (lanes: number) => {
+    try {
+      await invoke("set_timeline_effect_erase", { lanes });
+    } catch (eraseError) {
+      setError(errorMessage(eraseError));
+    }
+  }, []);
+
+  /**
+   * Le défilement rapide, tenu au bouton.
+   *
+   * Comme les touches de reverb : aucun instantané dans l'historique, aucun
+   * plan reconstruit. Un geste tenu ne peut pas se permettre un aller-retour
+   * par appui.
+   */
+  const setTimelineScrubForward = useCallback(async (scrubbing: boolean) => {
+    try {
+      await invoke("set_timeline_scrub_forward", { scrubbing });
+    } catch (scrubError) {
+      setError(errorMessage(scrubError));
+    }
+  }, []);
+
+  /**
+   * Écrit une passe d'effet au relâchement du bouton.
+   *
+   * Ceci **est** une édition, contrairement au masque tenu : elle s'écrit en
+   * base, elle entre dans l'historique, et elle apparaît sur la timeline.
+   */
+  const writeTimelineEffectSpan = useCallback(async (
+    effect: PlayedEffect,
+    lane: number,
+    startBeat: number,
+    endBeat: number,
+  ) => {
+    await runTimelineEdit(
+      () => invoke<TimelineSnapshot>("write_timeline_effect_span", {
+        effect,
+        lane,
+        startBeat,
+        endBeat,
+      }),
+    );
+  }, [runTimelineEdit]);
+
+  /**
+   * Efface l'automation d'un effet — ou de tous, si aucun n'est nommé.
+   *
+   * La gomme de l'écran des effets ne nomme rien : elle emporte ce qu'elle
+   * balaie, et le fait en une seule édition pour qu'un seul `Ctrl+Z` la défasse.
+   */
+  const clearTimelineEffectRange = useCallback(async (
+    effect: PlayedEffect | null,
+    lane: number,
+    startBeat: number,
+    endBeat: number,
+  ) => {
+    await runTimelineEdit(
+      () => invoke<TimelineSnapshot>("clear_timeline_effect_range", {
+        effect,
+        lane,
+        startBeat,
+        endBeat,
+      }),
+    );
+  }, [runTimelineEdit]);
+
   const setTimelineCompressorEnabled = useCallback(async (compressorEnabled: boolean) => {
     await runTimelineEdit(
       () => invoke<TimelineSnapshot>("set_timeline_compressor_enabled", { compressorEnabled }),
@@ -1454,6 +1609,10 @@ function App() {
             timeline={timeline}
             transport={timelineTransport}
             liveTransport={liveTransport}
+            onToggleMixEffects={() => setShowMixEffects((open) => !open)}
+            mixEffectsOpen={showMixEffects}
+            livePasses={livePasses}
+            onClearEffectRange={clearTimelineEffectRange}
             busy={timelineBusy || timelinePreparing}
             preparing={timelinePreparing}
             libraryTracks={library}
@@ -1504,9 +1663,16 @@ function App() {
           />
         </div>
 
+        {/* La colonne de droite porte la bibliothèque **et** le panneau des
+            effets, qui se pose dessus. Il tire ainsi sa largeur et sa place de
+            la colonne elle-même plutôt que de recalculer celles de l'enveloppe
+            — un calcul dupliqué qui tombait déjà à trente-huit pixels à côté. */}
+        <div className="library-column">
         <LibraryPanel
           fileDropActive={fileDropActive}
           tracks={library}
+          sort={librarySort}
+          onSortChange={changeLibrarySort}
           libraryBusy={libraryBusy || gridBusy || timelinePlaybackLocked}
           analysisBusy={analysisBusy || timelinePlaybackLocked}
           timelineAddBusy={libraryBusy || gridBusy || analysisBusy || timelineBusy || timelinePreparing}
@@ -1537,6 +1703,32 @@ function App() {
           onSeekPreview={(positionMs) => void seekPreview(positionMs)}
           onRemove={(track) => void removeLibraryTrack(track)}
         />
+
+        <MixEffectsScreen
+          isOpen={showMixEffects}
+          onClose={() => setShowMixEffects(false)}
+          onSetKeys={(effect, keys) => void setTimelineEffectKeys(effect, keys)}
+          onSetErasing={(lanes) => void setTimelineEffectErase(lanes)}
+          transportStatus={timelineTransport.status}
+          onTogglePlayback={() => void toggleTimelineTransport()}
+          onSeek={(beat) => void seekTimeline(beat)}
+          onScrubForward={(scrubbing) => void setTimelineScrubForward(scrubbing)}
+          onLivePass={trackLivePass}
+          onWriteSpan={(effect, lane, startBeat, endBeat) =>
+            void writeTimelineEffectSpan(effect, lane, startBeat, endBeat)}
+          onEraseSpan={(lane, startBeat, endBeat) =>
+            clearTimelineEffectRange(null, lane, startBeat, endBeat)}
+          nodesByEffect={{
+            reverb: timeline.reverbNodes,
+            flanger: timeline.flangerNodes,
+            bitcrush: timeline.bitcrushNodes,
+            delay: timeline.delayNodes,
+          }}
+          liveTransport={liveTransport}
+          canPlay={timeline.clips.length > 0}
+          busy={timelineBusy || timelinePreparing}
+        />
+      </div>
       </div>
 
       {editingTrack && (

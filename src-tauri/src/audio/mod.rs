@@ -1,6 +1,10 @@
+mod bitcrush;
 mod bounce;
+mod delay;
+mod flanger;
 mod metadata;
 mod preview;
+mod reverb;
 pub(crate) mod stems;
 mod timeline;
 

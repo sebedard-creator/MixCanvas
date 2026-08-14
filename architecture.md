@@ -358,19 +358,22 @@ de pouvoir avancer.
 
 Le projet porte maintenant le nom **MixCanvas**. Il s'est auparavant appelé
 EZ-DJ, puis BeatForge. Les trois manifestes applicatifs portent la version
-**1.0.0** depuis le 2026-08-04. La numérotation des jalons ci-dessous est
-restée celle du développement — elle raconte l'ordre dans lequel les choses ont
-été construites, et n'a jamais suivi la version du paquet.
+**1.5.0** depuis le 2026-08-13; la 1.0.0 datait du 2026-08-04. Le saut de 1.0 à
+1.5 est délibéré : les effets joués ne sont pas un ajout de plus, ils ouvrent
+une seconde façon de travailler à côté de l'automation dessinée. La numérotation
+des jalons ci-dessous est restée celle du développement — elle raconte l'ordre
+dans lequel les choses ont été construites, et n'a jamais suivi la version du
+paquet.
 
 L'application demeure organisée en deux moitiés :
 
 - React 19, TypeScript 7 et Vite 8 pour l'interface;
 - Tauri 2 et Rust 2024 pour la persistance, l'analyse, le transport et tout le
   chemin audio;
-- SQLite embarqué, en schéma **27**, pour la session courante;
+- SQLite embarqué, en schéma **34**, pour la session courante;
 - JSON versionné, au format `mixcanvas-project` version **1**, pour les fichiers
   `.mixcanvas`;
-- cinquante-quatre commandes Tauri enregistrées comme frontière IPC.
+- soixante-et-une commandes Tauri enregistrées comme frontière IPC.
 
 Les responsabilités principales sont les suivantes :
 
@@ -874,7 +877,7 @@ Le schéma SQLite conserve l'identifiant interne, le chemin original, une clé d
 
 `CURRENT_DATABASE_SCHEMA` estampille toujours `LATEST_SCHEMA_VERSION`, car il est également rejoué après une migration afin de vérifier la présence des tables et des index. Une valeur périmée à cet endroit ramènerait la base à une version antérieure et rejouerait les dernières migrations à chaque démarrage. Les colonnes ajoutées par `ensure_column` portent les mêmes contraintes `CHECK` que le schéma neuf, afin qu'une base migrée et une base créée de zéro acceptent exactement les mêmes valeurs.
 
-`PRAGMA user_version` versionne le schéma afin que les futures modifications puissent être migrées explicitement. Le jalon 0.0.3 migre automatiquement le schéma 1 vers le schéma 2; le jalon 0.0.4 migre ensuite le schéma 2 vers le schéma 3; le jalon 0.0.5 migre le schéma 3 vers le schéma 4; le jalon 0.0.7 migre le schéma 4 vers le schéma 5; le jalon 0.0.8 migre le schéma 5 vers le schéma 6; le jalon 0.0.9 migre le schéma 6 vers le schéma 7; le jalon 0.0.10 migre le schéma 7 vers le schéma 8; le jalon 0.0.11 migre le schéma 8 vers le schéma 9; le jalon 0.0.13 migre le schéma 9 vers le schéma 10; le jalon 0.0.16 migre le schéma 10 vers le schéma 11; le jalon 0.0.17 migre le schéma 11 vers le schéma 12; le jalon 0.0.18 migre le schéma 12 vers le schéma 13; le jalon 0.0.19 migre le schéma 13 vers le schéma 14, puis 14 vers 15 et 15 vers 16. Les schémas 17 et 18 ajoutent les interrupteurs `limiter_enabled` et `compressor_enabled`, le schéma 19 la colonne `is_sidechain_key`, et le schéma 20 retire `ducking_enabled`. Les schémas 21 à 25 ajoutent successivement le panoramique, les stems, leur portée par clip, leurs waveforms et la cuisson réversible d'un clip; le schéma 26 ajoute les groupes Draw persistants, et le schéma 27 la cible de tempo propre à chaque clip. Les migrations peuvent être enchaînées depuis le schéma 1 et conservent les entrées, leurs analyses, leurs corrections, leurs clips, leurs états de piste et leurs automations. Seul le cache waveform reproductible est invalidé au passage vers le schéma 10.
+`PRAGMA user_version` versionne le schéma afin que les futures modifications puissent être migrées explicitement. Le jalon 0.0.3 migre automatiquement le schéma 1 vers le schéma 2; le jalon 0.0.4 migre ensuite le schéma 2 vers le schéma 3; le jalon 0.0.5 migre le schéma 3 vers le schéma 4; le jalon 0.0.7 migre le schéma 4 vers le schéma 5; le jalon 0.0.8 migre le schéma 5 vers le schéma 6; le jalon 0.0.9 migre le schéma 6 vers le schéma 7; le jalon 0.0.10 migre le schéma 7 vers le schéma 8; le jalon 0.0.11 migre le schéma 8 vers le schéma 9; le jalon 0.0.13 migre le schéma 9 vers le schéma 10; le jalon 0.0.16 migre le schéma 10 vers le schéma 11; le jalon 0.0.17 migre le schéma 11 vers le schéma 12; le jalon 0.0.18 migre le schéma 12 vers le schéma 13; le jalon 0.0.19 migre le schéma 13 vers le schéma 14, puis 14 vers 15 et 15 vers 16. Les schémas 17 et 18 ajoutent les interrupteurs `limiter_enabled` et `compressor_enabled`, le schéma 19 la colonne `is_sidechain_key`, et le schéma 20 retire `ducking_enabled`. Les schémas 21 à 25 ajoutent successivement le panoramique, les stems, leur portée par clip, leurs waveforms et la cuisson réversible d'un clip; le schéma 26 ajoute les groupes Draw persistants, le schéma 27 la cible de tempo propre à chaque clip, le schéma 28 la taille de la pièce de reverb, le schéma 29 les nœuds d'envoi de reverb par voie, le schéma 30 retire la taille de la pièce — elle ne changeait que la durée de la queue, et un seul réglage vaut mieux qu'un choix qui ne se fait pas —, le schéma 31 ajoute les nœuds d'envoi de flanger dans leur propre table, jumelle de celle de la reverb, le schéma 32 fait de même pour le bitcrush et le schéma 33 pour le delay — une table par effet joué, sans colonne discriminante : des tables jumelles se relisent, là où un discriminant oblige à vérifier partout qu'on a filtré sur le bon effet. Le schéma 34 ajoute `app_preferences`, une table clé-valeur pour les réglages qui appartiennent à la personne qui se sert du programme et non au mix — le tri de la bibliothèque en est le premier. Elle est volontairement opaque à Rust, qui range et rend des chaînes sans savoir ce qu'elles signifient : un réglage ajouté ne demande donc ni migration ni commande de plus. Les migrations peuvent être enchaînées depuis le schéma 1 et conservent les entrées, leurs analyses, leurs corrections, leurs clips, leurs états de piste et leurs automations. Seul le cache waveform reproductible est invalidé au passage vers le schéma 10.
 
 Le jalon 0.0.2 signale les fichiers manquants et permet de retirer leur référence. La fonction de reliaison vers un nouvel emplacement demeure à ajouter lorsque le format de projet utilisera lui aussi ces identifiants.
 
@@ -1070,3 +1073,93 @@ L'unique projet courant reste enregistré dans `library.sqlite3` : c'est l'état
 - présence ou non d'un export audio dans la version 0.1.
 - emplacement des chaînes d'effets dans l'interface et ordre de traitement modifiable ou fixe;
 - procédure de distribution des binaires, du code source correspondant et des avis de licences tierces;
+
+## Les effets joués — livrés dans la 1.5.0
+
+Quatre effets qu'on **tient** pendant que le mix tourne, et dont le geste
+s'écrit sur la timeline. Ils partagent tout sauf leur routage.
+
+### Ce qui est commun
+
+Un effet est un **paramètre**, pas un jeu de fonctions. `PlayedEffect` est une
+énumération sérialisée telle quelle vers l'interface, et une seule écriture de
+passe, un seul effacement, une seule conversion des nœuds en images servent les
+quatre. Quatre commandes Tauri au total, là où un chemin par effet en aurait
+demandé seize. Le nom de chaque effet est un contrat entre les deux langages, et
+il est testé : une divergence n'apparaîtrait ni à la compilation ni à l'œil, la
+commande échouerait à l'exécution et l'effet serait muet.
+
+Chaque effet a **sa table** — `timeline_reverb_nodes`, `timeline_flanger_nodes`,
+`timeline_bitcrush_nodes`, `timeline_delay_nodes` — plutôt qu'une table commune
+à colonne discriminante. Des tables jumelles se relisent; un discriminant oblige
+à vérifier partout qu'on a filtré sur le bon effet.
+
+Une passe s'écrit en **quatre nœuds** : zéro, un, un, zéro. Les rampes tombent à
+l'intérieur — un huitième de temps à la montée, trois quarts à la descente — et
+se partagent la place au prorata sur une passe trop courte. Ce sont les mêmes
+valeurs que celles que le moteur applique au geste vivant : les faire diverger
+donnerait une passe enregistrée qui ne ressemble pas à ce qu'on a joué.
+
+Le geste vivant et la passe enregistrée se combinent **par le maximum**, jamais
+par une somme : rejouer par-dessus doit s'entendre comme le même effet, pas
+comme le double.
+
+### Ce qui les sépare : le routage
+
+Trois sont des **départs**. L'envoi est pris après le filtre, le volume et le
+panoramique de la piste — donc baisser une piste baisse ses effets — et le
+retour se somme au master après le compresseur, avant le VU et le limiteur. Les
+queues échappent ainsi au pompage du sidechain, et le limiteur les voit.
+
+Le bitcrush est un **insert**. Sommé au sec, on entendrait le son propre avec du
+grain par-dessus, alors que ce qu'on lui demande est de *remplacer* le son
+propre. Il agit donc sur la contribution de la piste, en fondu, et **avant** les
+trois départs : on entend la pièce et l'écho du son broyé, l'ordre d'une chaîne
+réelle.
+
+### L'état des effets n'appartient pas au plan
+
+Les queues vivent sur le moteur, dans un `EffectTails` partagé, et non dans la
+source. Une source ne dure que jusqu'à la prochaine édition : écrire une passe
+reconstruit le plan, et une pièce reconstruite est une pièce vide. La queue
+mourait donc à l'instant précis où l'on relâchait le bouton — celui où elle
+devait commencer.
+
+Le verrou est pris une fois par image, jamais par échantillon. `try_seek` ne
+vide plus rien : il sert aussi bien à un déplacement voulu qu'au
+repositionnement qui suit une édition, et il ne peut pas les distinguer. C'est
+au moteur, qui sait pourquoi il déplace, d'appeler `EffectTails::reset`.
+
+Les budgets de queue sont exprimés **en secondes** et convertis pour la
+fréquence de sortie réelle. Écrits en images à 48 kHz, ils étaient coupés de
+moitié sur une interface à 96 kHz.
+
+### Ce que la timeline en montre
+
+Une région par passe, teintée de la couleur de son effet, avec un dégradé dont
+les arrêts reprennent **les nœuds eux-mêmes**. Un dégradé à pourcentages fixes
+montrait autre chose que ce qui jouait, et l'écart changeait de sens selon la
+longueur de la passe.
+
+Là où plusieurs effets se recouvrent, des hachures diagonales alternent leurs
+couleurs : deux teintes translucides superposées donnent une troisième couleur
+qui ne dit ni l'une ni l'autre.
+
+La teinte est un **fond, pas un contrôle** : elle n'intercepte pas le pointeur.
+Tant qu'elle le faisait, elle volait le clic gauche destiné à la piste, et la
+tête de lecture cessait de suivre. Le clic droit passe par la voie, qui sait
+déjà convertir une abscisse en beat.
+
+Comme toutes les autres couches, les régions sont **fenêtrées** : seules celles
+qui touchent la vue entrent dans le document.
+
+### Le panneau
+
+Posé sur la colonne de la bibliothèque, sans fond, transparent aux évènements —
+la timeline reste lisible et cliquable partout où il ne se trouve pas. Des
+pastilles carrées à icône, au dessin des touches du transport.
+
+**Aucun raccourci clavier.** Il en a porté quinze, qui empiétaient sur ceux de
+la timeline et ont coûté trois correctifs successifs avant d'être retirés
+entièrement. Le compromis assumé : à la souris, on ne tient qu'un bouton à la
+fois.

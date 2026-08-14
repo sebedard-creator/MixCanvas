@@ -1716,20 +1716,19 @@ body,
 
 /* Le décompte des pistes est passé sous la plaque : elle peut donc partir du
    haut de la ligne, avec le reste de l'en-tête. */
+/* Le VU et son décompte forment un bloc un peu plus court que la plaque de
+   transport : centré, il partage son axe au lieu d'en épouser le haut. */
 .vu-meter-column{
   display: flex;
   flex-direction: column;
-  align-self: flex-start;
+  align-self: center;
   align-items: center;
   gap: 3px;
 }
 
-/* Le VU-mètre s'ancre en haut de la rangée; sans cet ancrage la plaque
-   d'AUTOPLAY se centrerait sur toute la hauteur et flotterait plus bas que les
-   touches de transport, avec lesquelles elle doit partir de la même ligne. */
-.autoplay-bay{
-  align-self: flex-start;
-}
+/* Cette plaque s'ancrait en haut parce que ses voisines le faisaient. Elles
+   sont maintenant centrées, et comme elle a exactement leur hauteur, le
+   centrage la met sur leur ligne sans qu'elle ait à s'y accrocher. */
 
 .vu-meter-summary{
   display: flex;
@@ -2155,10 +2154,13 @@ body,
    calé par le **haut**, comme le VU-mètre et comme `BOUNCE MIX`. Les quatre
    ensembles de l'en-tête partent ainsi de la même ligne, et ce qui est plus
    court — les plaques — laisse sa place en dessous plutôt qu'au-dessus. */
+/* L'en-tête centre déjà ses blocs; ces deux `flex-start` s'en exemptaient et
+   accrochaient la plaque de transport en haut de la barre, plus haut que le
+   VU-mètre d'à côté. */
 .timeline-identity{
   display: flex;
-  align-self: flex-start;
-  align-items: flex-start;
+  align-self: center;
+  align-items: center;
   gap: 12px;
 }
 
@@ -2192,12 +2194,15 @@ body,
   flex: 0 0 auto;
 }
 
-/* Aligné par le bas : PLAY/PAUSE est descendu sous CLEAR TIMELINE, et les
-   autres rails doivent poser sur la même ligne plutôt que de flotter en haut
-   de la rangée. */
+/* Centré. L'alignement par le bas datait de `CLEAR TIMELINE`, qui coiffait
+   PLAY/PAUSE et rendait cette colonne plus haute que les autres : il fallait
+   bien que les rails posent sur une même ligne. Ce bouton est parti au bas de
+   l'aide, la colonne a repris la hauteur des autres, et l'alignement lui a
+   survécu — la barre d'annulation, plus courte, restait accrochée en bas d'une
+   rangée que plus rien ne creusait. */
 .analog-transport-row{
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 12px;
 }
 
@@ -2363,7 +2368,7 @@ body,
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
+  gap: 1.5px;
 }
 
 .timeline-summary span{
@@ -4312,7 +4317,11 @@ body,
 
 /* Compact stereo LED meter: floating lamps and overload lamp. */
 .timeline-header{
-  gap: 12px;
+  /* Huit et non douze : les quatre blocs demandaient douze pixels de plus que
+     la largeur disponible, et le dernier — BOUNCE, BPM, SAVE, HELP — passait
+     sous la barre, par-dessus la timeline. Douze pixels rendus ici mettent
+     tout sur une seule bande, avec de la marge. */
+  gap: 8px;
   min-height: 48px;
   padding: 5px 14px;
   border-bottom: 1px solid #c8cee0;
@@ -4397,7 +4406,7 @@ body,
 .led-vu-track{
   display: flex;
   align-items: stretch;
-  gap: 2.5px;
+  gap: 1.5px;
 }
 
 /* Each lens sits in its own milled slot, dark to the bottom of the bore. */
@@ -4405,7 +4414,12 @@ body,
   display: flex;
   align-items: stretch;
   justify-content: center;
-  width: 9.5px;
+  /* Cinq et demi plutôt que neuf et demi. Le VU-mètre demandait trois cent
+     cinquante-huit pixels pour vingt-quatre diodes par canal, et c'est ce qui
+     poussait le bloc BOUNCE/BPM/SAVE/HELP à la ligne suivante, sous l'en-tête
+     et par-dessus la timeline. Une diode se lit à cette largeur — c'est sa
+     hauteur et son éclat qui portent l'information, pas son épaisseur. */
+  width: 4.5px;
   /* Height comes from the row, which fills the meter. */
   padding: 1px;
   border-radius: 2.5px;
@@ -5671,4 +5685,266 @@ body,
 
 .timeline-scrollbar-thumb:active .scrollbar-thumb-ridges span{
   background: #38bdf8;
+}
+
+/* ── Le panneau des effets joués ─────────────────────────────────────────────
+   Posé **sur** la timeline, jamais à sa place. Le geste consiste à jouer un
+   effet en regardant la piste défiler : tout ce que ce panneau cache est du
+   travail qu'on ne voit pas. Il a donc perdu son fond sombre, son titre, ses
+   noms d'effets et son paragraphe d'aide — il ne reste que des touches.
+
+   Elles reprennent le dessin de celles du transport principal, en carré : même
+   dégradé, mêmes ombres empilées, même enfoncement. On y fait le même geste. */
+/* La colonne de droite porte la bibliothèque **et** le panneau des effets. */
+.library-column{
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Le panneau se pose sur le bas de sa colonne. Il en tire sa largeur plutôt
+   que de recalculer celle de l'enveloppe : le calcul dupliqué tombait déjà à
+   trente-huit pixels à côté, et il aurait fallu le refaire à chaque
+   changement de mise en page. */
+.mix-effects-overlay{
+  position: absolute;
+  z-index: 200;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  /* Aucun fond. La timeline reste lisible et cliquable partout où le panneau
+     ne se trouve pas — c'est tout l'intérêt de ne pas la couvrir. */
+  pointer-events: none;
+}
+
+.mix-effects-screen{
+  display: grid;
+  gap: 8px;
+  padding: 8px 9px 9px;
+  border: 1px solid #b8c4d4;
+  border-top-color: #ffffff;
+  border-radius: 8px;
+  /* Translucide plutôt qu'opaque : on devine les clips derrière, ce qui rappelle
+     que le panneau flotte au-dessus d'un travail en cours. */
+  background: rgba(220, 224, 230, 0.92);
+  box-shadow:
+    inset 0 1px rgba(255, 255, 255, 0.85),
+    0 12px 32px rgba(0, 0, 0, 0.35);
+  color: #0f2442;
+  /* Le panneau reprend les évènements que son cadre transparent laisse passer. */
+  pointer-events: auto;
+}
+
+.mix-effects-header{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 0 2px;
+}
+
+.mix-effects-badge{
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #0e78dc;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+}
+
+.mix-effects-badge-dot{
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #0e78dc;
+  box-shadow: 0 0 6px rgba(14, 120, 220, 0.6);
+}
+
+.mix-effects-close{
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  color: #8792a5;
+  background: none;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mix-effects-close:hover{
+  color: #b91c1c;
+}
+
+/* Une rangée par piste : la lettre, les quatre effets, la gomme. */
+.mix-effects-lanes{
+  display: grid;
+  gap: 5px;
+}
+
+.mix-effects-lane{
+  display: grid;
+  align-items: center;
+  gap: 5px;
+  /* Les cinq touches se partagent ce qui reste : elles grandissent avec le
+     panneau au lieu d'être fixées à une taille qu'il faudrait recalculer à
+     chaque fois qu'on le redimensionne. */
+  grid-template-columns: 13px repeat(5, minmax(0, 1fr));
+}
+
+.mix-effects-lane-name{
+  color: #8792a5;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  text-align: center;
+}
+
+/* La touche du transport, en carré. Mêmes ombres empilées, même relief. */
+.mix-effects-pad{
+  position: relative;
+  display: grid;
+  /* Carrée, quelle que soit la largeur que la grille lui donne. */
+  width: 100%;
+  aspect-ratio: 1;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  color: #2b3a4d;
+  background: linear-gradient(180deg, #fdfefe 0%, #f4f6f9 42%, #e7ebf1 88%, #dde3ea 100%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    inset 0 -1px 0 rgba(255, 255, 255, 0.5),
+    inset 1px 0 0 rgba(255, 255, 255, 0.7),
+    inset -1px 0 0 rgba(0, 0, 0, 0.05),
+    0 0 0 1px #aab5c4,
+    0 2px 0 #97a3b3,
+    0 3px 5px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  /* On tient un bouton : ni sélection de texte, ni défilement au doigt. */
+  user-select: none;
+  touch-action: none;
+}
+
+.mix-effects-pad svg{
+  width: 21px;
+  height: 21px;
+}
+
+/* Tenue, la pastille prend **la couleur de son effet** — celle qu'il portera
+   sur la timeline. C'est ce qui relie le geste à sa trace : on appuie sur du
+   mauve, et c'est du mauve qui s'inscrit. Sans transition : un effet joué
+   répond à l'instant où le doigt tombe. */
+.mix-effects-pad.is-held{
+  color: #ffffff;
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.3),
+    0 0 0 1px var(--pad-edge),
+    0 0 14px var(--pad-glow);
+  background: linear-gradient(180deg, var(--pad-top) 0%, var(--pad-mid) 60%, var(--pad-low) 100%);
+  transform: translateY(2px);
+}
+
+.mix-effects-pad:not([aria-disabled="true"]):not(:disabled):hover{
+  color: var(--pad-ink, #0e78dc);
+}
+
+.mix-effects-pad[aria-disabled="true"],
+.mix-effects-pad:disabled{
+  opacity: 0.4;
+  cursor: default;
+}
+
+.mix-effects-pad--reverb{
+  --pad-top: #9b7ee8;
+  --pad-mid: #7c5cd6;
+  --pad-low: #6547b8;
+  --pad-edge: #5a3ea6;
+  --pad-glow: rgba(124, 92, 214, 0.5);
+  --pad-ink: #6547b8;
+}
+
+.mix-effects-pad--flanger{
+  --pad-top: #4cc79a;
+  --pad-mid: #2fa87a;
+  --pad-low: #248c65;
+  --pad-edge: #1f7a58;
+  --pad-glow: rgba(47, 168, 122, 0.5);
+  --pad-ink: #1f7a58;
+}
+
+.mix-effects-pad--bitcrush{
+  --pad-top: #e26bb0;
+  --pad-mid: #cf4593;
+  --pad-low: #b2377c;
+  --pad-edge: #962e68;
+  --pad-glow: rgba(207, 69, 147, 0.5);
+  --pad-ink: #962e68;
+}
+
+.mix-effects-pad--delay{
+  --pad-top: #f08a52;
+  --pad-mid: #e2622b;
+  --pad-low: #c14f1f;
+  --pad-edge: #a34319;
+  --pad-glow: rgba(226, 98, 43, 0.5);
+  --pad-ink: #a34319;
+}
+
+/* La gomme : rouge une fois tenue seulement. La couleur de destruction ne se
+   réclame pas au repos. */
+.mix-effects-eraser{
+  --pad-top: #ef5350;
+  --pad-mid: #c62828;
+  --pad-low: #a01f1f;
+  --pad-edge: #8e1a1a;
+  --pad-glow: rgba(198, 40, 40, 0.5);
+  --pad-ink: #b91c1c;
+}
+
+/* Le transport, aligné sous la colonne des effets. */
+.mix-effects-transport{
+  display: flex;
+  gap: 5px;
+  justify-content: flex-end;
+}
+
+.mix-effects-transport-button{
+  /* Le transport garde une taille fixe : il ne se joue pas, il se clique, et
+     rien ne gagnerait à ce qu'il grandisse avec les pastilles. */
+  --pad-top: #38a3f0;
+  --pad-mid: #0e78dc;
+  --pad-low: #0b62b4;
+  --pad-edge: #0b5ea9;
+  --pad-glow: rgba(14, 120, 220, 0.45);
+  --pad-ink: #0e78dc;
+  width: 34px;
+  height: 26px;
+  aspect-ratio: auto;
+}
+
+.mix-effects-transport-button svg{
+  width: 12px;
+  height: 12px;
+}
+
+.mix-effects-transport-button.is-playing{
+  color: #ffffff;
+  background: linear-gradient(180deg, #38a3f0 0%, #0e78dc 100%);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3), 0 0 0 1px #0b5ea9;
+  transform: translateY(2px);
+}
+
+/* Les passes d'effet, sur la voie qui les portent.
+   Les couleurs vivent dans `src/lib/mixEffects.ts` avec le reste de ce que les
+   effets partagent, et non ici : le dégradé de chaque région les reçoit en
+   attribut, et une couleur écrite à deux endroits finirait par diverger. */
+.reverb-regions{
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  pointer-events: none;
 }

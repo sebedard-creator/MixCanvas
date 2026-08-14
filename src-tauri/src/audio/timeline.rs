@@ -4,7 +4,7 @@ use std::{
     num::NonZero,
     path::Path,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering},
     },
     time::{Duration, UNIX_EPOCH},
@@ -14,7 +14,11 @@ use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player, Source, source::SeekErro
 
 use crate::{tempo::TempoMap, timeline::TimelineRenderPlan};
 
+use super::bitcrush::BitCrusher;
+use super::delay::{DELAY_BEATS, Delay};
+use super::flanger::Flanger;
 use super::metadata::{Mp3Decoder, open_mp3_decoder};
+use super::reverb::Reverb;
 
 const FALLBACK_OUTPUT_SAMPLE_RATE: u32 = 44_100;
 pub(crate) const OUTPUT_CHANNELS: u16 = 2;
@@ -26,6 +30,98 @@ pub(crate) const OUTPUT_CHANNELS: u16 = 2;
 /// parasite d'une nappe de 24 % à 2 %, mesuré, sans rien coûter aux attaques :
 /// les deux longueurs rendent le même nombre de frappes.
 const WSOLA_HOP_FRAMES: usize = 2_048;
+
+/// Combien de temps chaque effet continue d'être calculé après son dernier
+/// envoi, **en secondes**.
+///
+/// En secondes et non en images, et c'est une correction. Les trois budgets
+/// étaient écrits en nombres d'images à 48 kHz — `5 * 48_000` et compagnie —
+/// donc ils ne décrivaient la bonne durée que sur une sortie à cette fréquence.
+/// À 44,1 kHz les queues traînaient neuf pour cent trop longtemps, ce qui ne
+/// coûte que du calcul; mais **à 96 kHz elles étaient coupées de moitié**, et
+/// celle du delay serait retombée à douze secondes et demie — sous les
+/// vingt-quatre qu'il lui faut à quarante BPM. Le défaut corrigé en portant ce
+/// budget de quinze à vingt-cinq secondes revenait donc intact dès qu'on
+/// branchait une interface à 96 kHz, sans que rien ne le signale.
+///
+/// La pièce : au-delà de cinq secondes, la plus grande des trois queues est
+/// éteinte bien sous le seuil d'audition, et il n'y a plus de raison de payer
+/// vingt-quatre lignes à retard par échantillon.
+const REVERB_TAIL_SECONDS: f32 = 5.0;
+
+/// Le flanger : sa ligne fait quelques millisecondes et son rebouclage l'éteint
+/// en une fraction de seconde.
+const FLANGER_TAIL_SECONDS: f32 = 0.5;
+
+/// Le delay, de loin la plus longue, et la seule qui ait dû être **calculée**
+/// plutôt qu'estimée : elle dépend du tempo. Avec un rebouclage de 0,72 il faut
+/// une vingtaine de tours pour passer sous le seuil d'audition, et à quarante
+/// BPM — le plancher que le programme accepte — une croche pointée dure plus
+/// d'une seconde, ce qui met la traîne à près de vingt-quatre secondes.
+const DELAY_TAIL_SECONDS: f32 = 25.0;
+
+/// Le budget d'une queue en images, pour la fréquence de sortie réelle.
+fn tail_frames(seconds: f32, sample_rate: u32) -> usize {
+    (seconds * sample_rate as f32).ceil() as usize
+}
+
+/// La montée de l'envoi quand on appuie : courte et fixe.
+///
+/// Assez longue pour ne pas claquer, assez courte pour qu'un appui sur le temps
+/// tombe sur le temps. Elle ne suit pas le tempo, contrairement à la descente :
+/// une attaque qui s'allonge sur un morceau lent arriverait en retard.
+const REVERB_ATTACK_SECONDS: f32 = 0.010;
+
+/// La descente, en fraction de temps — une croche pointée.
+///
+/// Musicale plutôt que fixe : à 128 BPM elle dure un peu plus de trois cents
+/// millisecondes, et elle s'allonge d'elle-même sur un morceau plus lent. Une
+/// trente-deuxième, d'abord retenue, coupait net; une croche restait sèche. Ce
+/// n'est pourtant que l'envoi qui retombe, la queue déjà dans la pièce
+/// continuant de sonner.
+///
+/// **La même valeur que la rampe de sortie écrite sur la timeline.** Ce qu'on
+/// entend en jouant doit être ce qui se rejoue, sans quoi la passe enregistrée
+/// ne ressemble pas au geste qui l'a produite.
+const REVERB_RELEASE_BEATS: f32 = 0.75;
+
+/// Le gain d'envoi d'une piste à l'image suivante.
+///
+/// Trois choses s'y rencontrent, et les séparer de la boucle de mixage permet
+/// de les vérifier : la rampe du geste vivant, la passe déjà enregistrée, et la
+/// gomme.
+///
+/// Le geste et la passe se combinent par le **maximum**, non par une somme :
+/// rejouer par-dessus une passe déjà écrite doit s'entendre comme la même
+/// reverb, pas comme le double.
+///
+/// Sous la gomme, la passe enregistrée ne compte plus. Elle est en train d'être
+/// retirée, et la laisser sonner ferait entendre le contraire du geste. Le
+/// geste vivant, lui, continue de passer : tenir la reverb et la gomme ensemble
+/// laisse entendre ce qu'on joue, ce qui est bien ce qui restera. Et comme le
+/// gain courant portait encore la valeur de l'automation à l'image précédente,
+/// la coupure n'est pas franche — la descente reprend là où elle était,
+/// exactement comme si l'on relâchait le bouton.
+fn next_effect_send(
+    current: f32,
+    held: bool,
+    erasing: bool,
+    automation: f32,
+    attack: f32,
+    release: f32,
+) -> f32 {
+    let gesture = if held {
+        (current + attack).min(1.0)
+    } else {
+        (current - release).max(0.0)
+    };
+    if erasing {
+        gesture
+    } else {
+        gesture.max(automation)
+    }
+}
+
 /// Durée du raccord entre deux grains, en images.
 ///
 /// Le fondu couvrait autrefois **tout** le pas. Deux flux dont l'écart croît
@@ -690,6 +786,42 @@ impl FilterAutomation {
                 (previous.value + (next.value - previous.value) * curved_mix) as f32
             }
             (None, None) => 0.0,
+        }
+    }
+}
+
+/// L'envoi de reverb d'une voie au fil du temps.
+///
+/// Même forme que les autres lignes — des points, une interpolation linéaire —
+/// mais sans tension : une passe jouée n'a pas de courbure à régler, elle monte
+/// et redescend.
+#[derive(Clone, Debug, Default)]
+struct SendAutomation {
+    points: Vec<SendFramePoint>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SendFramePoint {
+    frame: usize,
+    value: f32,
+}
+
+impl SendAutomation {
+    /// Zéro avant le premier point et là où il n'y en a aucun : une voie sans
+    /// passe enregistrée n'envoie rien.
+    fn value_at_frame(&self, frame: usize) -> f32 {
+        let next_index = self.points.partition_point(|point| point.frame <= frame);
+        match (next_index.checked_sub(1), self.points.get(next_index)) {
+            (Some(previous), None) => self.points[previous].value,
+            (Some(previous), Some(next)) => {
+                let previous = &self.points[previous];
+                if next.frame <= previous.frame {
+                    return next.value;
+                }
+                let mix = (frame - previous.frame) as f32 / (next.frame - previous.frame) as f32;
+                previous.value + (next.value - previous.value) * mix
+            }
+            _ => 0.0,
         }
     }
 }
@@ -1495,6 +1627,67 @@ impl PlacedClip {
     }
 }
 
+/// Ce que les effets **à queue** gardent entre deux images, réuni à part.
+///
+/// Il ne vit pas dans la source, mais à côté d'elle, et c'est la correction
+/// d'un défaut de fond. Écrire une passe reconstruit le plan, donc une nouvelle
+/// source, donc — jusqu'ici — une pièce vide et une ligne à retard vide : la
+/// queue mourait à l'instant précis où l'on relâchait le bouton, c'est-à-dire
+/// à l'instant où elle devait commencer. Le même écueil que la taille de pièce
+/// en son temps, et pour la même raison : **l'état d'un effet n'appartient pas
+/// au plan.**
+///
+/// Le bitcrush n'y est pas : c'est un insert, son seul état est un échantillon
+/// retenu quelques dizaines de microsecondes, et le perdre ne s'entend pas. Le
+/// garder ici aurait obligé à prendre le verrou dans la boucle par échantillon
+/// plutôt qu'une fois par image.
+pub(crate) struct EffectTails {
+    reverb: Reverb,
+    flanger: Flanger,
+    delay: Delay,
+    /// Combien d'images il reste à calculer chaque effet une fois son envoi
+    /// retombé. Sans ce décompte, leurs lignes tourneraient sur du silence
+    /// pendant tout le mix.
+    reverb_frames: usize,
+    flanger_frames: usize,
+    delay_frames: usize,
+    /// Les budgets pleins, calculés une fois pour la fréquence de sortie. Ils
+    /// vivent ici parce que c'est ici qu'on les recharge, et qu'un budget
+    /// recalculé ailleurs finirait par décrire une autre durée.
+    reverb_budget: usize,
+    flanger_budget: usize,
+    delay_budget: usize,
+}
+
+impl EffectTails {
+    pub(crate) fn new(sample_rate: u32) -> Self {
+        Self {
+            reverb: Reverb::new(sample_rate),
+            flanger: Flanger::new(sample_rate),
+            delay: Delay::new(sample_rate),
+            reverb_frames: 0,
+            flanger_frames: 0,
+            delay_frames: 0,
+            reverb_budget: tail_frames(REVERB_TAIL_SECONDS, sample_rate),
+            flanger_budget: tail_frames(FLANGER_TAIL_SECONDS, sample_rate),
+            delay_budget: tail_frames(DELAY_TAIL_SECONDS, sample_rate),
+        }
+    }
+
+    /// Vide tout. Appelé sur un déplacement **voulu** de la tête de lecture, et
+    /// sur lui seul : la queue de l'endroit qu'on quitte n'a rien à faire à
+    /// l'endroit où l'on arrive, et on l'entendrait très bien. Une édition qui
+    /// reconstruit le plan, elle, ne déplace personne et ne doit rien vider.
+    pub(crate) fn reset(&mut self) {
+        self.reverb.reset();
+        self.flanger.reset();
+        self.delay.reset();
+        self.reverb_frames = 0;
+        self.flanger_frames = 0;
+        self.delay_frames = 0;
+    }
+}
+
 pub(crate) struct TimelineMixSource {
     clips: Vec<PlacedClip>,
     total_frames: usize,
@@ -1504,6 +1697,10 @@ pub(crate) struct TimelineMixSource {
     volume_automation: [VolumeAutomation; 3],
     pan_automation: [PanAutomation; 3],
     filter_automation: [FilterAutomation; 3],
+    reverb_automation: [SendAutomation; 3],
+    flanger_automation: [SendAutomation; 3],
+    bitcrush_automation: [SendAutomation; 3],
+    delay_automation: [SendAutomation; 3],
     filter_states: [LaneFilterState; 3],
     filter_values: [f32; 3],
     audible_lane_mask: Arc<AtomicU8>,
@@ -1513,6 +1710,69 @@ pub(crate) struct TimelineMixSource {
     ducker: SidechainDucker,
     colour: MasterColour,
     colour_amount: f32,
+    /// Les effets à queue, **partagés** avec les sources qui suivront.
+    ///
+    /// Leurs envois sont pris **après** le filtre, le volume et le panoramique
+    /// de la piste — des départs post-fader, donc baisser une piste baisse ses
+    /// effets — et leurs retours se somment au master après le compresseur,
+    /// avant le VU et le limiteur. Les queues échappent ainsi au pompage du
+    /// sidechain, et le limiteur les voit : une longue queue ne peut pas
+    /// pousser la sortie sans que rien ne la retienne.
+    ///
+    /// Le verrou est pris **une fois par image**, jamais par échantillon, et il
+    /// n'est jamais disputé : une seule source tire à la fois.
+    tails: Arc<Mutex<EffectTails>>,
+    /// Quelles pistes ont leur bouton enfoncé — un bit par piste.
+    ///
+    /// Partagé atomiquement avec la source déjà en file, comme Mute et Solo :
+    /// appuyer s'entend tout de suite, sans reconstruire le plan.
+    reverb_keys: Arc<AtomicU8>,
+    /// Les mêmes bits, pour le flanger.
+    flanger_keys: Arc<AtomicU8>,
+    /// Et pour le bitcrush.
+    bitcrush_keys: Arc<AtomicU8>,
+    /// Et pour le delay.
+    delay_keys: Arc<AtomicU8>,
+    /// Quelles pistes ont la gomme tenue au-dessus d'elles.
+    ///
+    /// La gomme n'écrit dans la base qu'au relâchement, si bien que le plan en
+    /// cours contient encore la passe qu'on est en train de retirer : sans ce
+    /// masque, on entendait la reverb continuer sous la gomme et l'on ne savait
+    /// pas ce qu'on avait effacé avant de lever le doigt. Effacer doit
+    /// s'entendre pendant le geste, comme jouer.
+    ///
+    /// Il ne coupe que la passe **enregistrée**. Tenir la reverb et la gomme
+    /// ensemble sur une piste laisse donc entendre ce qu'on joue, ce qui est
+    /// bien ce qui restera : réécrire par-dessus est le seul geste qui survit à
+    /// l'effacement.
+    effect_erase: Arc<AtomicU8>,
+    /// Vrai tant que `FFWD` est tenu.
+    ///
+    /// Le défilement rapide saute une image sur deux : la timeline avance donc
+    /// deux fois plus vite, et la hauteur monte comme sur une bande qu'on
+    /// accélère. C'est le son qu'on attend d'un `FFWD`, et surtout c'est un
+    /// simple pas d'avance — rien dans le rendu d'une image ne change, donc
+    /// aucun risque pour le fil audio.
+    scrub_forward: Arc<AtomicBool>,
+    /// Le gain d'envoi réellement appliqué, qui rejoint la consigne par une
+    /// rampe.
+    ///
+    /// Un créneau franc claque. La montée est courte et fixe — assez pour
+    /// tomber sur le temps —, la descente suit le tempo, si bien qu'elle
+    /// respire avec le morceau au lieu d'être une constante arbitraire.
+    reverb_sends: [f32; 3],
+    flanger_sends: [f32; 3],
+    /// Le dosage du bitcrush par voie.
+    ///
+    /// « Envoi » est un abus de langage ici : rien n'est envoyé nulle part, ce
+    /// nombre est la position d'un fondu entre le son sec et le son broyé. Il
+    /// suit pourtant exactement la même rampe que les deux autres, puisque
+    /// c'est le même geste qui le pilote.
+    bitcrush_sends: [f32; 3],
+    /// Un broyeur par voie : c'est un insert, il travaille sur le signal de
+    /// **cette** piste.
+    bitcrushers: [BitCrusher; 3],
+    delay_sends: [f32; 3],
     limiter: MasterLimiter,
     /// Both channels of the current frame, already limited. Rendered together
     /// so the limiter can link them.
@@ -1527,6 +1787,17 @@ pub(crate) struct TimelineMixSource {
     overload_hold_frames: usize,
 }
 
+impl TimelineMixSource {
+    /// Reprend les queues d'une source précédente plutôt que les siennes.
+    ///
+    /// C'est ce qui les fait survivre à une reconstruction du plan. Rien
+    /// d'autre n'est repris : les clips, l'automation et le tempo viennent bien
+    /// du plan neuf.
+    fn share_tails(&mut self, tails: Arc<Mutex<EffectTails>>) {
+        self.tails = tails;
+    }
+}
+
 impl Clone for TimelineMixSource {
     fn clone(&self) -> Self {
         let mut source = Self {
@@ -1538,6 +1809,10 @@ impl Clone for TimelineMixSource {
             volume_automation: self.volume_automation.clone(),
             pan_automation: self.pan_automation.clone(),
             filter_automation: self.filter_automation.clone(),
+            reverb_automation: self.reverb_automation.clone(),
+            flanger_automation: self.flanger_automation.clone(),
+            bitcrush_automation: self.bitcrush_automation.clone(),
+            delay_automation: self.delay_automation.clone(),
             filter_states: std::array::from_fn(|_| LaneFilterState::default()),
             filter_values: [0.0; 3],
             audible_lane_mask: Arc::clone(&self.audible_lane_mask),
@@ -1547,6 +1822,18 @@ impl Clone for TimelineMixSource {
             ducker: SidechainDucker::default(),
             colour: MasterColour::default(),
             colour_amount: 0.0,
+            tails: Arc::clone(&self.tails),
+            bitcrushers: std::array::from_fn(|_| BitCrusher::new(self.output_sample_rate)),
+            reverb_keys: Arc::clone(&self.reverb_keys),
+            flanger_keys: Arc::clone(&self.flanger_keys),
+            bitcrush_keys: Arc::clone(&self.bitcrush_keys),
+            delay_keys: Arc::clone(&self.delay_keys),
+            effect_erase: Arc::clone(&self.effect_erase),
+            scrub_forward: Arc::clone(&self.scrub_forward),
+            reverb_sends: [0.0; 3],
+            flanger_sends: [0.0; 3],
+            bitcrush_sends: [0.0; 3],
+            delay_sends: [0.0; 3],
             limiter: MasterLimiter::default(),
             pending_frame: [0.0; OUTPUT_CHANNELS as usize],
             tempo_map: self.tempo_map.clone(),
@@ -1576,6 +1863,10 @@ struct LaneAutomation {
     volume: [VolumeAutomation; 3],
     pan: [PanAutomation; 3],
     filter: [FilterAutomation; 3],
+    reverb: [SendAutomation; 3],
+    flanger: [SendAutomation; 3],
+    bitcrush: [SendAutomation; 3],
+    delay: [SendAutomation; 3],
 }
 
 impl TimelineMixSource {
@@ -1599,6 +1890,10 @@ impl TimelineMixSource {
             volume_automation: automation.volume,
             pan_automation: automation.pan,
             filter_automation: automation.filter,
+            reverb_automation: automation.reverb,
+            flanger_automation: automation.flanger,
+            bitcrush_automation: automation.bitcrush,
+            delay_automation: automation.delay,
             filter_states: std::array::from_fn(|_| LaneFilterState::default()),
             filter_values: [0.0; 3],
             audible_lane_mask: Arc::new(AtomicU8::new(audible_lane_mask)),
@@ -1608,6 +1903,19 @@ impl TimelineMixSource {
             ducker: SidechainDucker::default(),
             colour: MasterColour::default(),
             colour_amount: 0.0,
+            tails: Arc::new(Mutex::new(EffectTails::new(output_sample_rate))),
+
+            bitcrushers: std::array::from_fn(|_| BitCrusher::new(output_sample_rate)),
+            reverb_keys: Arc::new(AtomicU8::new(0)),
+            flanger_keys: Arc::new(AtomicU8::new(0)),
+            bitcrush_keys: Arc::new(AtomicU8::new(0)),
+            delay_keys: Arc::new(AtomicU8::new(0)),
+            effect_erase: Arc::new(AtomicU8::new(0)),
+            scrub_forward: Arc::new(AtomicBool::new(false)),
+            reverb_sends: [0.0; 3],
+            flanger_sends: [0.0; 3],
+            bitcrush_sends: [0.0; 3],
+            delay_sends: [0.0; 3],
             limiter: MasterLimiter::default(),
             pending_frame: [0.0; OUTPUT_CHANNELS as usize],
             tempo_map,
@@ -1664,6 +1972,35 @@ impl TimelineMixSource {
     fn set_limiter_enabled(&self, limiter_enabled: bool) {
         self.limiter_enabled
             .store(limiter_enabled, Ordering::Relaxed);
+    }
+
+    /// Quelles pistes tiennent leur bouton de reverb enfoncé.
+    fn set_reverb_keys(&self, keys: u8) {
+        self.reverb_keys.store(keys, Ordering::Relaxed);
+    }
+
+    /// Quelles pistes tiennent leur bouton de flanger enfoncé.
+    fn set_flanger_keys(&self, keys: u8) {
+        self.flanger_keys.store(keys, Ordering::Relaxed);
+    }
+
+    /// Quelles pistes tiennent leur bouton de bitcrush enfoncé.
+    fn set_bitcrush_keys(&self, keys: u8) {
+        self.bitcrush_keys.store(keys, Ordering::Relaxed);
+    }
+
+    /// Quelles pistes tiennent leur bouton de delay enfoncé.
+    fn set_delay_keys(&self, keys: u8) {
+        self.delay_keys.store(keys, Ordering::Relaxed);
+    }
+
+    /// Quelles pistes ont la gomme tenue au-dessus d'elles.
+    fn set_effect_erase(&self, lanes: u8) {
+        self.effect_erase.store(lanes, Ordering::Relaxed);
+    }
+
+    fn set_scrub_forward(&self, scrubbing: bool) {
+        self.scrub_forward.store(scrubbing, Ordering::Relaxed);
     }
 
     fn set_compressor_enabled(&self, compressor_enabled: bool) {
@@ -1793,6 +2130,82 @@ impl TimelineMixSource {
         });
         let keying = key_covers_something;
         let mut key_frame = [0.0_f32; OUTPUT_CHANNELS as usize];
+        let mut reverb_send = [0.0_f32; OUTPUT_CHANNELS as usize];
+        let mut flanger_send = [0.0_f32; OUTPUT_CHANNELS as usize];
+        let mut delay_send = [0.0_f32; OUTPUT_CHANNELS as usize];
+
+        // Les envois rejoignent leur consigne par une rampe, calculée une fois
+        // par image et non par échantillon : les deux canaux d'une même image
+        // doivent partager exactement le même gain, sans quoi l'image stéréo
+        // bouge pendant la montée.
+
+        let reverb_keys = self.reverb_keys.load(Ordering::Relaxed);
+        let flanger_keys = self.flanger_keys.load(Ordering::Relaxed);
+        let bitcrush_keys = self.bitcrush_keys.load(Ordering::Relaxed);
+        let delay_keys = self.delay_keys.load(Ordering::Relaxed);
+        // Un seul masque de gomme pour les deux effets : la gomme est un seul
+        // bouton, et ce qu'elle balaie, elle l'emporte en entier.
+        let erasing = self.effect_erase.load(Ordering::Relaxed);
+        let attack = 1.0 / (REVERB_ATTACK_SECONDS * self.output_sample_rate as f32).max(1.0);
+        let beat_seconds = 60.0
+            / self.tempo_map.bpm_at_beat(
+                self.tempo_map
+                    .beat_at_seconds(frame as f64 / f64::from(self.output_sample_rate)),
+            ) as f32;
+        let release =
+            1.0 / (beat_seconds * REVERB_RELEASE_BEATS * self.output_sample_rate as f32).max(1.0);
+        for lane in 0..self.reverb_sends.len() {
+            let bit = 1_u8 << lane;
+            let erased = erasing & bit != 0;
+            self.reverb_sends[lane] = next_effect_send(
+                self.reverb_sends[lane],
+                reverb_keys & bit != 0,
+                erased,
+                self.reverb_automation[lane].value_at_frame(frame),
+                attack,
+                release,
+            );
+            self.flanger_sends[lane] = next_effect_send(
+                self.flanger_sends[lane],
+                flanger_keys & bit != 0,
+                erased,
+                self.flanger_automation[lane].value_at_frame(frame),
+                attack,
+                release,
+            );
+            self.bitcrush_sends[lane] = next_effect_send(
+                self.bitcrush_sends[lane],
+                bitcrush_keys & bit != 0,
+                erased,
+                self.bitcrush_automation[lane].value_at_frame(frame),
+                attack,
+                release,
+            );
+            self.delay_sends[lane] = next_effect_send(
+                self.delay_sends[lane],
+                delay_keys & bit != 0,
+                erased,
+                self.delay_automation[lane].value_at_frame(frame),
+                attack,
+                release,
+            );
+        }
+
+        // La longueur de l'écho, en échantillons, recalculée à chaque image
+        // depuis le tempo de cette image — `beat_seconds` est déjà là pour la
+        // descente des envois, donc cela ne coûte rien de plus. C'est ce qui
+        // fait tenir l'écho sur le temps même pendant une rampe de BPM, là où
+        // un delay réglé en millisecondes se décalerait.
+        let delay_samples = beat_seconds * DELAY_BEATS * self.output_sample_rate as f32;
+
+        // L'horloge de maintien du bitcrush avance **une fois par image**, avant
+        // les canaux : les deux canaux doivent être retenus et relâchés
+        // ensemble, sans quoi leur maintien glisserait de l'un à l'autre et
+        // l'image stéréo se déchirerait.
+        let mut crush_latch = [false; 3];
+        for (lane, latch) in crush_latch.iter_mut().enumerate() {
+            *latch = self.bitcrushers[lane].tick();
+        }
 
         for (channel, master_sample) in master.iter_mut().enumerate() {
             let mut lane_mix = [0.0_f32; 3];
@@ -1827,9 +2240,28 @@ impl TimelineMixSource {
                 let (left, right) =
                     equal_power_pan(self.pan_automation[lane].value_at_frame(frame));
                 let side = if channel == 0 { left } else { right };
-                mixed += self.filter_lane_sample(lane, channel, sample)
+                let dry = self.filter_lane_sample(lane, channel, sample)
                     * self.volume_automation[lane].gain_at_frame(frame)
                     * side;
+                // Le bitcrush est un **insert** : il remplace le signal au lieu
+                // de s'y ajouter. Sommé au sec comme la reverb, on entendrait le
+                // son propre avec du grain par-dessus, alors que ce qu'on
+                // demande à cet effet est justement de remplacer le son propre.
+                //
+                // Il agit avant les deux départs, si bien qu'on entend la pièce
+                // et le peigne **du son broyé** — l'ordre d'une chaîne réelle.
+                let contribution = self.bitcrushers[lane].process(
+                    dry,
+                    channel,
+                    crush_latch[lane],
+                    self.bitcrush_sends[lane],
+                );
+                mixed += contribution;
+                // La prise de l'envoi : après tout ce que la piste subit, donc
+                // ce qu'on entend d'elle est bien ce qui part dans la pièce.
+                reverb_send[channel] += contribution * self.reverb_sends[lane];
+                flanger_send[channel] += contribution * self.flanger_sends[lane];
+                delay_send[channel] += contribution * self.delay_sends[lane];
             }
             *master_sample = if mixed.is_finite() { mixed } else { 0.0 };
         }
@@ -1894,6 +2326,67 @@ impl TimelineMixSource {
             );
         }
 
+        // Les trois retours, après le compresseur et la teinte, avant le VU et
+        // le limiteur. Un effet que plus personne n'alimente finit de sonner
+        // puis s'arrête d'être calculé : sans ces décomptes, leurs lignes
+        // tourneraient sur du silence pendant tout le mix.
+        //
+        // L'Arc est cloné avant la prise du verrou : `self` doit rester libre,
+        // et un incrément atomique par image ne se mesure pas.
+        let tails = Arc::clone(&self.tails);
+        let mut tails = tails
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let feeding = reverb_send[0] != 0.0 || reverb_send[1] != 0.0;
+        if feeding {
+            tails.reverb_frames = tails.reverb_budget;
+        }
+        if tails.reverb_frames > 0 {
+            let (wet_left, wet_right) = tails.reverb.process(reverb_send[0], reverb_send[1]);
+            master[0] += wet_left;
+            master[1] += wet_right;
+            if !feeding {
+                tails.reverb_frames -= 1;
+            }
+        }
+
+        // La queue du flanger est bien plus courte que celle de la pièce : sa
+        // ligne fait quelques millisecondes, et son rebouclage l'éteint en une
+        // fraction de seconde.
+        let flanging = flanger_send[0] != 0.0 || flanger_send[1] != 0.0;
+        if flanging {
+            tails.flanger_frames = tails.flanger_budget;
+        }
+        if tails.flanger_frames > 0 {
+            let (wet_left, wet_right) = tails.flanger.process(flanger_send[0], flanger_send[1]);
+            master[0] += wet_left;
+            master[1] += wet_right;
+            if !flanging {
+                tails.flanger_frames -= 1;
+            }
+        }
+
+        // L'écho, au même endroit de la chaîne. Sa traîne est la plus longue des
+        // trois : chaque tour ne perd qu'un peu plus du quart, et à tempo lent
+        // un tour dure plus d'une seconde.
+        let echoing = delay_send[0] != 0.0 || delay_send[1] != 0.0;
+        if echoing {
+            tails.delay_frames = tails.delay_budget;
+        }
+        if tails.delay_frames > 0 {
+            let (wet_left, wet_right) =
+                tails
+                    .delay
+                    .process(delay_send[0], delay_send[1], delay_samples);
+            master[0] += wet_left;
+            master[1] += wet_right;
+            if !echoing {
+                tails.delay_frames -= 1;
+            }
+        }
+        drop(tails);
+
         self.update_meter(frame, 0, master[0]);
         self.update_meter(frame, 1, master[1]);
 
@@ -1940,6 +2433,15 @@ impl Iterator for TimelineMixSource {
 
         let output = self.pending_frame[channel];
         self.position_sample += 1;
+        // Une image sautée après chaque image rendue, tant que `FFWD` est
+        // tenu. Le saut a lieu à la fin de l'image pour que les deux canaux
+        // sortent bien de la même, sans quoi l'image stéréo se déchirerait.
+        if channel + 1 == OUTPUT_CHANNELS as usize && self.scrub_forward.load(Ordering::Relaxed) {
+            self.position_sample = self
+                .position_sample
+                .saturating_add(OUTPUT_CHANNELS as usize)
+                .min(total_samples);
+        }
         Some(output)
     }
 
@@ -1977,6 +2479,14 @@ impl Source for TimelineMixSource {
         let frame = duration_to_frame(position, self.output_sample_rate).min(self.total_frames);
         self.position_sample = frame.saturating_mul(OUTPUT_CHANNELS as usize);
         self.rebuild_active_clips(frame);
+        // Les queues ne sont **pas** vidées ici. Ce `try_seek` sert aussi bien
+        // à un déplacement voulu qu'au repositionnement qui suit une édition —
+        // et dans ce second cas, vider tuerait la queue de la passe qu'on vient
+        // tout juste d'écrire. C'est au moteur, qui sait pourquoi il déplace,
+        // d'appeler `EffectTails::reset`.
+        for crusher in &mut self.bitcrushers {
+            crusher.reset();
+        }
         Ok(())
     }
 }
@@ -1995,6 +2505,17 @@ pub struct TimelinePlaybackEngine {
     output: Option<MixerDeviceSink>,
     player: Option<Player>,
     cached: Option<CachedTimeline>,
+    /// Les queues des effets, **conservées d'une source à l'autre**.
+    ///
+    /// Elles vivent ici et non dans la source parce qu'une source ne dure que
+    /// jusqu'à la prochaine édition : écrire une passe reconstruit le plan, et
+    /// une pièce reconstruite est une pièce vide. La queue mourait donc à
+    /// l'instant où l'on relâchait le bouton — l'instant précis où elle devait
+    /// commencer.
+    ///
+    /// La fréquence de sortie est retenue avec elles : les longueurs de ligne
+    /// en dépendent, donc changer de périphérique demande de tout refaire.
+    tails: Option<(u32, Arc<Mutex<EffectTails>>)>,
 }
 
 impl TimelinePlaybackEngine {
@@ -2112,6 +2633,56 @@ impl TimelinePlaybackEngine {
         }
     }
 
+    /// Le masque des boutons de reverb enfoncés, un bit par piste.
+    ///
+    /// Partagé atomiquement comme Mute et Solo : un appui s'entend sans que le
+    /// plan soit reconstruit, ce qui est indispensable pour un geste joué.
+    pub fn set_reverb_keys(&self, keys: u8) {
+        if let Some(cache) = &self.cached {
+            cache.source.set_reverb_keys(keys);
+        }
+    }
+
+    /// Les mêmes bits, pour le flanger.
+    pub fn set_flanger_keys(&self, keys: u8) {
+        if let Some(cache) = &self.cached {
+            cache.source.set_flanger_keys(keys);
+        }
+    }
+
+    /// Et pour le bitcrush.
+    pub fn set_bitcrush_keys(&self, keys: u8) {
+        if let Some(cache) = &self.cached {
+            cache.source.set_bitcrush_keys(keys);
+        }
+    }
+
+    /// Et pour le delay.
+    pub fn set_delay_keys(&self, keys: u8) {
+        if let Some(cache) = &self.cached {
+            cache.source.set_delay_keys(keys);
+        }
+    }
+
+    /// Le masque des pistes sous la gomme, un bit par piste.
+    ///
+    /// Il fait taire la passe **enregistrée** de ces pistes le temps du geste.
+    /// Sans lui, la gomme effaçait bel et bien en base, mais on continuait
+    /// d'entendre la reverb pendant qu'on l'effaçait : le seul moment où l'on
+    /// veut savoir ce qu'on retire est justement celui où l'on appuie.
+    pub fn set_effect_erase(&self, lanes: u8) {
+        if let Some(cache) = &self.cached {
+            cache.source.set_effect_erase(lanes);
+        }
+    }
+
+    /// Le défilement rapide vers l'avant, tant que le bouton est tenu.
+    pub fn set_scrub_forward(&self, scrubbing: bool) {
+        if let Some(cache) = &self.cached {
+            cache.source.set_scrub_forward(scrubbing);
+        }
+    }
+
     pub fn seek_if_current(
         &mut self,
         position_beat: f64,
@@ -2136,7 +2707,23 @@ impl TimelinePlaybackEngine {
         player
             .try_seek(target)
             .map_err(|error| format!("Could not position the mix: {error}"))?;
+        // Ici, et seulement ici, les queues sont vidées : c'est le seul
+        // déplacement que l'utilisateur a **voulu**. La queue de l'endroit
+        // qu'on quitte n'a rien à faire à l'endroit où l'on arrive, et on
+        // l'entendrait très bien. Le repositionnement qui suit une édition, lui,
+        // ne déplace personne et laisse les queues sonner.
+        self.reset_effect_tails();
         Ok(Some(target))
+    }
+
+    /// Vide les queues des effets. Réservé aux déplacements voulus.
+    fn reset_effect_tails(&self) {
+        if let Some((_, tails)) = &self.tails {
+            tails
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .reset();
+        }
     }
 
     pub fn transport_position(
@@ -2180,7 +2767,16 @@ impl TimelinePlaybackEngine {
             .as_ref()
             .map(|output| output.config().sample_rate().get())
             .unwrap_or(FALLBACK_OUTPUT_SAMPLE_RATE);
-        let source = prepare_timeline(plan, verify_files, output_sample_rate)?;
+        let mut source = prepare_timeline(plan, verify_files, output_sample_rate)?;
+        // Les queues survivent à la reconstruction. Elles ne sont refaites que
+        // si la fréquence de sortie a changé, auquel cas les longueurs de ligne
+        // ne voudraient plus rien dire.
+        let tails = match self.tails.take() {
+            Some((rate, tails)) if rate == output_sample_rate => tails,
+            _ => Arc::new(Mutex::new(EffectTails::new(output_sample_rate))),
+        };
+        source.share_tails(Arc::clone(&tails));
+        self.tails = Some((output_sample_rate, tails));
         self.cached = Some(CachedTimeline {
             signature: playback_signature(plan),
             tempo_signature: plan.tempo_map.signature(),
@@ -2335,6 +2931,42 @@ pub(crate) fn prepare_timeline(
         });
     }
 
+    // Les deux effets joués se convertissent de la même façon : mêmes nœuds,
+    // même passage des beats aux images. Une boucle plutôt que deux blocs
+    // jumeaux, pour qu'ils ne puissent pas diverger.
+    let mut played_automation: [[SendAutomation; 3]; 4] =
+        std::array::from_fn(|_| std::array::from_fn(|_| SendAutomation::default()));
+    for (slot, nodes) in [
+        &plan.reverb_nodes,
+        &plan.flanger_nodes,
+        &plan.bitcrush_nodes,
+        &plan.delay_nodes,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for node in nodes {
+            let lane = usize::try_from(node.lane)
+                .map_err(|_| "The effect node lane is invalid.".to_owned())?;
+            if lane >= played_automation[slot].len() {
+                return Err("The effect node lane is invalid.".to_owned());
+            }
+            played_automation[slot][lane].points.push(SendFramePoint {
+                frame: seconds_to_frames(
+                    plan.tempo_map.seconds_at_beat(node.beat),
+                    output_sample_rate,
+                )?,
+                value: node.value as f32,
+            });
+        }
+    }
+    let [
+        reverb_automation,
+        flanger_automation,
+        bitcrush_automation,
+        delay_automation,
+    ] = played_automation;
+
     Ok(TimelineMixSource::new(
         clips,
         total_frames,
@@ -2349,6 +2981,10 @@ pub(crate) fn prepare_timeline(
             volume: volume_automation,
             pan: pan_automation,
             filter: filter_automation,
+            reverb: reverb_automation,
+            flanger: flanger_automation,
+            bitcrush: bitcrush_automation,
+            delay: delay_automation,
         },
     ))
 }
@@ -2474,21 +3110,23 @@ fn duration_to_frame(duration: Duration, sample_rate: u32) -> usize {
 mod tests {
     use super::{
         BiquadKind, BiquadState, COLOUR_SHELF_DB, COMPRESSOR_MAKEUP_GAIN, CachedTimeline,
-        ClipEqState, DUCK_DEPTH_DB, DUCK_FLOOR, FALLBACK_OUTPUT_SAMPLE_RATE,
-        FILTER_HIGH_PASS_CLOSED_HZ, FILTER_HIGH_PASS_OPEN_HZ, FILTER_LOW_PASS_CLOSED_HZ, FILTER_Q,
-        FilterAutomation, FilterFramePoint, LaneAutomation, METER_PUBLISH_FRAMES, MasterColour,
-        MasterCompressor, MasterDynamics, MasterLimiter, OUTPUT_CEILING, OVERLOAD_THRESHOLD,
-        PanAutomation, PanFramePoint, PlacedClip, SidechainDucker, TimelineMixSource,
-        TimelinePlaybackEngine, VolumeAutomation, VolumeFramePoint, WSOLA_MAX_SEARCH_FRAMES,
-        best_wsola_offset, cubic_interpolate, equal_power_pan, filter_cutoff_hz,
-        filter_makeup_gain, playback_signature, prepare_timeline, sidechain_pan_weight,
-        smooth_crossfade, stretch_duration_ratio, vu_envelope,
+        ClipEqState, DELAY_TAIL_SECONDS, DUCK_DEPTH_DB, DUCK_FLOOR, EffectTails,
+        FALLBACK_OUTPUT_SAMPLE_RATE, FILTER_HIGH_PASS_CLOSED_HZ, FILTER_HIGH_PASS_OPEN_HZ,
+        FILTER_LOW_PASS_CLOSED_HZ, FILTER_Q, FLANGER_TAIL_SECONDS, FilterAutomation,
+        FilterFramePoint, LaneAutomation, METER_PUBLISH_FRAMES, MasterColour, MasterCompressor,
+        MasterDynamics, MasterLimiter, OUTPUT_CEILING, OVERLOAD_THRESHOLD, PanAutomation,
+        PanFramePoint, PlacedClip, REVERB_TAIL_SECONDS, SendAutomation, SidechainDucker,
+        TimelineMixSource, TimelinePlaybackEngine, VolumeAutomation, VolumeFramePoint,
+        WSOLA_MAX_SEARCH_FRAMES, best_wsola_offset, cubic_interpolate, equal_power_pan,
+        filter_cutoff_hz, filter_makeup_gain, playback_signature, prepare_timeline,
+        sidechain_pan_weight, smooth_crossfade, stretch_duration_ratio, vu_envelope,
     };
     use crate::{
         tempo::{TempoMap, TempoPoint},
         timeline::{TimelineRenderClip, TimelineRenderPlan, TimelineVolumeNode},
     };
     use rodio::Source;
+    use std::sync::{Arc, Mutex};
     use std::{f64::consts::TAU, sync::atomic::Ordering, time::Duration};
 
     fn stereo_sine(frequency: f64, seconds: f64, sample_rate: u32) -> Vec<f32> {
@@ -3063,6 +3701,95 @@ mod tests {
         );
     }
 
+    /// L'envoi de reverb : ce que le geste, la passe écrite et la gomme font
+    /// ensemble. La règle vit hors de la boucle de mixage précisément pour être
+    /// vérifiable ici.
+    mod reverb_send {
+        use crate::audio::timeline::next_effect_send;
+
+        /// Assez grossiers pour que chaque pas se lise à l'œil.
+        const ATTACK: f32 = 0.25;
+        const RELEASE: f32 = 0.10;
+
+        #[test]
+        fn a_held_pad_climbs_to_full_and_stops_there() {
+            let mut send = 0.0;
+            for _ in 0..8 {
+                send = next_effect_send(send, true, false, 0.0, ATTACK, RELEASE);
+            }
+            assert_eq!(send, 1.0);
+        }
+
+        #[test]
+        fn a_released_pad_comes_back_down_to_nothing() {
+            let mut send = 1.0;
+            for _ in 0..20 {
+                send = next_effect_send(send, false, false, 0.0, ATTACK, RELEASE);
+            }
+            assert_eq!(send, 0.0);
+        }
+
+        /// Rejouer par-dessus une passe écrite doit s'entendre comme la même
+        /// reverb, pas comme le double.
+        #[test]
+        fn the_pass_and_the_gesture_combine_by_the_larger_of_the_two() {
+            assert_eq!(
+                next_effect_send(1.0, true, false, 1.0, ATTACK, RELEASE),
+                1.0
+            );
+            // La passe seule porte l'envoi, geste au repos.
+            assert_eq!(
+                next_effect_send(0.0, false, false, 0.6, ATTACK, RELEASE),
+                0.6
+            );
+        }
+
+        /// Le défaut signalé : la gomme effaçait bien en base, mais on
+        /// continuait d'entendre la passe pendant qu'on l'effaçait.
+        #[test]
+        fn the_eraser_silences_the_recorded_pass_while_it_is_held() {
+            assert_eq!(
+                next_effect_send(0.0, false, true, 1.0, ATTACK, RELEASE),
+                0.0
+            );
+        }
+
+        /// Elle ne coupe pas net : le gain courant porte encore la valeur de
+        /// l'automation, et la descente reprend là où elle était.
+        #[test]
+        fn the_eraser_lets_the_send_fall_rather_than_cutting_it() {
+            let under_the_eraser = next_effect_send(1.0, false, true, 1.0, ATTACK, RELEASE);
+            assert_eq!(under_the_eraser, 1.0 - RELEASE);
+            let released = next_effect_send(1.0, false, false, 0.0, ATTACK, RELEASE);
+            assert_eq!(
+                under_the_eraser, released,
+                "effacer doit retomber exactement comme relâcher"
+            );
+        }
+
+        /// Tenir la reverb et la gomme ensemble laisse entendre ce qu'on joue —
+        /// c'est bien ce qui restera, puisque réécrire est le seul geste qui
+        /// survit à l'effacement.
+        #[test]
+        fn playing_over_the_eraser_is_still_heard() {
+            let send = next_effect_send(0.5, true, true, 1.0, ATTACK, RELEASE);
+            assert_eq!(send, 0.75);
+        }
+
+        #[test]
+        fn the_send_never_leaves_its_bounds() {
+            for held in [false, true] {
+                for erasing in [false, true] {
+                    let mut send = 0.5;
+                    for _ in 0..100 {
+                        send = next_effect_send(send, held, erasing, 1.0, ATTACK, RELEASE);
+                        assert!((0.0..=1.0).contains(&send), "envoi hors bornes : {send}");
+                    }
+                }
+            }
+        }
+    }
+
     /// Le défaut signalé : la profondeur était fixe, si bien que monter le
     /// volume de la piste-clé ne produisait aucune progression — pompage plein
     /// tant que le détecteur déclenchait, rien dès qu'il passait sous son
@@ -3427,6 +4154,10 @@ mod tests {
                 volume_nodes: Vec::new(),
                 pan_nodes: Vec::new(),
                 filter_nodes: Vec::new(),
+                reverb_nodes: Vec::new(),
+                flanger_nodes: Vec::new(),
+                bitcrush_nodes: Vec::new(),
+                delay_nodes: Vec::new(),
             };
             crate::audio::bounce_timeline(&plan, &rendu, &mut |_| {})
                 .expect("le rendu devrait aboutir");
@@ -3543,6 +4274,10 @@ mod tests {
             volume_nodes: Vec::new(),
             pan_nodes: Vec::new(),
             filter_nodes: Vec::new(),
+            reverb_nodes: Vec::new(),
+            flanger_nodes: Vec::new(),
+            bitcrush_nodes: Vec::new(),
+            delay_nodes: Vec::new(),
         };
         crate::audio::bounce_timeline(&plan, &rendu, &mut |_| {})
             .expect("le rendu devrait aboutir");
@@ -3686,6 +4421,98 @@ mod tests {
         assert!((0.34..0.39).contains(&envelope));
     }
 
+    /// Les budgets de queue doivent valoir la **même durée** à toute fréquence
+    /// de sortie.
+    ///
+    /// Ils étaient écrits en nombres d'images à 48 kHz, si bien qu'à 96 kHz ils
+    /// tombaient de moitié : celui du delay serait passé à douze secondes et
+    /// demie, sous les vingt-quatre qu'il lui faut à quarante BPM. Le défaut
+    /// corrigé en portant ce budget de quinze à vingt-cinq secondes revenait
+    /// donc intact dès qu'on branchait une autre interface, et **rien ne
+    /// l'aurait signalé** — c'est exactement le genre d'écart qu'une unité
+    /// implicite laisse passer.
+    #[test]
+    fn the_tail_budgets_last_the_same_time_at_any_sample_rate() {
+        for rate in [44_100_u32, 48_000, 96_000] {
+            let tails = EffectTails::new(rate);
+            let seconds = |frames: usize| frames as f32 / rate as f32;
+            for (name, frames, expected) in [
+                ("reverb", tails.reverb_budget, REVERB_TAIL_SECONDS),
+                ("flanger", tails.flanger_budget, FLANGER_TAIL_SECONDS),
+                ("delay", tails.delay_budget, DELAY_TAIL_SECONDS),
+            ] {
+                let measured = seconds(frames);
+                assert!(
+                    (measured - expected).abs() < 0.001,
+                    "à {rate} Hz la queue du {name} dure {measured} s pour {expected} s attendues"
+                );
+            }
+        }
+    }
+
+    /// Écrire une passe reconstruit le plan, donc la source. Tant que les
+    /// queues vivaient **dans** la source, elles mouraient à cet instant précis
+    /// — celui où l'on relâche le bouton, c'est-à-dire celui où la queue doit
+    /// commencer. Elles sont maintenant remises à la source neuve, et seul un
+    /// déplacement voulu les vide.
+    #[test]
+    fn a_rebuilt_source_keeps_the_tail_it_was_handed() {
+        let tails = Arc::new(Mutex::new(EffectTails::new(FALLBACK_OUTPUT_SAMPLE_RATE)));
+        let ringing = |rack: &mut EffectTails| {
+            let (left, right) = rack.reverb.process(0.0, 0.0);
+            left.abs().max(right.abs())
+        };
+
+        // De l'énergie dans la pièce, comme une passe qu'on vient de jouer.
+        {
+            let mut rack = tails.lock().expect("le rack devrait se prendre");
+            for frame in 0..2_000 {
+                let input = if frame == 0 { 1.0 } else { 0.0 };
+                rack.reverb.process(input, input);
+            }
+            let before = ringing(&mut rack);
+            assert!(before > 1.0e-5, "la pièce devrait sonner : {before}");
+        }
+
+        // Une source neuve reprend les queues, exactement comme après une
+        // édition, puis se repositionne.
+        let mut source = TimelineMixSource::new(
+            Vec::new(),
+            44_100,
+            0b111,
+            MasterDynamics {
+                compressor_enabled: false,
+                limiter_enabled: true,
+            },
+            constant_tempo(),
+            FALLBACK_OUTPUT_SAMPLE_RATE,
+            LaneAutomation {
+                volume: unity_automation(),
+                pan: centred_pan_automation(),
+                filter: bypass_filter_automation(),
+                reverb: std::array::from_fn(|_| SendAutomation::default()),
+                flanger: std::array::from_fn(|_| SendAutomation::default()),
+                bitcrush: std::array::from_fn(|_| SendAutomation::default()),
+                delay: std::array::from_fn(|_| SendAutomation::default()),
+            },
+        );
+        source.share_tails(Arc::clone(&tails));
+        source
+            .try_seek(Duration::from_millis(500))
+            .expect("le repositionnement devrait réussir");
+
+        let after = ringing(&mut tails.lock().expect("le rack devrait se prendre"));
+        assert!(
+            after > 1.0e-5,
+            "la reconstruction a coupé la queue : {after}"
+        );
+
+        // Un déplacement voulu, lui, vide bien.
+        tails.lock().expect("le rack devrait se prendre").reset();
+        let emptied = ringing(&mut tails.lock().expect("le rack devrait se prendre"));
+        assert_eq!(emptied, 0.0, "un seek voulu doit vider la pièce");
+    }
+
     #[test]
     fn master_meter_preserves_independent_stereo_levels() {
         let mut source = TimelineMixSource::new(
@@ -3702,6 +4529,10 @@ mod tests {
                 volume: unity_automation(),
                 pan: centred_pan_automation(),
                 filter: bypass_filter_automation(),
+                reverb: std::array::from_fn(|_| SendAutomation::default()),
+                flanger: std::array::from_fn(|_| SendAutomation::default()),
+                bitcrush: std::array::from_fn(|_| SendAutomation::default()),
+                delay: std::array::from_fn(|_| SendAutomation::default()),
             },
         );
         for frame in 0..44_100 {
@@ -3736,6 +4567,10 @@ mod tests {
                 volume: unity_automation(),
                 pan: centred_pan_automation(),
                 filter: bypass_filter_automation(),
+                reverb: std::array::from_fn(|_| SendAutomation::default()),
+                flanger: std::array::from_fn(|_| SendAutomation::default()),
+                bitcrush: std::array::from_fn(|_| SendAutomation::default()),
+                delay: std::array::from_fn(|_| SendAutomation::default()),
             },
         );
 
@@ -3792,6 +4627,10 @@ mod tests {
                 volume: unity_automation(),
                 pan: centred_pan_automation(),
                 filter: bypass_filter_automation(),
+                reverb: std::array::from_fn(|_| SendAutomation::default()),
+                flanger: std::array::from_fn(|_| SendAutomation::default()),
+                bitcrush: std::array::from_fn(|_| SendAutomation::default()),
+                delay: std::array::from_fn(|_| SendAutomation::default()),
             },
         );
         let mut queued = source.clone();
@@ -3844,6 +4683,10 @@ mod tests {
                 volume: unity_automation(),
                 pan: centred_pan_automation(),
                 filter: bypass_filter_automation(),
+                reverb: std::array::from_fn(|_| SendAutomation::default()),
+                flanger: std::array::from_fn(|_| SendAutomation::default()),
+                bitcrush: std::array::from_fn(|_| SendAutomation::default()),
+                delay: std::array::from_fn(|_| SendAutomation::default()),
             },
         );
         let queued = source.clone();
@@ -3976,6 +4819,10 @@ mod tests {
                 volume: unity_automation(),
                 pan: centred_pan_automation(),
                 filter: bypass_filter_automation(),
+                reverb: std::array::from_fn(|_| SendAutomation::default()),
+                flanger: std::array::from_fn(|_| SendAutomation::default()),
+                bitcrush: std::array::from_fn(|_| SendAutomation::default()),
+                delay: std::array::from_fn(|_| SendAutomation::default()),
             },
         );
         source
@@ -4002,11 +4849,16 @@ mod tests {
                 volume: unity_automation(),
                 pan: centred_pan_automation(),
                 filter: bypass_filter_automation(),
+                reverb: std::array::from_fn(|_| SendAutomation::default()),
+                flanger: std::array::from_fn(|_| SendAutomation::default()),
+                bitcrush: std::array::from_fn(|_| SendAutomation::default()),
+                delay: std::array::from_fn(|_| SendAutomation::default()),
             },
         );
         let mut engine = TimelinePlaybackEngine {
             output: None,
             player: None,
+            tails: None,
             cached: Some(CachedTimeline {
                 signature: 1,
                 tempo_signature: tempo_map.signature(),
@@ -4053,6 +4905,10 @@ mod tests {
             volume_nodes: Vec::new(),
             pan_nodes: Vec::new(),
             filter_nodes: Vec::new(),
+            reverb_nodes: Vec::new(),
+            flanger_nodes: Vec::new(),
+            bitcrush_nodes: Vec::new(),
+            delay_nodes: Vec::new(),
         };
 
         for (limiter, compressor) in [(true, true), (true, false), (false, true), (false, false)] {
@@ -4104,6 +4960,10 @@ mod tests {
             }],
             pan_nodes: Vec::new(),
             filter_nodes: Vec::new(),
+            reverb_nodes: Vec::new(),
+            flanger_nodes: Vec::new(),
+            bitcrush_nodes: Vec::new(),
+            delay_nodes: Vec::new(),
         };
 
         let source = prepare_timeline(&plan, false, FALLBACK_OUTPUT_SAMPLE_RATE)

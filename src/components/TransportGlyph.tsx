@@ -24,12 +24,19 @@ export type TransportGlyphName =
   | "view-volume"
   | "view-pan"
   | "view-none"
-  | "draw-off"
   | "draw-step"
   | "draw-sine"
   | "draw-triangle"
   | "sidechain"
-  | "autoplay";
+  | "autoplay"
+  | "rewind"
+  | "forward"
+  | "mixfx"
+  | "fx-reverb"
+  | "fx-flanger"
+  | "fx-bitcrush"
+  | "fx-delay"
+  | "fx-eraser";
 
 const STROKE = {
   fill: "none",
@@ -67,6 +74,81 @@ export function TransportGlyph({ name }: { name: TransportGlyphName }) {
   return (
     <svg className="transport-glyph" viewBox="0 0 12 12" aria-hidden="true" focusable="false">
       {name === "play" && <path d="M3.6 2.4 9.4 6 3.6 9.6Z" fill="currentColor" />}
+      {/* Deux triangles accolés : la marque universelle du saut, et elle se
+          lit à cette taille là où une flèche seule se confondrait avec le
+          play. */}
+      {name === "rewind" && (
+        <>
+          <path d="M6.1 3 6.1 9 1.9 6Z" fill="currentColor" />
+          <path d="M10.5 3 10.5 9 6.3 6Z" fill="currentColor" />
+        </>
+      )}
+      {name === "forward" && (
+        <>
+          <path d="M1.5 3 1.5 9 5.7 6Z" fill="currentColor" />
+          <path d="M5.9 3 5.9 9 10.1 6Z" fill="currentColor" />
+        </>
+      )}
+      {/* Une onde qui s'élargit en s'éloignant : ce que fait une pièce à un
+          son. Trois arcs plutôt qu'un, pour que la marque tienne au petit
+          format sans devenir un simple trait courbe. */}
+      {name === "mixfx" && (
+        <>
+          <path {...STROKE} d="M2.6 4.2A4.4 4.4 0 0 1 2.6 7.8" />
+          <path {...STROKE} d="M5.2 2.6A7 7 0 0 1 5.2 9.4" />
+          <path {...STROKE} d="M7.8 1.6A9 9 0 0 1 7.8 10.4" />
+        </>
+      )}
+      {/* Les quatre effets joués, dessinés comme **ce qu'ils font au signal**
+          plutôt que comme des symboles à apprendre. Sur une pastille carrée de
+          quarante pixels, une marque figurative se reconnaît d'un coup d'œil là
+          où trois lettres demandent d'être lues. */}
+      {/* Reverb : une source, et ce que la pièce lui renvoie — des réflexions
+          qui s'écartent et s'affaiblissent. */}
+      {name === "fx-reverb" && (
+        <>
+          <path {...STROKE} d="M2.2 3.4V8.6" />
+          <path {...STROKE} d="M4.8 4.2A4 4 0 0 1 4.8 7.8" opacity={0.85} />
+          <path {...STROKE} d="M7.1 2.9A6.4 6.4 0 0 1 7.1 9.1" opacity={0.6} />
+          <path {...STROKE} d="M9.4 1.8A8.6 8.6 0 0 1 9.4 10.2" opacity={0.35} />
+        </>
+      )}
+      {/* Flanger : deux ondes de périodes voisines qui se croisent. C'est
+          exactement d'où vient le peigne — deux copies qui glissent l'une
+          contre l'autre et s'annulent par endroits. */}
+      {name === "fx-flanger" && (
+        <>
+          <path {...STROKE} d="M1.4 6C2.4 3.2 3.4 3.2 4.4 6S6.4 8.8 7.4 6s2-2.8 3 0" />
+          <path
+            {...STROKE}
+            d="M1.4 7.6C2.7 5.4 4 5.4 5.3 7.6s2.6 2.2 3.9 0"
+            opacity={0.45}
+          />
+        </>
+      )}
+      {/* Bitcrush : l'escalier de la quantification. Une rampe continue rendue
+          par paliers, ce qui est littéralement l'opération. */}
+      {name === "fx-bitcrush" && (
+        <path {...STROKE} d="M1.4 9.6h2.2V7.2h2.2V4.8h2.2V2.4h2.6" />
+      )}
+      {/* Delay : les répétitions, chacune plus courte que la précédente, et
+          régulièrement espacées comme des temps. */}
+      {name === "fx-delay" && (
+        <>
+          <path {...STROKE} d="M1.9 2.2V9.8" />
+          <path {...STROKE} d="M4.9 3.8V8.2" opacity={0.7} />
+          <path {...STROKE} d="M7.6 4.9V7.1" opacity={0.45} />
+          <path {...STROKE} d="M10 5.5V6.5" opacity={0.25} />
+        </>
+      )}
+      {/* La gomme d'écolier : un bloc incliné, sa bande plus épaisse d'un
+          côté. La même forme que celle qu'elle remplace en CSS. */}
+      {name === "fx-eraser" && (
+        <g transform="rotate(-32 6 6)">
+          <rect {...STROKE} x="1.8" y="4.2" width="8.4" height="3.6" rx="0.7" />
+          <path {...STROKE} d="M4.9 4.2V7.8" />
+        </g>
+      )}
       {name === "pause" && (
         <>
           <rect x="3.4" y="2.6" width="1.9" height="6.8" rx="0.4" fill="currentColor" />
@@ -79,8 +161,9 @@ export function TransportGlyph({ name }: { name: TransportGlyphName }) {
       {name === "view-pan" && <ViewGlyph volume={false} pan />}
       {name === "view-none" && <ViewGlyph volume={false} pan={false} />}
       {/* Les trois formes du crayon, dessinées comme elles sortiront sur la
-          piste. Éteint, c'est la ligne plate : l'absence d'automation. */}
-      {name === "draw-off" && <path {...STROKE} d="M1.5 6H10.5" opacity={0.3} />}
+          piste. Il y avait une quatrième marque, la ligne plate d'un crayon
+          éteint; le cran « éteint » a disparu quand la position du pointeur est
+          devenue ce qui choisit l'outil, et la marque est partie avec lui. */}
       {name === "draw-step" && (
         <path {...STROKE} d="M1.5 8.6H3.6V3.4H6.4V8.6H9.2V3.4H10.5" />
       )}

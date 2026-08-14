@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import type { LibraryTrack } from "../library/types";
-import { sortLibraryTracks, type LibrarySort } from "./librarySort";
+import {
+  DEFAULT_LIBRARY_SORT,
+  parseLibrarySort,
+  serializeLibrarySort,
+  sortLibraryTracks,
+  type LibrarySort,
+} from "./librarySort";
 
 function track(id: number, overrides: Partial<LibraryTrack> = {}): LibraryTrack {
   return {
@@ -79,5 +85,50 @@ describe("sortLibraryTracks", () => {
     expect(
       sortLibraryTracks(tracks, new Map(), { key: "bpm", direction: "descending" }).map(({ id }) => id),
     ).toEqual([2, 3, 1]);
+  });
+});
+
+describe("parseLibrarySort", () => {
+  it("round-trips every sort the interface can produce", () => {
+    for (const key of ["artist", "title", "bpm", "inUse"] as const) {
+      for (const direction of ["ascending", "descending"] as const) {
+        const sort: LibrarySort = { key, direction };
+        expect(parseLibrarySort(serializeLibrarySort(sort))).toEqual(sort);
+      }
+    }
+  });
+
+  it("falls back when nothing was ever stored", () => {
+    expect(parseLibrarySort(undefined)).toEqual(DEFAULT_LIBRARY_SORT);
+    expect(parseLibrarySort(null)).toEqual(DEFAULT_LIBRARY_SORT);
+  });
+
+  /** Le fichier peut avoir été écrit par une version antérieure, ou touché à la
+   *  main. Une préférence illisible ne doit jamais empêcher la bibliothèque de
+   *  s'afficher — le pire qu'elle puisse coûter est un tri à refaire. */
+  it("falls back on anything it cannot read", () => {
+    for (const raw of ["", "{", "null", "12", '"artist"', "[]"]) {
+      expect(parseLibrarySort(raw)).toEqual(DEFAULT_LIBRARY_SORT);
+    }
+  });
+
+  it("keeps the half it understands", () => {
+    // Une colonne disparue ne doit pas faire perdre le sens du tri…
+    expect(parseLibrarySort('{"key":"genre","direction":"descending"}')).toEqual({
+      key: DEFAULT_LIBRARY_SORT.key,
+      direction: "descending",
+    });
+    // …ni l'inverse.
+    expect(parseLibrarySort('{"key":"bpm","direction":"sideways"}')).toEqual({
+      key: "bpm",
+      direction: DEFAULT_LIBRARY_SORT.direction,
+    });
+  });
+
+  it("ignores anything else the object carries", () => {
+    expect(parseLibrarySort('{"key":"bpm","direction":"descending","secret":1}')).toEqual({
+      key: "bpm",
+      direction: "descending",
+    });
   });
 });

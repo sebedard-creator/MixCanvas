@@ -22,7 +22,7 @@ use audio::{
 };
 use library::{AnalysisBatchResult, LibraryImportResult, LibraryStore, LibraryTrack};
 use tauri::{Emitter, Manager, State};
-use timeline::TimelineSnapshot;
+use timeline::{PlayedEffect, TimelineSnapshot};
 use transport::{TimelineTransport, TimelineTransportSnapshot};
 
 type AudioState = Arc<Mutex<PreviewEngine>>;
@@ -135,6 +135,33 @@ fn with_library(
 #[tauri::command]
 fn list_library_tracks(state: State<'_, LibraryState>) -> Result<Vec<LibraryTrack>, String> {
     with_library(&state, |library| library.list_tracks())
+}
+
+/// Les préférences du programme, lues d'un bloc au démarrage.
+///
+/// Rust ne fait que ranger et rendre des chaînes : ce qu'elles signifient
+/// regarde l'interface, qui est seule à le savoir. Une préférence ajoutée ne
+/// demande donc ni migration ni commande de plus.
+#[tauri::command]
+fn read_app_preferences(
+    state: State<'_, LibraryState>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let library = state
+        .lock()
+        .map_err(|_| "The library is in an invalid state.".to_owned())?;
+    library::read_app_preferences(&library.connection)
+}
+
+#[tauri::command]
+fn write_app_preference(
+    key: String,
+    value: String,
+    state: State<'_, LibraryState>,
+) -> Result<(), String> {
+    let library = state
+        .lock()
+        .map_err(|_| "The library is in an invalid state.".to_owned())?;
+    library::write_app_preference(&library.connection, &key, &value)
 }
 
 #[tauri::command]
@@ -795,6 +822,124 @@ fn set_timeline_lane_muted(
         timeline::set_lane_muted(connection, lane, is_muted)
     })?;
     synchronize_lane_mix(&snapshot, &playback_state)?;
+    Ok(snapshot)
+}
+
+/// Quelles pistes tiennent le bouton d'un effet enfoncé, un bit par piste.
+///
+/// Rien n'est écrit en base : c'est un geste joué, pas un réglage. Il passe
+/// donc directement au moteur par un atomique, sans reconstruire le plan —
+/// autrement l'appui arriverait trop tard pour tomber sur le temps.
+///
+/// L'effet est un paramètre plutôt qu'une commande par effet : le geste est le
+/// même, et le jour du delay et du bitcrush cette frontière compterait seize
+/// commandes au lieu de quatre.
+#[tauri::command]
+fn set_timeline_effect_keys(
+    effect: PlayedEffect,
+    keys: u8,
+    playback_state: State<'_, TimelinePlaybackState>,
+) -> Result<(), String> {
+    let engine = playback_state
+        .lock()
+        .map_err(|_| "The timeline audio engine is in an invalid state.".to_owned())?;
+    match effect {
+        PlayedEffect::Reverb => engine.set_reverb_keys(keys),
+        PlayedEffect::Flanger => engine.set_flanger_keys(keys),
+        PlayedEffect::Bitcrush => engine.set_bitcrush_keys(keys),
+        PlayedEffect::Delay => engine.set_delay_keys(keys),
+    }
+    Ok(())
+}
+
+/// Quelles pistes ont la gomme tenue au-dessus d'elles, un bit par piste.
+///
+/// La gomme n'écrit dans la base qu'au relâchement — c'est un balayage, et sa
+/// longueur n'est connue qu'à la fin. Le plan en cours porte donc encore la
+/// passe qu'on retire, et ce masque la fait taire pendant le geste : sinon on
+/// entend la reverb continuer sous la gomme, et l'on ne sait ce qu'on a effacé
+/// qu'après avoir levé le doigt.
+#[tauri::command]
+fn set_timeline_effect_erase(
+    lanes: u8,
+    playback_state: State<'_, TimelinePlaybackState>,
+) -> Result<(), String> {
+    playback_state
+        .lock()
+        .map_err(|_| "The timeline audio engine is in an invalid state.".to_owned())?
+        .set_effect_erase(lanes);
+    Ok(())
+}
+
+/// Le défilement rapide vers l'avant, tenu au bouton.
+///
+/// Rien n'est écrit en base et le plan n'est pas reconstruit : c'est un geste,
+/// et il doit prendre effet à l'instant où le doigt tombe.
+#[tauri::command]
+fn set_timeline_scrub_forward(
+    scrubbing: bool,
+    playback_state: State<'_, TimelinePlaybackState>,
+) -> Result<(), String> {
+    playback_state
+        .lock()
+        .map_err(|_| "The timeline audio engine is in an invalid state.".to_owned())?
+        .set_scrub_forward(scrubbing);
+    Ok(())
+}
+
+/// Écrit une passe d'effet jouée à la main, entre deux beats.
+///
+/// Appelée au **relâchement** du bouton : le geste est fini, on connaît ses deux
+/// bouts. Contrairement au masque tenu, ceci est une édition — elle s'écrit en
+/// base, elle s'annule, et elle apparaît sur la timeline.
+#[tauri::command]
+fn write_timeline_effect_span(
+    effect: PlayedEffect,
+    lane: i64,
+    start_beat: f64,
+    end_beat: f64,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::write_effect_span(connection, effect, lane, start_beat, end_beat)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+/// Efface l'automation d'un effet — ou de tous — sur une plage.
+///
+/// `effect` absent emporte tout : c'est la gomme de l'écran des effets, un seul
+/// geste, donc une seule édition et un seul `Ctrl+Z`. Un clic droit sur une
+/// région, lui, nomme l'effet de cette région.
+#[tauri::command]
+fn clear_timeline_effect_range(
+    effect: Option<PlayedEffect>,
+    lane: i64,
+    start_beat: f64,
+    end_beat: f64,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::clear_effect_range(connection, effect, lane, start_beat, end_beat)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
     Ok(snapshot)
 }
 
@@ -1976,6 +2121,8 @@ pub fn run() {
             set_preview_speed,
             preview_snapshot,
             list_library_tracks,
+            read_app_preferences,
+            write_app_preference,
             import_library_paths,
             remove_library_track,
             update_track_beatgrid,
@@ -1991,6 +2138,11 @@ pub fn run() {
             trim_timeline_clip,
             move_timeline_tempo_point,
             set_timeline_clip_tempo_target,
+            set_timeline_effect_keys,
+            set_timeline_effect_erase,
+            set_timeline_scrub_forward,
+            write_timeline_effect_span,
+            clear_timeline_effect_range,
             remove_timeline_clip,
             set_timeline_lane_muted,
             set_timeline_lane_solo,

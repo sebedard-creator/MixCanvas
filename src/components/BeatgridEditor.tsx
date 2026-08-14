@@ -179,6 +179,21 @@ export function BeatgridEditor({
    * position est déplacée sur son beat le plus proche sans jamais être
    * remplacée par le downbeat automatique.
    */
+  /**
+   * Vrai tant que quelque chose écrit dans les deux champs sous nos yeux.
+   *
+   * L'affinage les **possède** le temps qu'il tourne : il les réécrira en
+   * rendant. Tout ce qui les change ou les enregistre entre-temps se ferait
+   * donc effacer sans rien dire — `Save` enregistrait les valeurs d'avant le
+   * calcul, et `Restore Automatic` remettait la grille analysée pour la voir
+   * disparaître une seconde plus tard. Le même défaut à trois boutons, donc
+   * une seule règle plutôt que trois gardes recopiées.
+   *
+   * Les touches de tap et `Clear`, elles, écrivent ailleurs — dans la série de
+   * frappes, pas dans les champs — et restent disponibles.
+   */
+  const fieldsAreOwned = busy || snapping;
+
   const snapToKicks = async () => {
     const tapped = parseNumber(bpmInput);
     if (!Number.isFinite(tapped) || tapped <= 0 || !isValid || snapping) return;
@@ -410,14 +425,14 @@ export function BeatgridEditor({
 
       <div className="beatgrid-editor-footer">
         <div>
-          <button className="text-button" type="button" onClick={onReanalyze} disabled={busy || track.isMissing}>
+          <button className="text-button" type="button" onClick={onReanalyze} disabled={fieldsAreOwned || track.isMissing}>
             Reanalyze
           </button>
           <button
             className="text-button"
             type="button"
             onClick={restoreAutomatic}
-            disabled={busy || !canRestore}
+            disabled={fieldsAreOwned || !canRestore}
             title="Put the analysed tempo and downbeat back in the fields — Save to keep them"
           >
             Restore Automatic
@@ -426,7 +441,7 @@ export function BeatgridEditor({
         <button
           className="primary-button"
           type="button"
-          disabled={busy || !isValid}
+          disabled={fieldsAreOwned || !isValid}
           onClick={() => onSave(bpm, firstBeatMs)}
         >
           {busy ? "Saving…" : "Save"}

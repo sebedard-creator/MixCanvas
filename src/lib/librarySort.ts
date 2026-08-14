@@ -8,6 +8,48 @@ export interface LibrarySort {
   direction: LibrarySortDirection;
 }
 
+/** Par artiste, croissant : l'ordre d'une étagère à disques. */
+export const DEFAULT_LIBRARY_SORT: LibrarySort = { key: "artist", direction: "ascending" };
+
+/** La clé sous laquelle le tri est retenu d'une séance à l'autre. */
+export const LIBRARY_SORT_PREFERENCE = "library.sort";
+
+const SORT_KEYS: readonly LibrarySortKey[] = ["artist", "title", "bpm", "inUse"];
+const SORT_DIRECTIONS: readonly LibrarySortDirection[] = ["ascending", "descending"];
+
+/**
+ * Relit le tri retenu, et **retombe sur le défaut à la moindre surprise**.
+ *
+ * Ce qui arrive ici vient d'un fichier que rien n'empêche d'être vieux, écrit
+ * par une version qui connaissait d'autres colonnes, ou modifié à la main.
+ * Une préférence illisible ne doit jamais empêcher la bibliothèque de
+ * s'afficher : le pire qu'elle puisse coûter est un tri à refaire une fois.
+ */
+export function parseLibrarySort(raw: string | undefined | null): LibrarySort {
+  if (typeof raw !== "string") return DEFAULT_LIBRARY_SORT;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return DEFAULT_LIBRARY_SORT;
+  }
+  if (typeof parsed !== "object" || parsed === null) return DEFAULT_LIBRARY_SORT;
+  const { key, direction } = parsed as Partial<LibrarySort>;
+  // Les deux champs sont vérifiés séparément : une colonne disparue ne doit pas
+  // faire perdre le sens du tri, ni l'inverse.
+  return {
+    key: SORT_KEYS.includes(key as LibrarySortKey) ? (key as LibrarySortKey) : DEFAULT_LIBRARY_SORT.key,
+    direction: SORT_DIRECTIONS.includes(direction as LibrarySortDirection)
+      ? (direction as LibrarySortDirection)
+      : DEFAULT_LIBRARY_SORT.direction,
+  };
+}
+
+/** Ce qu'on range. Du JSON, pour que la forme puisse grandir sans migration. */
+export function serializeLibrarySort(sort: LibrarySort): string {
+  return JSON.stringify({ key: sort.key, direction: sort.direction });
+}
+
 function compareOptionalText(
   left: string | null,
   right: string | null,

@@ -83,8 +83,20 @@ import {
 } from "../lib/timelineZoom";
 import type { LiveTransport } from "../lib/liveTransport";
 import { nodesAcross, visibleBeatRange } from "../lib/automationWindow";
+import {
+  EFFECT_TINTS,
+  PLAYED_EFFECTS,
+  hatchBands,
+  hatchPatternId,
+  regionsAcross,
+  reverbGradientId,
+  reverbGradientStops,
+  reverbSpans,
+} from "../lib/mixEffects";
+import type { PlayedEffect } from "../lib/mixEffects";
 import type {
   TimelineClip,
+  TimelineReverbNode,
   TimelineDrawGroup,
   TimelineSnapshot,
   TimelineTransportSnapshot,
@@ -120,7 +132,6 @@ const DRAW_GLYPHS = {
   triangle: "draw-triangle",
 } as const;
 
-/** Le cycle des formes passe par l'éteint, qui sert d'état désarmé. */
 /**
  * La forme suivante, en boucle sur les trois.
  *
@@ -220,6 +231,36 @@ interface TimelinePanelProps {
   /** Le tempo visé à l'ancre d'un clip. `null` lui rend la vitesse de son
    *  morceau. Ne touche jamais la bibliothèque. */
   onSetClipTempoTarget: (clipId: number, bpm: number | null) => Promise<void>;
+  /** Ouvre ou referme le panneau des effets joués. */
+  onToggleMixEffects: () => void;
+  /**
+   * Vrai tant que le panneau des effets est ouvert : le bouton s'allume.
+   *
+   * Il servait aussi à **museler** les raccourcis de ce panneau, parce que les
+   * touches des effets tombaient également ici — `R` et `T` zoomaient, `V`
+   * changeait la vue, `B` coupait un clip. Le panneau n'a plus de raccourcis du
+   * tout, donc plus rien à disputer : la garde est retirée et la timeline reste
+   * pilotable au clavier pendant qu'on joue.
+   */
+  mixEffectsOpen: boolean;
+  /**
+   * Les passes qu'on est **en train** de jouer, dessinées en direct.
+   *
+   * Elles n'existent pas encore en base : la timeline ne les connaîtrait qu'au
+   * relâchement, ce qui revenait à jouer à l'aveugle. Leur bord droit suit la
+   * tête de lecture jusqu'à ce que la vraie région prenne le relais.
+   */
+  livePasses: readonly { effect: PlayedEffect; lane: number; startBeat: number }[];
+  /**
+   * Efface les passes d'un effet sur une plage d'une voie — ou de **tous**, si
+   * aucun n'est nommé.
+   */
+  onClearEffectRange: (
+    effect: PlayedEffect | null,
+    lane: number,
+    startBeat: number,
+    endBeat: number,
+  ) => Promise<void>;
   selectedLane: number;
   onSelectLane: (lane: number) => void;
   onSetLaneMuted: (lane: number, isMuted: boolean) => Promise<void>;
@@ -348,6 +389,23 @@ interface FilterContextMenu {
 }
 
 
+/**
+ * La force du mauve d'une passe pleine.
+ *
+ * Le sommet de la passe est porté par les arrêts du dégradé, qui reprennent la
+ * valeur des nœuds; il ne reste ici qu'un seul nombre, le même pour toutes les
+ * régions. C'est la valeur qu'une passe à fond avait déjà.
+ */
+const REVERB_TINT_STRENGTH = 0.48;
+
+/**
+ * La largeur d'une rayure du hachurage, en pixels de la vue.
+ *
+ * Assez large pour se lire à l'œil sur une bande de vingt pixels de haut, assez
+ * étroite pour qu'un recouvrement d'un seul temps en montre plusieurs.
+ */
+const HATCH_STRIPE_PX = 5;
+
 function filterNodeY(lane: number, value: number) {
   // Bypass sits at the exact middle of the band, on every lane. These offsets
   // used to be hand-tuned per lane because the three sub-lanes had different
@@ -379,6 +437,10 @@ export function TimelinePanel({
   onTogglePlayback,
   onSeek,
   onSetClipTempoTarget,
+  onToggleMixEffects,
+  mixEffectsOpen,
+  livePasses,
+  onClearEffectRange,
   selectedLane,
   onSelectLane,
   onSetLaneMuted,
@@ -452,6 +514,15 @@ export function TimelinePanel({
   const [volumeContextMenu, setVolumeContextMenu] = useState<VolumeContextMenu | null>(null);
   const [panContextMenu, setPanContextMenu] = useState<VolumeContextMenu | null>(null);
   const [filterContextMenu, setFilterContextMenu] = useState<FilterContextMenu | null>(null);
+  /**
+   * Le menu d'une région d'effet, sous le curseur.
+   *
+   * Un menu et non une suppression immédiate : le clic droit effaçait sans
+   * rien demander, ce qu'aucune autre courbe de la timeline ne fait. Une passe
+   * jouée coûte un geste en temps réel, et la perdre sur un clic mal placé
+   * n'était pas un marché honnête.
+   */
+  const [effectContextMenu, setEffectContextMenu] = useState<FilterContextMenu | null>(null);
   /** Ouvert par un clic droit sur le nom d'un clip, dans sa barre de titre. */
   const [clipContextMenu, setClipContextMenu] = useState<
     { clientX: number; clientY: number; clipId: number; label: string } | null
@@ -534,13 +605,20 @@ export function TimelinePanel({
   }, [timeline.clips, timeline.tempoPoints, timeline.volumeNodes, timeline.filterNodes]);
 
   useEffect(() => {
-    if (!volumeContextMenu && !panContextMenu && !filterContextMenu && !clipContextMenu) {
+    if (
+      !volumeContextMenu
+      && !panContextMenu
+      && !filterContextMenu
+      && !effectContextMenu
+      && !clipContextMenu
+    ) {
       return undefined;
     }
     const closeMenus = () => {
       setVolumeContextMenu(null);
       setPanContextMenu(null);
       setFilterContextMenu(null);
+      setEffectContextMenu(null);
       setClipContextMenu(null);
     };
     const closeOnOutsidePointer = (event: PointerEvent) => {
@@ -554,7 +632,13 @@ export function TimelinePanel({
       window.removeEventListener("pointerdown", closeOnOutsidePointer);
       window.removeEventListener("blur", closeMenus);
     };
-  }, [clipContextMenu, filterContextMenu, panContextMenu, volumeContextMenu]);
+  }, [
+    clipContextMenu,
+    effectContextMenu,
+    filterContextMenu,
+    panContextMenu,
+    volumeContextMenu,
+  ]);
 
   useEffect(() => {
     const element = timelineScroll.current;
@@ -716,6 +800,16 @@ export function TimelinePanel({
    * La marge virtuelle est statique; seul `scrollLeft` avance à l'intérieur.
    * Un rendu n'est redemandé qu'au franchissement de `VIEW_RENDER_STEP_PX`.
    */
+  /**
+   * Les rectangles des passes en cours, avec le beat où chacune a commencé.
+   *
+   * Leur largeur est écrite **par le tracé**, pas par un rendu : une passe
+   * tenue grandit vingt fois par seconde, et re-rendre la timeline à ce rythme
+   * est exactement ce que la campagne de performance a supprimé. Même chemin
+   * que le défilement de la vue.
+   */
+  const livePassNodes = useRef(new Map<string, { startBeat: number; node: SVGRectElement }>());
+
   const paintView = useCallback(() => {
     const geometry = viewGeometry.current;
     const position = livePositionBeat.current;
@@ -737,6 +831,13 @@ export function TimelinePanel({
         ? Math.max(0, Math.min(1, displayed / geometry.totalBeats))
         : 0;
       scrollbarThumb.current.style.left = `${ratio * (100 - geometry.thumbWidthPercent)}%`;
+    }
+
+    /* Le bord droit de chaque passe en cours suit la tête. Écrire un attribut
+       de largeur ne lit pas la mise en page et ne force donc pas de reflow. */
+    for (const { startBeat, node } of livePassNodes.current.values()) {
+      const width = Math.max(0, (position - startBeat) * geometry.pixelsPerBeat);
+      node.setAttribute("width", String(width));
     }
 
     const driftPx = Math.abs(displayed - renderedBeatRef.current) * geometry.pixelsPerBeat;
@@ -1103,6 +1204,45 @@ export function TimelinePanel({
     onLibraryPointerDragComplete,
     pixelsPerBeat,
   ]);
+
+  /**
+   * Le clic droit sur une région d'effet, porté par **la voie** et non par la
+   * région.
+   *
+   * La teinte est un fond, pas un contrôle : tant qu'elle interceptait le
+   * pointeur pour offrir son menu, elle volait aussi le clic gauche qui
+   * déplace la tête de lecture. Une seule passe jouée suffisait à rendre tout
+   * un pan de la timeline insensible au clic, et quatre effets en couvraient
+   * bientôt l'essentiel — la tête ne suivait plus. La voie sait déjà convertir
+   * une abscisse en beat; elle peut aussi dire quelle région s'y trouve.
+   */
+  const openEffectRegionMenu = (event: ReactMouseEvent<HTMLDivElement>, lane: number) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const beat = timelineSeekBeat(event.clientX, bounds.left, pixelsPerBeat);
+    const under = effectRegions.filter(
+      (region) => region.lane === lane && beat >= region.startBeat && beat <= region.endBeat,
+    );
+    if (under.length === 0) {
+      setEffectContextMenu(null);
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+
+    // La plage retenue couvre **tout** ce qui se trouve sous le curseur. Là où
+    // deux effets se recouvrent, on voit une seule bande hachurée : proposer de
+    // n'en retirer qu'un obligerait à deviner lequel, et à recliquer pour
+    // l'autre. Un seul geste emporte ce qu'on désigne.
+    setVolumeContextMenu(null);
+    setFilterContextMenu(null);
+    setEffectContextMenu({
+      clientX: Math.min(event.clientX, window.innerWidth - 205),
+      clientY: Math.min(event.clientY, window.innerHeight - 46),
+      lane,
+      startBeat: Math.min(...under.map((region) => region.startBeat)),
+      endBeat: Math.max(...under.map((region) => region.endBeat)),
+    });
+  };
 
   const handleTimelineSeek = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (busy || (event.target as HTMLElement).closest(".timeline-clip, button")) {
@@ -2155,6 +2295,45 @@ export function TimelinePanel({
     timeline.panNodes,
   ]);
 
+  /* Une région par passe, par voie et par effet. Ne dépend que des nœuds : ni
+     du survol, ni de la tête de lecture. */
+  const allEffectRegions = useMemo(
+    () => {
+      const nodes: Record<PlayedEffect, readonly TimelineReverbNode[]> = {
+        reverb: timeline.reverbNodes,
+        flanger: timeline.flangerNodes,
+        bitcrush: timeline.bitcrushNodes,
+        delay: timeline.delayNodes,
+      };
+      return PLAYED_EFFECTS.flatMap((effect) =>
+        TIMELINE_LANES.flatMap((lane) =>
+          reverbSpans(nodes[effect].filter((node) => node.lane === lane))
+            .map((span) => ({ ...span, lane, effect })),
+        ),
+      );
+    },
+    [timeline.bitcrushNodes, timeline.delayNodes, timeline.flangerNodes, timeline.reverbNodes],
+  );
+
+  /* Seules celles qu'on voit entrent dans le document. La lecture des nœuds
+     reste en cache sur eux seuls : c'est elle qui coûte, et elle n'a aucune
+     raison de recommencer à chaque pas de défilement. */
+  const effectRegions = useMemo(
+    () => regionsAcross(allEffectRegions, curveFromBeat, curveToBeat),
+    [allEffectRegions, curveFromBeat, curveToBeat],
+  );
+
+  /* Les plages où plusieurs effets se recouvrent, à hachurer. */
+  const hatchBandList = useMemo(() => hatchBands(effectRegions), [effectRegions]);
+
+  /* Les combinaisons réellement présentes : une définition de motif chacune,
+     et rien pour celles que personne n'a jouées. */
+  const hatchPatterns = useMemo(() => {
+    const seen = new Map<string, PlayedEffect[]>();
+    for (const band of hatchBandList) seen.set(band.effects.join("-"), band.effects);
+    return [...seen.values()];
+  }, [hatchBandList]);
+
   const filterPaths = useMemo(() => TIMELINE_LANES.map((lane) => {
     const spanning = filterPointsForLane(lane);
     /* Le test « y a-t-il quelque chose à montrer » porte sur **toute** la voie,
@@ -2424,6 +2603,30 @@ export function TimelinePanel({
               <strong>Autoplay</strong>
               <span>{autoplay ? "On — a click starts playback" : "Off — a click only moves the playhead"}</span>
               <span>Clicking the timeline, whatever else is playing</span>
+            </span>
+          </span>
+          {/* Un vrai bouton de la console, à côté d'AUTO : il ouvre l'écran des
+              effets joués, qui appartient au transport plus qu'aux réglages. */}
+          <span className="transport-hint">
+            <button
+              className={`analog-transport-button analog-mixfx${mixEffectsOpen ? " is-active" : ""}`}
+              type="button"
+              onClick={onToggleMixEffects}
+              aria-pressed={mixEffectsOpen}
+              aria-label="Mix Effects"
+            >
+              <div className="transport-led-socket">
+                <i
+                  className={`transport-led mixfx-led${mixEffectsOpen ? " is-active" : ""}`}
+                  aria-hidden="true"
+                />
+              </div>
+              <TransportGlyph name="mixfx" />
+              <span className="transport-button-label">MIX FX</span>
+            </button>
+            <span className="lane-hint-tip" aria-hidden="true">
+              <strong>Mix Effects</strong>
+              <span>Open the effects panel — press again to put it away</span>
             </span>
           </span>
         </div>
@@ -2787,6 +2990,7 @@ export function TimelinePanel({
                     style={{ backgroundSize: `${pixelsPerBeat * 4}px 100%` }}
                     data-lane={lane}
                     onClick={handleTimelineSeek}
+                    onContextMenu={(event) => openEffectRegionMenu(event, lane)}
                     onPointerMove={moveShapeStroke}
                     onPointerUp={finishShapeStroke}
                     onPointerCancel={() => {
@@ -2797,6 +3001,140 @@ export function TimelinePanel({
                 </div>
               );
             })}
+
+            {/* Les passes d'effet, teintées sur la voie qui les porte.
+                Sous les courbes d'automation et sous les clips : c'est un fond
+                qui dit « ici l'effet est ouvert », pas un tracé qu'on manipule.
+
+                Un dégradé **par région**, avec un arrêt par nœud. Toutes les
+                régions ont longtemps partagé un même dégradé dont les arrêts
+                étaient à douze pour cent de la largeur, alors que les rampes
+                écrites sont absolues — un huitième de temps à la montée, trois
+                quarts à la descente. La teinte montrait donc autre chose que ce
+                qui jouait, et l'écart changeait de sens selon la longueur de la
+                passe. Elle se déduit maintenant des mêmes nœuds que le moteur
+                lit. */}
+            {(effectRegions.length > 0 || livePasses.length > 0) && <svg
+              className="reverb-regions"
+              width={contentWidth}
+              height="100%"
+              viewBox={`0 0 ${contentWidth} 450`}
+              preserveAspectRatio="none"
+              aria-hidden="true"
+            >
+              <defs>
+                {effectRegions.map((region) => (
+                  <linearGradient
+                    id={reverbGradientId(region.effect, region.lane, region.startBeat)}
+                    key={reverbGradientId(region.effect, region.lane, region.startBeat)}
+                    x1="0"
+                    x2="1"
+                    y1="0"
+                    y2="0"
+                  >
+                    {reverbGradientStops(region).map((stop, index) => (
+                      <stop
+                        key={index}
+                        offset={`${stop.offset * 100}%`}
+                        stopColor={EFFECT_TINTS[region.effect]}
+                        stopOpacity={stop.opacity}
+                      />
+                    ))}
+                  </linearGradient>
+                ))}
+
+                {/* Un motif par combinaison d'effets, pour les endroits où
+                    plusieurs jouent ensemble. Les rayures se répètent dans
+                    l'espace de l'utilisateur — `userSpaceOnUse` — et non dans
+                    celui de la bande : sinon la largeur d'une rayure suivrait la
+                    largeur de la région, et deux recouvrements de longueurs
+                    différentes n'auraient pas le même grain. */}
+                {hatchPatterns.map((effects) => (
+                  <pattern
+                    id={hatchPatternId(effects)}
+                    key={hatchPatternId(effects)}
+                    patternUnits="userSpaceOnUse"
+                    width={HATCH_STRIPE_PX * effects.length}
+                    height={HATCH_STRIPE_PX * effects.length}
+                    patternTransform="rotate(45)"
+                  >
+                    {effects.map((effect, index) => (
+                      <rect
+                        key={effect}
+                        x={index * HATCH_STRIPE_PX}
+                        y={0}
+                        width={HATCH_STRIPE_PX}
+                        height={HATCH_STRIPE_PX * effects.length}
+                        fill={EFFECT_TINTS[effect]}
+                      />
+                    ))}
+                  </pattern>
+                ))}
+              </defs>
+
+              {effectRegions.map((region) => (
+                <rect
+                  key={`${region.effect}-${region.lane}-${region.startBeat}`}
+                  x={region.startBeat * pixelsPerBeat}
+                  width={Math.max(1, (region.endBeat - region.startBeat) * pixelsPerBeat)}
+                  y={region.lane * LANE_PAIR_UNITS + FILTER_LANE_UNITS}
+                  height={LANE_PAIR_UNITS - FILTER_LANE_UNITS}
+                  fill={`url(#${reverbGradientId(region.effect, region.lane, region.startBeat)})`}
+                  /* Le sommet est porté par les arrêts eux-mêmes; ce qui reste
+                     ici n'est que la force de la teinte, la même pour toutes les
+                     régions. */
+                  opacity={REVERB_TINT_STRENGTH}
+                />
+              ))}
+
+              {/* Les passes en cours, dessinées pendant qu'on les joue. Sans
+                  dégradé : les rampes ne sont écrites qu'au relâchement, et en
+                  inventer une avant que le geste ne soit fini montrerait une
+                  forme que rien ne garantit. La largeur part à zéro et c'est le
+                  tracé qui l'étire. */}
+              {livePasses.map((pass) => {
+                const key = `${pass.effect}-${pass.lane}`;
+                return (
+                  <rect
+                    key={key}
+                    ref={(node) => {
+                      if (node) {
+                        livePassNodes.current.set(key, { startBeat: pass.startBeat, node });
+                      } else {
+                        livePassNodes.current.delete(key);
+                      }
+                    }}
+                    x={pass.startBeat * pixelsPerBeat}
+                    width={0}
+                    y={pass.lane * LANE_PAIR_UNITS + FILTER_LANE_UNITS}
+                    height={LANE_PAIR_UNITS - FILTER_LANE_UNITS}
+                    fill={EFFECT_TINTS[pass.effect]}
+                    opacity={REVERB_TINT_STRENGTH}
+                  />
+                );
+              })}
+
+              {/* Là où plusieurs effets jouent ensemble, des hachures plutôt
+                  qu'un empilement. Deux teintes translucides superposées font
+                  une troisième couleur, qui ne dit ni l'une ni l'autre : du
+                  mauve sous du vert n'est plus ni reverb ni flanger. Les rayures
+                  gardent les deux lisibles. */}
+              {hatchBandList.map((band) => (
+                <rect
+                  key={`hatch-${band.lane}-${band.startBeat}-${band.effects.join("-")}`}
+                  x={band.startBeat * pixelsPerBeat}
+                  width={Math.max(1, (band.endBeat - band.startBeat) * pixelsPerBeat)}
+                  y={band.lane * LANE_PAIR_UNITS + FILTER_LANE_UNITS}
+                  height={LANE_PAIR_UNITS - FILTER_LANE_UNITS}
+                  fill={`url(#${hatchPatternId(band.effects)})`}
+                  opacity={REVERB_TINT_STRENGTH}
+                  /* Transparente aux évènements : la bande hachurée n'est qu'une
+                     lecture, et le clic droit doit atteindre la région qu'elle
+                     recouvre pour savoir quel effet effacer. */
+                  style={{ pointerEvents: "none" }}
+                />
+              ))}
+            </svg>}
 
             {showVolumeAutomation && <svg
               className="volume-automation-lines"
@@ -3419,6 +3757,35 @@ export function TimelinePanel({
             }}
           >
             Delete Filter Curve
+          </button>
+        </div>
+      )}
+      {effectContextMenu && (
+        <div
+          className="timeline-context-menu"
+          style={{ left: effectContextMenu.clientX, top: effectContextMenu.clientY }}
+          role="menu"
+          onMouseLeave={() => setEffectContextMenu(null)}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="is-destructive"
+            disabled={busy}
+            onClick={() => {
+              /* Sans effet nommé : la commande emporte les quatre sur la
+                 plage, comme la gomme de l'écran des effets, et en une seule
+                 édition — donc un seul `Ctrl+Z` pour la défaire. */
+              void onClearEffectRange(
+                null,
+                effectContextMenu.lane,
+                effectContextMenu.startBeat,
+                effectContextMenu.endBeat,
+              );
+              setEffectContextMenu(null);
+            }}
+          >
+            Delete Mix FX Automation
           </button>
         </div>
       )}

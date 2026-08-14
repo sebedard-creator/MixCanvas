@@ -20,6 +20,7 @@ you want, and keep editing while the timeline plays.
 - Automatic BPM and downbeat analysis, with practical manual correction.
 - Pitch-preserving time-stretching and a global tempo curve for beatmatched
   transitions.
+- Four effects you play by hand while the mix runs, recorded onto the timeline.
 - Local audio processing in 32-bit floating point.
 - No subscriptions, no telemetry, and no network connection required.
 
@@ -94,6 +95,34 @@ MixCanvas lets you draw transitions directly where they happen.
 - Automation belongs to the lane, not to the clip: it stays at the beats where
   you drew it when a clip moves. Removing a clip does clear the automation that
   was only its own, without touching a neighbour's.
+
+## Play effects by hand
+
+`MIX FX` opens a small panel over the Library column. Hold a pad while the mix
+runs and the effect goes onto that track; let go and the pass is written onto
+the timeline as automation you can keep, undo, or replay over.
+
+- **Reverb** — a shared room. Bright and generous, sitting well behind the
+  music.
+- **Flange** — a comb filter sweeping across the track, ping-ponging in stereo.
+- **Crush** — eight-bit quantisation with sample-and-hold aliasing, replacing
+  the track while you hold it.
+- **Delay** — a dotted-eighth echo that follows the project tempo, so it stays
+  on the beat even through a tempo ramp. It bounces from one ear to the other
+  and each repeat comes back darker. Hold it, cut the track, and the echo
+  carries the transition.
+- Reverb, flange, and delay sit on sends, so their tails keep ringing after you
+  release the pad. Crush sits inline, and the other three are taken after it —
+  you hear the room around the crushed sound.
+- The pass draws itself while you play it: a coloured band grows from where you
+  pressed and follows the playhead. Purple for reverb, green for flange,
+  magenta for crush, orange for delay. Where two overlap, the region is hatched
+  in both colours.
+- An eraser pad on each track wipes every effect it sweeps over, in one undoable
+  step. The track falls silent under it as you go, so you hear what you are
+  removing while you remove it.
+- A pad lights whenever its effect is sounding — under your finger, or under the
+  playhead when a recorded pass plays back.
 
 ## Sound and mix tools
 

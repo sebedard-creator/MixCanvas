@@ -77,6 +77,14 @@ export interface TimelinePanNode {
   drawGroupId: number | null;
 }
 
+/** Un point de l'envoi d'un effet joué sur une voie, de 0 à 1. */
+export interface TimelineReverbNode {
+  id: number;
+  lane: number;
+  beat: number;
+  value: number;
+}
+
 export interface TimelineSnapshot {
   projectBpm: number;
   limiterEnabled: boolean;
@@ -87,6 +95,14 @@ export interface TimelineSnapshot {
   volumeNodes: TimelineVolumeNode[];
   panNodes: TimelinePanNode[];
   filterNodes: TimelineFilterNode[];
+  /** L'envoi de reverb par voie, écrit en jouant. */
+  reverbNodes: TimelineReverbNode[];
+  /** L'envoi de flanger, de la même forme exactement. */
+  flangerNodes: TimelineReverbNode[];
+  /** Le dosage du bitcrush, de la même forme encore. */
+  bitcrushNodes: TimelineReverbNode[];
+  /** L'envoi de delay, dont la longueur suit le tempo. */
+  delayNodes: TimelineReverbNode[];
   drawGroups: TimelineDrawGroup[];
 }
 

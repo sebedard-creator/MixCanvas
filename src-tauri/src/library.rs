@@ -189,6 +189,90 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
     CREATE INDEX IF NOT EXISTS timeline_filter_nodes_lane_beat_idx
         ON timeline_filter_nodes(lane, beat);
 
+    -- L'envoi de reverb de chaque voie, écrit en jouant.
+    --
+    -- Des nœuds plutôt qu'une plage, comme pour le volume, le panoramique et
+    -- le filtre : c'est ce qui donne les rampes d'entrée et de sortie sans
+    -- code particulier, et c'est ce que tout le moteur sait déjà lire. Une
+    -- passe tenue s'écrit en quatre nœuds — zéro, un, un, zéro.
+    CREATE TABLE IF NOT EXISTS timeline_reverb_nodes (
+        id    INTEGER PRIMARY KEY,
+        lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
+        beat  REAL NOT NULL CHECK (beat >= 0.0),
+        value REAL NOT NULL CHECK (value BETWEEN 0.0 AND 1.0),
+        UNIQUE (lane, beat)
+    );
+
+    CREATE INDEX IF NOT EXISTS timeline_reverb_nodes_lane_beat_idx
+        ON timeline_reverb_nodes(lane, beat);
+
+    -- L'envoi de flanger, sur le modele exact de la reverb.
+    --
+    -- Une table par effet plutot qu'une colonne `effect` dans une table
+    -- commune : chaque effet a son propre balayage, ses propres rampes et sa
+    -- propre teinte, et les requetes qui les lisent ne se croisent jamais.
+    -- Deux tables jumelles se relisent; une table a discriminant oblige a
+    -- verifier partout qu'on a filtre sur le bon effet.
+    CREATE TABLE IF NOT EXISTS timeline_flanger_nodes (
+        id    INTEGER PRIMARY KEY,
+        lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
+        beat  REAL NOT NULL CHECK (beat >= 0.0),
+        value REAL NOT NULL CHECK (value BETWEEN 0.0 AND 1.0),
+        UNIQUE (lane, beat)
+    );
+
+    CREATE INDEX IF NOT EXISTS timeline_flanger_nodes_lane_beat_idx
+        ON timeline_flanger_nodes(lane, beat);
+
+    -- L'envoi de bitcrush, troisieme table jumelle.
+    --
+    -- Le bitcrush est un insert et non un depart, mais son automation a
+    -- exactement la meme forme que celle des deux autres : c'est le meme geste
+    -- qui l'ecrit. Le routage differe dans le moteur, pas dans la base.
+    CREATE TABLE IF NOT EXISTS timeline_bitcrush_nodes (
+        id    INTEGER PRIMARY KEY,
+        lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
+        beat  REAL NOT NULL CHECK (beat >= 0.0),
+        value REAL NOT NULL CHECK (value BETWEEN 0.0 AND 1.0),
+        UNIQUE (lane, beat)
+    );
+
+    CREATE INDEX IF NOT EXISTS timeline_bitcrush_nodes_lane_beat_idx
+        ON timeline_bitcrush_nodes(lane, beat);
+
+    -- L'envoi de delay, quatrieme table jumelle.
+    CREATE TABLE IF NOT EXISTS timeline_delay_nodes (
+        id    INTEGER PRIMARY KEY,
+        lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
+        beat  REAL NOT NULL CHECK (beat >= 0.0),
+        value REAL NOT NULL CHECK (value BETWEEN 0.0 AND 1.0),
+        UNIQUE (lane, beat)
+    );
+
+    CREATE INDEX IF NOT EXISTS timeline_delay_nodes_lane_beat_idx
+        ON timeline_delay_nodes(lane, beat);
+
+    -- Les preferences du programme, par cle.
+    --
+    -- Distincte de `project_settings` : ce qui est ici appartient a la personne
+    -- qui se sert du programme, pas au mix. Le tri de la bibliotheque ne suit
+    -- pas un projet d'une machine a l'autre, il suit l'habitude de celui qui
+    -- l'a choisi.
+    --
+    -- Une table cle-valeur plutot qu'une colonne par preference : Rust n'a pas
+    -- a savoir ce qu'est un tri. Il range une chaine, l'interface la relit, et
+    -- la seule chose partagee entre les deux langages est le nom de la cle.
+    -- Une colonne typee par preference aurait demande une migration a chaque
+    -- reglage ajoute.
+    --
+    -- Et surtout : dans **ce** fichier, a cote de l'executable. Le stockage du
+    -- navigateur aurait ete plus court a ecrire et aurait cache ces reglages
+    -- dans un dossier systeme, ce qu'un programme portable ne fait pas.
+    CREATE TABLE IF NOT EXISTS app_preferences (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS clip_bakes (
         id             INTEGER PRIMARY KEY,
         clip_id        INTEGER NOT NULL UNIQUE
@@ -210,14 +294,14 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
         created_at     INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
-    PRAGMA user_version = 27;
+    PRAGMA user_version = 34;
 "#;
 
 /// Schema version described by `CURRENT_DATABASE_SCHEMA`. The constant and the
 /// `PRAGMA user_version` above must move together: the schema is also replayed
 /// after a migration, so a stale value there would push the database back down
 /// and replay the last migrations on every start.
-const LATEST_SCHEMA_VERSION: i64 = 27;
+const LATEST_SCHEMA_VERSION: i64 = 34;
 
 const MIGRATE_VERSION_1_TO_2: &str = r#"
     BEGIN IMMEDIATE;
@@ -1577,6 +1661,116 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
                     .map_err(database_write_error)?;
                 version = 27;
             }
+            27 => {
+                ensure_column(
+                    connection,
+                    "project_settings",
+                    "reverb_room",
+                    "TEXT NOT NULL DEFAULT 'medium'",
+                )?;
+                connection
+                    .execute_batch("PRAGMA user_version = 28;")
+                    .map_err(database_write_error)?;
+                version = 28;
+            }
+            28 => {
+                connection
+                    .execute_batch(
+                        "CREATE TABLE IF NOT EXISTS timeline_reverb_nodes (
+                            id    INTEGER PRIMARY KEY,
+                            lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
+                            beat  REAL NOT NULL CHECK (beat >= 0.0),
+                            value REAL NOT NULL CHECK (value BETWEEN 0.0 AND 1.0),
+                            UNIQUE (lane, beat)
+                        );
+                        CREATE INDEX IF NOT EXISTS timeline_reverb_nodes_lane_beat_idx
+                            ON timeline_reverb_nodes(lane, beat);
+                        PRAGMA user_version = 29;",
+                    )
+                    .map_err(database_write_error)?;
+                version = 29;
+            }
+            29 => {
+                // La taille de la pièce est retirée : elle ne changeait que la
+                // durée de la queue, et les deux tailles courtes ne servaient
+                // pas. Une colonne qu'on ne lit plus est une colonne qui ment
+                // sur ce que le programme fait — mieux vaut la retirer que la
+                // laisser dormir.
+                connection
+                    .execute_batch(
+                        "ALTER TABLE project_settings DROP COLUMN reverb_room;
+                         PRAGMA user_version = 30;",
+                    )
+                    .map_err(database_write_error)?;
+                version = 30;
+            }
+            30 => {
+                // Le flanger prend sa propre table plutot qu'une colonne
+                // d'effet dans celle de la reverb : deux tables jumelles se
+                // relisent, une table a discriminant oblige a verifier partout
+                // qu'on a filtre sur le bon effet.
+                connection
+                    .execute_batch(
+                        "CREATE TABLE IF NOT EXISTS timeline_flanger_nodes (
+                            id    INTEGER PRIMARY KEY,
+                            lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
+                            beat  REAL NOT NULL CHECK (beat >= 0.0),
+                            value REAL NOT NULL CHECK (value BETWEEN 0.0 AND 1.0),
+                            UNIQUE (lane, beat)
+                        );
+                        CREATE INDEX IF NOT EXISTS timeline_flanger_nodes_lane_beat_idx
+                            ON timeline_flanger_nodes(lane, beat);
+                        PRAGMA user_version = 31;",
+                    )
+                    .map_err(database_write_error)?;
+                version = 31;
+            }
+            31 => {
+                connection
+                    .execute_batch(
+                        "CREATE TABLE IF NOT EXISTS timeline_bitcrush_nodes (
+                            id    INTEGER PRIMARY KEY,
+                            lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
+                            beat  REAL NOT NULL CHECK (beat >= 0.0),
+                            value REAL NOT NULL CHECK (value BETWEEN 0.0 AND 1.0),
+                            UNIQUE (lane, beat)
+                        );
+                        CREATE INDEX IF NOT EXISTS timeline_bitcrush_nodes_lane_beat_idx
+                            ON timeline_bitcrush_nodes(lane, beat);
+                        PRAGMA user_version = 32;",
+                    )
+                    .map_err(database_write_error)?;
+                version = 32;
+            }
+            32 => {
+                connection
+                    .execute_batch(
+                        "CREATE TABLE IF NOT EXISTS timeline_delay_nodes (
+                            id    INTEGER PRIMARY KEY,
+                            lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
+                            beat  REAL NOT NULL CHECK (beat >= 0.0),
+                            value REAL NOT NULL CHECK (value BETWEEN 0.0 AND 1.0),
+                            UNIQUE (lane, beat)
+                        );
+                        CREATE INDEX IF NOT EXISTS timeline_delay_nodes_lane_beat_idx
+                            ON timeline_delay_nodes(lane, beat);
+                        PRAGMA user_version = 33;",
+                    )
+                    .map_err(database_write_error)?;
+                version = 33;
+            }
+            33 => {
+                connection
+                    .execute_batch(
+                        "CREATE TABLE IF NOT EXISTS app_preferences (
+                            key   TEXT PRIMARY KEY,
+                            value TEXT NOT NULL
+                        );
+                        PRAGMA user_version = 34;",
+                    )
+                    .map_err(database_write_error)?;
+                version = 34;
+            }
             _ => {
                 let (target_version, migration) = match version {
                     1 => (2, MIGRATE_VERSION_1_TO_2),
@@ -1607,6 +1801,38 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
         .map_err(|error| format!("Could not verify the library: {error}"))
 }
 
+/// Toutes les préférences, telles quelles.
+///
+/// Rendues d'un bloc plutôt qu'une par une : elles sont lues une fois au
+/// démarrage, et un aller-retour par réglage n'apporterait rien qu'un peu de
+/// latence au lancement.
+pub fn read_app_preferences(
+    connection: &Connection,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let mut statement = connection
+        .prepare("SELECT key, value FROM app_preferences")
+        .map_err(database_read_error)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(database_read_error)?;
+    rows.collect::<Result<_, _>>().map_err(database_read_error)
+}
+
+/// Retient une préférence. La valeur est une chaîne opaque : sa forme regarde
+/// l'interface, qui est seule à savoir ce qu'elle signifie.
+pub fn write_app_preference(connection: &Connection, key: &str, value: &str) -> Result<(), String> {
+    connection
+        .execute(
+            "INSERT INTO app_preferences (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )
+        .map_err(database_write_error)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1620,6 +1846,63 @@ mod tests {
         path::Path,
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    /// Une préférence doit survivre à la fermeture du programme — c'est toute
+    /// sa raison d'être — et se laisser changer d'avis.
+    #[test]
+    fn a_preference_survives_reopening_and_can_be_changed() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-prefs-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+
+        {
+            let store = LibraryStore::open(&database_path).expect("database should open");
+            // Rien de retenu au départ : l'interface doit pouvoir retomber sur
+            // son défaut sans que ce soit une erreur.
+            assert!(
+                super::read_app_preferences(&store.connection)
+                    .expect("preferences should read")
+                    .is_empty()
+            );
+            super::write_app_preference(&store.connection, "library.sort", "{\"key\":\"bpm\"}")
+                .expect("a preference should be written");
+        }
+
+        {
+            let store = LibraryStore::open(&database_path).expect("database should reopen");
+            let stored =
+                super::read_app_preferences(&store.connection).expect("preferences should read");
+            assert_eq!(
+                stored.get("library.sort").map(String::as_str),
+                Some("{\"key\":\"bpm\"}"),
+                "la préférence devrait avoir survécu à la réouverture"
+            );
+
+            // Changer d'avis remplace, sans empiler une seconde ligne.
+            super::write_app_preference(&store.connection, "library.sort", "{\"key\":\"title\"}")
+                .expect("a preference should be replaced");
+            let changed =
+                super::read_app_preferences(&store.connection).expect("preferences should read");
+            assert_eq!(changed.len(), 1);
+            assert_eq!(
+                changed.get("library.sort").map(String::as_str),
+                Some("{\"key\":\"title\"}")
+            );
+        }
+
+        for suffix in ["", "-wal", "-shm"] {
+            let candidate =
+                std::path::PathBuf::from(format!("{}{}", database_path.to_string_lossy(), suffix));
+            if candidate.exists() {
+                let _ = fs::remove_file(candidate);
+            }
+        }
+    }
 
     #[test]
     fn library_survives_database_reopening() {

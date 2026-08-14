@@ -319,6 +319,10 @@ mod tests {
             volume_nodes: Vec::new(),
             pan_nodes: Vec::new(),
             filter_nodes: Vec::new(),
+            reverb_nodes: Vec::new(),
+            flanger_nodes: Vec::new(),
+            bitcrush_nodes: Vec::new(),
+            delay_nodes: Vec::new(),
         };
 
         // Huit temps à 120 BPM font quatre secondes : c'est ce que le bounce
