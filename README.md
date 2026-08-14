@@ -102,6 +102,14 @@ MixCanvas lets you draw transitions directly where they happen.
 runs and the effect goes onto that track; let go and the pass is written onto
 the timeline as automation you can keep, undo, or replay over.
 
+<p align="center">
+  <img src="assets/screenshots/mix-fx.png" width="310"
+       alt="The Mix FX panel: reverb, flange, crush, delay, and eraser pads on tracks A, B, and C, with reverb and delay lit on A, flange on B, and crush on C">
+  <br>
+  <em>Five pads per track, and the transport within reach. A pad lights while
+  its effect is sounding — here reverb and delay on A, flange on B, crush on C.</em>
+</p>
+
 - **Reverb** — a shared room. Bright and generous, sitting well behind the
   music.
 - **Flange** — a comb filter sweeping across the track, ping-ponging in stereo.
