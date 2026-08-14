@@ -12,7 +12,7 @@ wrote it. What changed, and what it means when you sit down to build a mix.
 
 ---
 
-## 1.5.1 — Unreleased
+## 1.5.1 — 2026-08-14
 
 The four effects move out of their panel and into the console.
 
