@@ -1,6 +1,5 @@
-import { memo, useMemo } from "react";
+import { memo, useLayoutEffect, useMemo, useRef } from "react";
 
-import { waveformChannelPath, waveformRmsPath } from "../lib/waveformPath";
 import { buildWaveformPyramid, selectWaveformLevel } from "../lib/waveformPyramid";
 import { waveformWindow, windowBucketRange } from "../lib/waveformWindow";
 import type { WaveformPeaks } from "../timeline/types";
@@ -24,6 +23,64 @@ function sliceSeries(values: number[], from: number, to: number): number[] {
   return values.slice(Math.min(from, values.length), Math.min(to, values.length));
 }
 
+interface WaveformRaster {
+  leftMin: number[];
+  leftMax: number[];
+  leftRms: number[];
+  rightMin: number[];
+  rightMax: number[];
+  rightRms: number[];
+  width: number;
+}
+
+function drawEnvelope(
+  context: CanvasRenderingContext2D,
+  minimum: readonly number[],
+  maximum: readonly number[],
+  centerY: number,
+  amplitude: number,
+) {
+  const count = Math.min(minimum.length, maximum.length);
+  if (count === 0) return;
+  const valueY = (value: number) => {
+    const finite = Number.isFinite(value) ? value : 0;
+    return centerY - Math.max(-1, Math.min(1, finite)) * amplitude;
+  };
+  context.beginPath();
+  context.moveTo(0, valueY(maximum[0]));
+  for (let index = 1; index < count; index += 1) {
+    context.lineTo(index, valueY(maximum[index]));
+  }
+  for (let index = count - 1; index >= 0; index -= 1) {
+    context.lineTo(index, valueY(minimum[index]));
+  }
+  context.closePath();
+  context.fill();
+  context.stroke();
+}
+
+function drawRms(
+  context: CanvasRenderingContext2D,
+  rms: readonly number[],
+  centerY: number,
+  amplitude: number,
+) {
+  if (rms.length === 0) return;
+  const magnitude = (value: number) => (
+    Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0)) * amplitude
+  );
+  context.beginPath();
+  context.moveTo(0, centerY - magnitude(rms[0]));
+  for (let index = 1; index < rms.length; index += 1) {
+    context.lineTo(index, centerY - magnitude(rms[index]));
+  }
+  for (let index = rms.length - 1; index >= 0; index -= 1) {
+    context.lineTo(index, centerY + magnitude(rms[index]));
+  }
+  context.closePath();
+  context.fill();
+}
+
 export const ClipWaveform = memo(function ClipWaveform({
   waveform,
   displayWidth,
@@ -33,6 +90,7 @@ export const ClipWaveform = memo(function ClipWaveform({
   visibleFromPx,
   visibleWidthPx,
 }: ClipWaveformProps) {
+  const canvas = useRef<HTMLCanvasElement | null>(null);
   const slicedWaveform = useMemo(() => {
     if (!waveform) return null;
     if (trimStartBeats === 0 && trimEndBeats === 0) return waveform;
@@ -78,8 +136,18 @@ export const ClipWaveform = memo(function ClipWaveform({
     [displayWidth, visibleFromPx, visibleWidthPx],
   );
 
-  const paths = useMemo(() => {
-    if (!slicedWaveform || !window || pyramid.length === 0) return null;
+  const level = useMemo(
+    () => selectWaveformLevel(pyramid, displayWidth),
+    [displayWidth, pyramid],
+  );
+  const bucketWindow = level && window
+    ? windowBucketRange(window, displayWidth, level.leftMin.length)
+    : null;
+  const bucketFrom = bucketWindow?.from ?? -1;
+  const bucketTo = bucketWindow?.to ?? -1;
+
+  const raster = useMemo<WaveformRaster | null>(() => {
+    if (!level || bucketFrom < 0 || bucketTo <= bucketFrom) return null;
     // Le niveau se choisit toujours sur la largeur **entière** du clip, et
     // c'est voulu : un niveau est indexé sur toute la durée du morceau, donc
     // c'est cette largeur-là qui dit combien de colonnes il faut pour avoir une
@@ -89,47 +157,62 @@ export const ClipWaveform = memo(function ClipWaveform({
     //
     // Le gain ne vient pas du niveau mais du **découpage** juste en dessous :
     // on ne construit le chemin que pour les colonnes visibles.
-    const level = selectWaveformLevel(pyramid, displayWidth);
-    if (!level) return null;
-
-    const { from, to } = windowBucketRange(window, displayWidth, level.leftMin.length);
-    const leftMin = sliceSeries(level.leftMin, from, to);
+    const leftMin = sliceSeries(level.leftMin, bucketFrom, bucketTo);
     if (leftMin.length === 0) return null;
 
     return {
-      leftPeak: waveformChannelPath(leftMin, sliceSeries(level.leftMax, from, to), 24, 21),
-      leftRms: waveformRmsPath(sliceSeries(level.leftRms, from, to), 24, 21),
-      rightPeak: waveformChannelPath(
-        sliceSeries(level.rightMin, from, to),
-        sliceSeries(level.rightMax, from, to),
-        76,
-        21,
-      ),
-      rightRms: waveformRmsPath(sliceSeries(level.rightRms, from, to), 76, 21),
-      width: Math.max(1, leftMin.length - 1),
+      leftMin,
+      leftMax: sliceSeries(level.leftMax, bucketFrom, bucketTo),
+      leftRms: sliceSeries(level.leftRms, bucketFrom, bucketTo),
+      rightMin: sliceSeries(level.rightMin, bucketFrom, bucketTo),
+      rightMax: sliceSeries(level.rightMax, bucketFrom, bucketTo),
+      rightRms: sliceSeries(level.rightRms, bucketFrom, bucketTo),
+      width: Math.max(1, leftMin.length),
     };
-  }, [displayWidth, pyramid, slicedWaveform, window]);
+  }, [bucketFrom, bucketTo, level]);
 
-  if (!paths || !window) {
+  useLayoutEffect(() => {
+    const element = canvas.current;
+    if (!element || !raster) return;
+    const context = element.getContext("2d", { alpha: true });
+    if (!context) return;
+    context.clearRect(0, 0, raster.width, 100);
+
+    context.strokeStyle = "#000000";
+    context.lineWidth = 1.5;
+    context.fillStyle = "rgba(0, 0, 0, 0.18)";
+    drawEnvelope(context, raster.leftMin, raster.leftMax, 24, 21);
+    drawEnvelope(context, raster.rightMin, raster.rightMax, 76, 21);
+
+    context.fillStyle = "#000000";
+    drawRms(context, raster.leftRms, 24, 21);
+    drawRms(context, raster.rightRms, 76, 21);
+
+    context.strokeStyle = "rgba(0, 0, 0, 0.4)";
+    context.lineWidth = 1;
+    context.beginPath();
+    context.moveTo(0, 24.5);
+    context.lineTo(raster.width, 24.5);
+    context.moveTo(0, 76.5);
+    context.lineTo(raster.width, 76.5);
+    context.stroke();
+  }, [raster]);
+
+  if (!raster || !window) {
     return <div className="clip-waveform clip-waveform--pending" aria-hidden="true" />;
   }
 
   return (
-    <svg
+    <canvas
+      ref={canvas}
       className="clip-waveform"
-      viewBox={`0 0 ${paths.width} 100`}
-      preserveAspectRatio="none"
+      width={raster.width}
+      height={100}
       aria-hidden="true"
-      /* Le dessin n'occupe plus toute la largeur du clip : il est posé à
-         l'endroit de sa tranche, et suit la fenêtre par bonds d'un pas. */
+      /* The bitmap is repainted only when its source bucket range changes.
+         Ordinary zoom steps resize this cached DAW-style image instead of
+         asking SVG to tessellate four long paths again. */
       style={{ left: window.offsetPx, width: window.widthPx, right: "auto" }}
-    >
-      <line className="clip-waveform-zero" x1="0" x2={paths.width} y1="24" y2="24" />
-      <line className="clip-waveform-zero" x1="0" x2={paths.width} y1="76" y2="76" />
-      <path className="clip-waveform-peak" d={paths.leftPeak} />
-      <path className="clip-waveform-peak" d={paths.rightPeak} />
-      <path className="clip-waveform-rms" d={paths.leftRms} />
-      <path className="clip-waveform-rms" d={paths.rightRms} />
-    </svg>
+    />
   );
 });

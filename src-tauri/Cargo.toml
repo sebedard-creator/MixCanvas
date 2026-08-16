@@ -90,3 +90,4 @@ tauri-plugin-dialog = "2.7.2"
 rustfft = "6.4.1"
 beat-this = { version = "=1.0.0", default-features = false }
 ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-17", "api-18", "api-19", "api-20", "api-21", "api-22", "api-23", "api-24"] }
+mp3lame-encoder = "0.2.4"

@@ -12,6 +12,98 @@ wrote it. What changed, and what it means when you sit down to build a mix.
 
 ---
 
+## 1.6.0 — Unreleased
+
+### Fixed
+
+- **Zooming no longer exposes the original large mismatched frame.**
+  The live transport could receive the new zoom geometry while React was still
+  committing clips and waveforms drawn with the previous one. The zoom scale
+  and its virtualized viewport anchor now commit as one visual transaction,
+  and the transport only sees geometry after its matching DOM has been
+  committed. This substantially reduces the original flash, but a much shorter
+  artifact is still visible in the heavy reference session. Disabling
+  compositor-thread scrolling, disabling partial raster, and pixel-buffering
+  the viewport produced no observable difference; those ineffective
+  experiments were removed rather than becoming permanent complexity. The
+  remaining artifact is tracked as unresolved pending frame-by-frame evidence.
+  Inspection of the actual heavy portable session then found the useful load:
+  20 clips, 4,198 filter samples, and 327,441 referenced waveform buckets.
+  Filter samples are now sorted only when their musical data changes; their
+  exact visible samples remain in the path so drawing retains its characteristic
+  right-triangle ramps. Visible waveform slices are now cached
+  as Canvas bitmaps built from the same min/max and RMS buckets. When a zoom
+  step keeps the same pyramid level and source bucket range, it only resizes the
+  cached image instead of making WebView2 retessellate four long SVG paths per
+  clip. These changes preserve the displayed envelope while removing substantial
+  synchronous and compositor work from each zoom step. A per-pixel filter-path
+  reduction tried in RC3 was removed after it visibly altered filter drawing.
+  Holding `R` or `T` exposes the residual frame continuously because every key
+  repeat commits another complete geometry. RC5 tested whether the project-wide
+  filter SVG was responsible by replacing it with a viewport Canvas. It neither
+  improved the flash nor preserved the filter appearance, so the experiment was
+  completely removed and RC4's exact SVG rendering restored. This negative
+  result moves the remaining investigation from drawing primitives to global
+  geometry publication.
+  RC6 carried one temporary A/B probe: plain `R/T` zoomed and recentred, while
+  `Shift+R/T` committed the same geometry without writing native `scrollLeft`.
+  Both produced the same artifact, clearing native scrolling and identifying
+  the global geometry commit as the remaining boundary. The probe is removed.
+  RC7 then tried a bounded FLIP handoff with `scaleX`; it made the artifact more
+  visible by adding another software-composited texture, so it too is completely
+  removed. The exact RC4 DOM and SVG path is restored. The remaining scheduling
+  flaw is narrower: the heavy geometry commit ran inside `requestAnimationFrame`,
+  immediately before Chromium's paint phase. The rAF queue now only batches
+  input and posts the atomic commit as the first task after the previous frame
+  has had a chance to present. This gives layout and raster almost a complete
+  refresh interval without changing any visual primitive or project data.
+
+- **Waveforms line up with the sound when you zoom right out.** A clip's
+  waveform was drawn into a width sixteen pixels narrower than the clip itself,
+  so the picture ran on a slightly different time axis. On a wide clip the
+  error was under two per cent and invisible; zoomed far out, where a whole
+  track is a hundred pixels across, it was sixteen per cent — the sound kept
+  going for several bars after the drawing had ended. The waveform now spans
+  the clip exactly. The eight-pixel inset it used to have was cosmetic, and
+  horizontal space is time.
+
+### Added
+
+- **A mastering limiter on the bounce.** `BOUNCE MIX` now opens a short dialog
+  with a **Master limiter** you can arm. It is a different instrument from the
+  one on the transport: that one is a safeguard for listening, two milliseconds
+  of attack and a hard clamp at the end. This one looks three milliseconds
+  ahead, so the gain is already down when the peak arrives — nothing gets past
+  the ceiling, and transients are limited rather than clipped. Lowering the
+  threshold lifts the whole mix to the ceiling, the way a mastering limiter is
+  expected to, and the dialog says by how many decibels so the gain is never a
+  surprise. Release can follow the programme: quick after a lone peak, slow
+  through a dense passage, so it stops pumping on the kick. Arming it renders
+  without the safeguard, whose −0.18 dBFS clamp would otherwise cut the
+  transients before this limiter ever saw them. The settings are remembered
+  between bounces.
+- **Bounce to MP3.** The dialog now offers 44.1 kHz CBR 320 kbps stereo
+  alongside the WAV, encoded with LAME at `q0` — the most thorough
+  psychoacoustic search it offers, which costs time an offline render has to
+  spare. The mix reaches the encoder in floating point and is never quantised
+  to 16 bits on the way, so there is no dither noise for the encoder to spend
+  bits preserving. Plain stereo rather than the joint stereo LAME would pick on
+  its own: at 320 kbps nothing forces the two channels to share, and the played
+  effects work the stereo image. WAV stays the default — a master is kept
+  lossless, and the mistake only goes one way.
+- **The ceiling makes room for MP3 on its own.** A lossy codec does not
+  rebuild peaks exactly: measured on a sixty-three minute mix, the decoded MP3
+  reached +0.385 dB where the WAV stopped dead at the limiter's ceiling. A
+  player that clips at zero shaves those, and it is audible. Picking MP3 now
+  sets the ceiling to −1.0 dB — no extra control, the field that is already
+  there simply carries the value the format needs, and it stays editable.
+- **Shift a downbeat from the right-click menu.** Analysis sometimes lands the
+  first beat on the 2 or the 3 of the bar: the grid is right, it is only
+  turned. Right-click a track in the Library, or a clip on the timeline, and
+  nudge the downbeat a beat either way. The tempo does not move. The correction
+  belongs to the track, so every clip of it follows — and a shift back onto the
+  analysed value clears the correction instead of recording it.
+
 ## 1.5.1 — 2026-08-14
 
 The four effects move out of their panel and into the console.

@@ -72,3 +72,23 @@ Bundled binaries:
   `265c8daf29637cb259cac8be9f08f2cd45f3883f0f0e4949cbfddd5b4cbec3b6`
 
 Source: https://github.com/microsoft/onnxruntime
+
+## LAME
+
+MP3 bounces are encoded by LAME 3.100, whose C sources are compiled into the
+executable through the `mp3lame-encoder` and `mp3lame-sys` crates. There is no
+DLL beside the program and nothing is fetched at run time.
+
+LAME is distributed under the GNU Lesser General Public License, version 2.
+Its terms permit inclusion in a work covered by the GNU Affero General Public
+License, under which MixCanvas is released. The library is used unmodified, and
+its complete source is available from the project below.
+
+Copyright (c) 1999-2017 The LAME Project
+
+Source: https://lame.sourceforge.io
+
+The LGPL requires that a user be able to replace this component with a modified
+version. MixCanvas is free software and its complete source is published, so
+rebuilding the program against a different LAME satisfies that condition: edit
+the `mp3lame-sys` dependency and rebuild with the instructions in the README.

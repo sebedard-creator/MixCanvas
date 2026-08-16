@@ -194,10 +194,24 @@ const COMPRESSOR_RELEASE_SECONDS: f32 = 0.120;
 const COMPRESSOR_MAKEUP_GAIN: f32 = 1.258_925_4;
 /// The detector listens to the mix through a high pass at 120 Hz.
 const COMPRESSOR_DETECTOR_HZ: f32 = 120.0;
-/// Console-style tilt: a little weight under 90 Hz, a little air over 10 kHz.
+/// Console-style tilt: a little weight under 90 Hz, a little air around 13 kHz.
+///
+/// Both ends used to be shelves sharing one constant, which is why the curve
+/// came out as a symmetrical smile. Judged on other systems it was too much of
+/// one, and more so at the top.
+///
+/// The top is no longer a shelf at all. A shelf rises to its full gain and
+/// **stays there** to Nyquist, so it was lifting 18 kHz and above as hard as
+/// the air band — a stretch nothing reproduces and no one hears, which costs
+/// headroom and, on the MP3 path, costs bits. A bell does the same work where
+/// the work is audible and comes back to nothing above it: +1.0 dB at 13 kHz,
+/// +0.13 at 18 kHz, +0.03 at 20 kHz. A Q of 1.2 keeps it wide enough to read
+/// as air rather than as a resonance.
 const COLOUR_LOW_SHELF_HZ: f32 = 90.0;
-const COLOUR_HIGH_SHELF_HZ: f32 = 10_000.0;
-const COLOUR_SHELF_DB: f32 = 2.0;
+const COLOUR_LOW_SHELF_DB: f32 = 1.5;
+const COLOUR_AIR_HZ: f32 = 13_000.0;
+const COLOUR_AIR_DB: f32 = 1.0;
+const COLOUR_AIR_Q: f32 = 1.2;
 /// Saturation is what actually colours a signal — shelves only move its
 /// balance. It is confined to the body of the mix, below 5 kHz: the third
 /// harmonic of anything in that band lands under 15 kHz and so stays inside the
@@ -409,16 +423,16 @@ impl MasterColour {
         let low = self.low_shelf[channel].process_shelf(
             input,
             COLOUR_LOW_SHELF_HZ,
-            COLOUR_SHELF_DB,
+            COLOUR_LOW_SHELF_DB,
             sample_rate,
             false,
         );
-        let tilted = self.high_shelf[channel].process_shelf(
+        let tilted = self.high_shelf[channel].process_peaking(
             low,
-            COLOUR_HIGH_SHELF_HZ,
-            COLOUR_SHELF_DB,
+            COLOUR_AIR_HZ,
+            COLOUR_AIR_DB,
+            COLOUR_AIR_Q,
             sample_rate,
-            true,
         );
 
         // Split off the body, colour that, and hand the top back untouched.
@@ -3100,7 +3114,8 @@ fn duration_to_frame(duration: Duration, sample_rate: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        BiquadKind, BiquadState, COLOUR_SHELF_DB, COMPRESSOR_MAKEUP_GAIN, CachedTimeline,
+        BiquadKind, BiquadState, COLOUR_AIR_DB, COLOUR_LOW_SHELF_DB,
+        COMPRESSOR_MAKEUP_GAIN, CachedTimeline,
         ClipEqState, DELAY_TAIL_SECONDS, DUCK_DEPTH_DB, DUCK_FLOOR, EffectTails,
         FALLBACK_OUTPUT_SAMPLE_RATE, FILTER_HIGH_PASS_CLOSED_HZ, FILTER_HIGH_PASS_OPEN_HZ,
         FILTER_LOW_PASS_CLOSED_HZ, FILTER_Q, FLANGER_TAIL_SECONDS, FilterAutomation,
@@ -3377,7 +3392,7 @@ mod tests {
     }
 
     #[test]
-    fn the_colour_shelves_lift_the_ends_of_the_spectrum_and_leave_the_middle_alone() {
+    fn the_colour_stage_lifts_the_ends_and_leaves_the_middle_and_the_top_octave_alone() {
         // Measured well below the saturation knee, so this reads the shelves
         // alone rather than the curve that follows them.
         const AMPLITUDE: f32 = 0.05;
@@ -3399,17 +3414,26 @@ mod tests {
 
         let low = response(40.0);
         let middle = response(1_000.0);
-        let high = response(16_000.0);
+        let air = response(13_000.0);
+        // Ce que la cloche remplace : un plateau tenait ce niveau jusqu'à
+        // Nyquist. Elle doit être retombée ici, sur une bande que rien ne
+        // reproduit et que le MP3 paierait en bits.
+        let ultrasound = response(19_000.0);
 
         assert!(low > 1.05, "the low shelf should add weight, got {low}");
-        assert!(high > 1.05, "the high shelf should add air, got {high}");
+        assert!(air > 1.05, "the air bell should lift its centre, got {air}");
         assert!(
             (middle - 1.0).abs() < 0.05,
             "the midrange must stay untouched, got {middle}"
         );
-        // Small on purpose: this is presence, not an EQ move.
-        let ceiling = 10_f32.powf((COLOUR_SHELF_DB + 0.5) / 20.0);
-        assert!(low < ceiling && high < ceiling);
+        assert!(
+            ultrasound < 1.02,
+            "the top octave must come back to nothing, got {ultrasound}"
+        );
+        // Small on purpose: this is presence, not an EQ move. The two ends are
+        // dosed separately, so each is judged against its own ceiling.
+        assert!(low < 10_f32.powf((COLOUR_LOW_SHELF_DB + 0.5) / 20.0));
+        assert!(air < 10_f32.powf((COLOUR_AIR_DB + 0.5) / 20.0));
     }
 
     /// Amplitude of one frequency component of a signal, by quadrature
@@ -4151,7 +4175,7 @@ mod tests {
                 bitcrush_nodes: Vec::new(),
                 delay_nodes: Vec::new(),
             };
-            crate::audio::bounce_timeline(&plan, &rendu, &mut |_| {})
+            crate::audio::bounce_timeline(&plan, &rendu, crate::audio::BounceFormat::Wav, None, &mut |_| {})
                 .expect("le rendu devrait aboutir");
 
             let decodeur = super::open_mp3_decoder(&rendu).expect("le rendu devrait se relire");
@@ -4271,7 +4295,7 @@ mod tests {
             bitcrush_nodes: Vec::new(),
             delay_nodes: Vec::new(),
         };
-        crate::audio::bounce_timeline(&plan, &rendu, &mut |_| {})
+        crate::audio::bounce_timeline(&plan, &rendu, crate::audio::BounceFormat::Wav, None, &mut |_| {})
             .expect("le rendu devrait aboutir");
 
         let sortie: Vec<f32> = super::open_mp3_decoder(&rendu)

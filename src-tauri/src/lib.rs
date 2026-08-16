@@ -18,7 +18,8 @@ use std::{
 
 use analysis::{BeatModelPaths, analyze_mp3, analyze_mp3_near, analyze_waveform};
 use audio::{
-    BounceSummary, PreviewEngine, PreviewSnapshot, TimelinePlaybackEngine, bounce_timeline,
+    BounceFormat, BounceSummary, PreviewEngine, PreviewSnapshot, TimelinePlaybackEngine,
+    bounce_timeline,
 };
 use library::{AnalysisBatchResult, LibraryImportResult, LibraryStore, LibraryTrack};
 use tauri::{Emitter, Manager, State};
@@ -189,6 +190,21 @@ fn remove_library_track(
     with_library(&state, |library| library.remove_track(id))
 }
 
+/// Tourne la grille d'un morceau d'un temps, sans toucher à son tempo.
+///
+/// Le geste répond à un défaut précis de l'analyse : elle pose parfois le
+/// premier temps sur le deux ou le trois de la mesure. La grille est bonne,
+/// elle est seulement tournée, et corriger cela dans l'éditeur demandait de
+/// lire une position en millisecondes pour en retrancher un temps.
+#[tauri::command]
+fn shift_track_downbeat(
+    id: i64,
+    beats: i32,
+    state: State<'_, LibraryState>,
+) -> Result<Vec<LibraryTrack>, String> {
+    with_library(&state, |library| library.shift_downbeat(id, beats))
+}
+
 #[tauri::command]
 fn update_track_beatgrid(
     id: i64,
@@ -221,6 +237,9 @@ fn with_timeline(
 #[tauri::command]
 async fn bounce_mix(
     path: String,
+    format: BounceFormat,
+    // Absent, le rendu garde le garde-fou du moteur et rien d'autre.
+    mastering: Option<crate::audio::mastering::MasteringSettings>,
     app: tauri::AppHandle,
     library_state: State<'_, LibraryState>,
 ) -> Result<BounceSummary, String> {
@@ -237,7 +256,7 @@ async fn bounce_mix(
             // minutes : au pire la barre cesse d'avancer.
             let _ = app.emit("bounce-progress", fraction);
         };
-        bounce_timeline(&plan, std::path::Path::new(&path), &mut report)
+        bounce_timeline(&plan, std::path::Path::new(&path), format, mastering, &mut report)
     })
     .await
     .map_err(|error| format!("The bounce was interrupted: {error}"))?
@@ -551,7 +570,9 @@ async fn bake_clip(
         let mut report = |fraction: f64| {
             let _ = reporter.emit("bake-progress", fraction);
         };
-        bounce_timeline(&plan, &render_path, &mut report)
+        // Un clip cuit reste dans la chaîne du programme : sans perte, et
+        // sans limiteur d'outil.
+        bounce_timeline(&plan, &render_path, BounceFormat::Wav, None, &mut report)
     })
     .await
     .map_err(|error| format!("The bake was interrupted: {error}"))??;
@@ -2112,6 +2133,7 @@ pub fn run() {
             import_library_paths,
             remove_library_track,
             update_track_beatgrid,
+            shift_track_downbeat,
             refine_tapped_tempo,
             analyze_library_tracks,
             backfill_library_waveforms,

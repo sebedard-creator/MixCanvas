@@ -163,7 +163,23 @@ Un clic de seek est converti depuis le rectangle de la règle ou de la voie rée
 
 La borne de zoom extérieure s'arrête volontairement un cran avant l'ajustement parfait : le projet occupe une fraction de la largeur, si bien qu'atteindre la limite se lit comme une limite plutôt que comme une commande bloquée, et que les deux extrémités du mix sont visibles d'un coup d'œil. Cela garantit un playhead continu, stable et aligné avec l'axe musical de la timeline.
 
-Le zoom de la timeline est ancré au playhead. Les événements de molette sont regroupés en une seule variation bornée par image affichée, ce qui évite les valeurs d'échelle transitoires lors d'une rafale de micro-événements. La largeur musicale et la translation qui place le beat courant au centre sont dérivées du même état et publiées dans le même commit DOM.
+Le zoom de la timeline est ancré au playhead. Les événements de molette sont regroupés en une seule variation bornée par image affichée, ce qui évite les valeurs d'échelle transitoires lors d'une rafale de micro-événements. L'échelle (`pixelsPerBeat`) et l'ancre de virtualisation (`renderedBeat`) sont capturées depuis le même beat affiché et validées ensemble, dans une transaction React synchrone déclenchée par le `requestAnimationFrame` du zoom. Une session chargée peut donc conserver l'ancienne image correcte un peu plus longtemps, mais ne peut plus présenter une image hybride faite de la nouvelle échelle et de l'ancienne fenêtre virtualisée.
+
+La géométrie consultée par le transport impératif obéit à une règle stricte : elle décrit toujours le **dernier DOM effectivement validé**. Elle n'est jamais modifiée pendant la fonction de rendu React, car un tick du transport peut survenir pendant ce rendu et déplacer `scrollLeft` avant que clips, grille et waveforms aient reçu la géométrie correspondante. Le nouveau snapshot géométrique n'est publié que dans le `useLayoutEffect` suivant le commit; ce même effet replace ensuite la vue. Ce séquençage ferme la trame de désynchronisation qui devenait visible pendant un zoom sur les sessions lourdes.
+
+L'atomicité du DOM a nettement réduit le défaut, sans éliminer un dernier flash inférieur à une image. Trois essais directs ont ensuite été écartés parce qu'ils ne changeaient absolument pas le résultat sur la session lourde de référence : `--disable-threaded-scrolling`, `--disable-partial-raster`, puis un double tampon du seul viewport par la View Transition API. Aucun de ces mécanismes ne doit rester dans le chemin de production lorsqu'il n'apporte aucun bénéfice. Le diagnostic suivant porte donc sur le volume de travail de la session elle-même, plutôt que de répéter une analyse vidéo qui n'avait pas reproduit fidèlement la perception à l'écran; cette frontière évite de confondre coût de calcul, rasterisation et déplacement géométrique.
+
+La session portable lourde du 15 août a finalement fourni une mesure locale plus utile qu'une nouvelle vidéo : **20 clips, 4 198 échantillons de filtre, 286 points de panoramique et 327 441 buckets de waveform référencés**. Le zoom retriait les 4 198 points à chaque cran alors que leur ordre musical ne changeait pas. Ils sont maintenant triés uniquement lorsque les données ou un brouillon changent, puis la fenêtre visible conserve leurs échantillons exacts. Un essai de réduction à un extrême par pixel a été retiré : même si les points supprimés partageaient une colonne d'écran, ils participaient aux rampes caractéristiques dessinées pendant le drag et la forme « triangle rectangle » n'était plus fidèle.
+
+Le test par touche `R` ou `T` maintenue rend le défaut reproductible en continu : chaque répétition déclenche un nouveau commit global de géométrie. Il a permis d'écarter une hypothèse supplémentaire. Remplacer le SVG de filtre par un `canvas` borné à la fenêtre n'a produit aucune amélioration du flash et a altéré la forme visuelle des filtres; cet essai a donc été intégralement retiré après RC5. Le rendu SVG exact de RC4 demeure l'autorité. Cette invalidation indique que le coût propre des filtres n'est pas le déclencheur du défaut résiduel; la prochaine correction doit viser la publication de la géométrie globale, sans changer les primitives de dessin.
+
+RC6 a ajouté temporairement un test A/B interne au même chemin de zoom. `R/T` conservait le recentrage natif; `Shift+R/T` validait exactement la même géométrie React sans écrire `scrollLeft`. Les deux cas ont produit le même défaut sur la session lourde : le défilement natif est donc mis hors de cause, et la sonde a été retirée immédiatement.
+
+RC7 a ensuite essayé un handoff **FLIP** par `scaleX`. Le résultat a empiré le défaut : dans le compositeur logiciel de WebView2, transformer la surface a ajouté une nouvelle texture à synchroniser au lieu de masquer les anciennes. L'essai a donc été intégralement retiré; aucune transformation ne participe au zoom.
+
+Le commit exact était toutefois encore lancé **dans** `requestAnimationFrame`. Un callback rAF s'exécute juste avant la phase de style, layout et peinture que Chromium prépare pour l'image courante. Placer plusieurs milliers de changements de coordonnées à cet endroit retire précisément au navigateur le temps dont une session lourde a besoin et favorise une présentation avec des tuiles périmées. La file de zoom conserve le rAF pour regrouper les entrées, mais celui-ci poste maintenant un timer à zéro. Cette tâche s'exécute après que l'image complète précédente a eu l'occasion d'être présentée et laisse presque un cycle d'affichage au commit atomique avant la suivante. Le DOM, les SVG et `scrollLeft` restent identiques au chemin RC4; seul le calendrier de publication change.
+
+`ClipWaveform` séparait déjà les données en pyramide et en fenêtre visible, mais le navigateur devait encore mettre à l'échelle et retesseller quatre chemins SVG par clip pendant le zoom. Chaque tranche visible est maintenant rasterisée dans son propre `canvas` à partir des mêmes buckets min/max et RMS. Le bitmap n'est repeint que lorsque les indices de buckets source ou le niveau de pyramide changent; un cran de zoom ordinaire ne modifie que sa position et sa largeur CSS. Cette stratégie correspond au cache de waveform d'un DAW : le calcul d'analyse reste réutilisable et les extrêmes sont préservés, tandis que WebView2 n'a plus de géométrie vectorielle longue à reconstruire à chaque image. Le cache demeure borné à la fenêtre visible de chaque clip et une vraie nouvelle tranche l'invalide immédiatement.
 
 Le suivi de lecture passe par le **défilement natif écrit sans lecture**. La surface musicale reçoit une demi-largeur de viewport vide avant et après le projet; écrire `scrollLeft = beat × pixelsPerBeat` garde donc ce beat sous la ligne centrale. Le playhead n'appartient plus à cette surface : c'est une superposition fixe au-dessus du viewport. La trace du 2 août a montré que translater le conteneur complet en rendu logiciel repeignait `timeline-content` sur une zone non bornée, jusqu'à 15,7 ms pour une seule opération. Le défilement conserve le centrage sans déplacer ce sous-arbre de clips, courbes et waveforms à chaque tick.
 
@@ -358,9 +374,10 @@ de pouvoir avancer.
 
 Le projet porte maintenant le nom **MixCanvas**. Il s'est auparavant appelé
 EZ-DJ, puis BeatForge. Les trois manifestes applicatifs portent la version
-**1.5.0** depuis le 2026-08-13; la 1.0.0 datait du 2026-08-04. Le saut de 1.0 à
-1.5 est délibéré : les effets joués ne sont pas un ajout de plus, ils ouvrent
-une seconde façon de travailler à côté de l'automation dessinée. La numérotation
+**1.5.1** depuis le 2026-08-14; la 1.5.0 datait de la veille et la 1.0.0 du
+2026-08-04. Le saut de 1.0 à 1.5 était délibéré : les effets joués ne sont pas
+un ajout de plus, ils ouvrent une seconde façon de travailler à côté de
+l'automation dessinée. La numérotation
 des jalons ci-dessous est restée celle du développement — elle raconte l'ordre
 dans lequel les choses ont été construites, et n'a jamais suivi la version du
 paquet.
@@ -373,7 +390,7 @@ L'application demeure organisée en deux moitiés :
 - SQLite embarqué, en schéma **34**, pour la session courante;
 - JSON versionné, au format `mixcanvas-project` version **1**, pour les fichiers
   `.mixcanvas`;
-- soixante commandes Tauri enregistrées comme frontière IPC.
+- soixante-et-une commandes Tauri enregistrées comme frontière IPC.
 
 Les responsabilités principales sont les suivantes :
 
@@ -1201,3 +1218,101 @@ rapprocher. Les touches passent de 54 à 68 px, ce qui porte les plaques à 78 �
 la hauteur de la **colonne** du VU-mètre, résumé compris, et non celle du seul
 bloc de diodes qu'elles suivaient. Les quatre blocs font 78, 77, 82 et 82, et
 leurs hauts tiennent dans deux pixels et demi.
+
+## Le bounce : deux limiteurs, et pourquoi ils ne se croisent pas
+
+Le programme en porte deux, et ils ne font pas le même métier.
+
+Celui du moteur est un **garde-fou**. Deux millisecondes d'attaque, puis
+`clamp(±0.98)` : il protège l'écoute d'un dépassement, et il écrête ce qu'il
+n'a pas eu le temps de rattraper. C'est acceptable pour surveiller, pas pour
+livrer.
+
+Celui du bounce est un **outil**, dans `audio/mastering.rs`. Il voit venir trois
+millisecondes, si bien que le gain est **déjà** descendu quand la crête se
+présente : le dépassement devient impossible plutôt qu'improbable. Un limiteur
+temps réel ne peut pas s'offrir ce retard; un rendu hors ligne ne paie rien
+pour lui.
+
+### Ce que l'anticipation demande
+
+Le gain à appliquer est celui que réclame la crête la plus forte **à venir**
+dans la fenêtre. Le relire à chaque échantillon coûterait une centaine de
+comparaisons par image, soit dix milliards d'opérations sur un mix de quarante
+minutes. Une file monotone donne le minimum glissant en temps constant : chaque
+candidat y entre et en sort une fois.
+
+Sa fenêtre vaut `L + 1` images et non `L`, et cette unité compte. L'image qui
+sort à l'instant `n` est entrée en `n − L`; une fenêtre de `L` couvrirait tout
+ce qui la suit **sauf elle-même**, et une crête isolée suivie de silence
+échappait ainsi à sa propre exigence. Le test l'a prise à deux millièmes de
+décibel au-dessus du plafond.
+
+### Le seuil remonte le niveau
+
+Descendre le seuil de 3,7 dB sous un plafond de 0,1 revient à demander 3,6 dB
+de gain, et c'est voulu : c'est le comportement des limiteurs de mastering. Un
+seuil qui se contenterait de déclencher la limitation donnerait un bouton dont
+on ne s'expliquerait pas qu'il ne change rien. La boîte affiche le gain calculé,
+parce que deux nombres négatifs ne le disent pas.
+
+### Les deux ne coexistent pas dans un rendu
+
+Armer l'outil recopie le plan **sans** le garde-fou. Ce n'est pas un caprice :
+0,98 vaut −0,18 dBFS, donc en dessous d'un plafond de mastering ordinaire. Le
+garde-fou serait le limiteur effectif, et son écrêtage trancherait les
+transitoires avant que l'autre ne les voie. Il continue de protéger l'écoute,
+qui est son métier.
+
+## Le MP3, et la marge qu'il réclame
+
+LAME 3.100 est compilé dans l'exécutable. Le mix y entre en **flottant**, par
+`lame_encode_buffer_ieee_float`, qui prend l'échelle −1 à +1 — celle du moteur.
+Il n'est donc jamais quantifié en seize bits avant d'être encodé : la façon
+habituelle de fabriquer un MP3, à partir d'un WAV déjà arrondi, ferait deux
+conversions et donnerait au codeur un bruit de dither à conserver.
+
+`Quality::Best` et 320 kbit/s constants, en stéréo simple plutôt qu'en stéréo
+joint : à ce débit rien ne force les deux canaux à mutualiser, et les passes
+d'effets travaillent l'image stéréo.
+
+Choisir le MP3 descend le plafond à −1 dB. Mesuré sur un mix de soixante-trois
+minutes : le WAV s'arrête net à −0,0997 dB, le MP3 décodé monte jusqu'à
+**+0,385**. Un codec avec perte ne reconstruit pas les crêtes à l'identique, et
+un lecteur qui écrête à zéro tranche ces dépassements. Ce n'est pas un réglage
+de plus dans la fenêtre — le champ du plafond existe déjà et prend la valeur
+que le format réclame.
+
+Le même mix mesuré dans les deux formats donne, par bande : **+0,0001 dB** en
+pleine bande, **+0,0012** sous 200 Hz, **+0,025** au-dessus de 8 kHz. Le codec
+ne mange rien d'audible; ce qu'il change, ce sont les crêtes.
+
+## Tourner la grille d'un temps
+
+L'analyse pose parfois le premier temps sur le deux ou le trois de la mesure :
+la grille est juste, elle est seulement tournée. `shift_downbeat` déplace le
+premier temps d'un nombre entier de temps sans toucher au tempo, et passe par
+`update_beatgrid_correction` plutôt que d'écrire lui-même — c'est là que vivent
+la validation, la borne de fin, et la règle qui **efface** la correction quand
+elle retombe sur l'analyse. Un `+1` suivi d'un `−1` ne laisse donc pas le
+morceau marqué comme corrigé.
+
+Un temps en arrière depuis le tout début tomberait avant zéro. Il repart alors
+une mesure plus loin : mêmes temps forts, place valide.
+
+## L'historique ne garde pas les waveforms
+
+Un instantané porte ses clips, et un clip porte les crêtes dessinées de tout
+son audio. Sur cinquante niveaux d'annulation, la même image décodée était
+recopiée cinquante fois — mesuré sur une session de vingt clips, quinze
+mébioctets par niveau et sept cents mébioctets au total, de loin le plus gros
+poste du programme.
+
+`UndoRedoHistory` prend un crochet appliqué au **seul** endroit où un état entre
+dans une pile, et les trois entrées y passent : `push`, la bascule de `undo`
+vers redo, et celle de `redo` vers undo. Les alléger aux trois appels de
+l'application aurait été le motif qui dérive.
+
+Toute l'économie repose sur un fait vérifié par un test : `restore_snapshot` ne
+lit jamais `clip.waveform`, et l'instantané qu'il **renvoie** est relu de la
+base. L'interface se redessine sur cette réponse, pas sur ce qu'on a envoyé.

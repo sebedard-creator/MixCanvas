@@ -8,6 +8,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { flushSync } from "react-dom";
 import { formatDuration } from "../lib/formatDuration";
 import { MixFxBay } from "./MixFxBay";
 import { timelineLaneFromPointer } from "../lib/timelineLane";
@@ -225,7 +226,8 @@ interface TimelinePanelProps {
   onClearEverything?: () => Promise<void>;
   onSaveProject: () => Promise<void>;
   onLoadProject: () => Promise<void>;
-  onBounceMix: () => Promise<void>;
+  /** Ouvre la boîte du bounce : le rendu ne part qu'une fois les options vues. */
+  onBounceMix: () => void;
   onTogglePlayback: () => Promise<void>;
   onSeek: (positionBeat: number) => Promise<void>;
   /** Règle le tempo d'un morceau depuis son nœud sur la règle. */
@@ -257,6 +259,14 @@ interface TimelinePanelProps {
    * Efface les passes d'un effet sur une plage d'une voie — ou de **tous**, si
    * aucun n'est nommé.
    */
+  /**
+   * Tourne la grille du **morceau** de ce clip d'un temps.
+   *
+   * La correction appartient à la bibliothèque, pas au clip : tous les clips
+   * du même morceau bougeront. C'est voulu — une grille tournée est une erreur
+   * d'analyse, pas une décision de mix — mais le menu le dit.
+   */
+  onShiftClipDownbeat: (libraryTrackId: number, beats: number) => void;
   onClearEffectRange: (
     effect: PlayedEffect | null,
     lane: number,
@@ -445,6 +455,7 @@ export function TimelinePanel({
   onEraseEffectSpan,
   onLivePass,
   livePasses,
+  onShiftClipDownbeat,
   onClearEffectRange,
   selectedLane,
   onSelectLane,
@@ -536,7 +547,14 @@ export function TimelinePanel({
   const [effectContextMenu, setEffectContextMenu] = useState<FilterContextMenu | null>(null);
   /** Ouvert par un clic droit sur le nom d'un clip, dans sa barre de titre. */
   const [clipContextMenu, setClipContextMenu] = useState<
-    { clientX: number; clientY: number; clipId: number; label: string } | null
+    {
+      clientX: number;
+      clientY: number;
+      clipId: number;
+      /** Le morceau derrière le clip : la grille se corrige là, pas sur le clip. */
+      libraryTrackId: number;
+      label: string;
+    } | null
   >(null);
   const [dropTargetLane, setDropTargetLane] = useState<number | null>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
@@ -594,6 +612,7 @@ export function TimelinePanel({
   const timelineTracks = useRef<HTMLDivElement | null>(null);
   const pendingZoomDelta = useRef(0);
   const zoomAnimationFrame = useRef<number | null>(null);
+  const zoomPostPaintTimer = useRef<number | null>(null);
   const zoomState = useRef({
     pixelsPerBeat: 16,
     minimumZoom: 1,
@@ -753,21 +772,42 @@ export function TimelinePanel({
       state.minimumZoom,
     );
     if (Math.abs(nextZoom - state.pixelsPerBeat) < 0.000_01) return;
+
+    const position = liveTransport.read().positionBeat;
+    const displayed = manualScrollBeat.current ?? position;
     zoomState.current.pixelsPerBeat = nextZoom;
-    setPixelsPerBeat(nextZoom);
-  }, []);
+    livePositionBeat.current = position;
+    viewBeat.current = displayed;
+    renderedBeatRef.current = displayed;
+    /*
+     * Scale and virtualized anchor still commit atomically. The queue invokes
+     * this function from a timer posted by requestAnimationFrame, i.e. in the
+     * first task after the previous image was presented—not inside the
+     * pre-paint rAF callback. A heavy session therefore receives almost a full
+     * refresh interval for layout and raster before the next presentation.
+     */
+    flushSync(() => {
+      setRenderedBeat(displayed);
+      setPixelsPerBeat(nextZoom);
+    });
+  }, [liveTransport]);
 
   const queueTimelineZoom = useCallback((deltaPixels: number) => {
     pendingZoomDelta.current = Math.max(
       -MAX_ZOOM_DELTA_PER_FRAME,
       Math.min(MAX_ZOOM_DELTA_PER_FRAME, pendingZoomDelta.current + deltaPixels),
     );
-    if (zoomAnimationFrame.current !== null) return;
+    if (zoomAnimationFrame.current !== null || zoomPostPaintTimer.current !== null) return;
     zoomAnimationFrame.current = window.requestAnimationFrame(() => {
-      const delta = pendingZoomDelta.current;
-      pendingZoomDelta.current = 0;
       zoomAnimationFrame.current = null;
-      applyTimelineZoom(delta);
+      /* A timer created inside rAF runs as a later task, after Chromium has had
+         the opportunity to present the already-complete current image. */
+      zoomPostPaintTimer.current = window.setTimeout(() => {
+        zoomPostPaintTimer.current = null;
+        const delta = pendingZoomDelta.current;
+        pendingZoomDelta.current = 0;
+        applyTimelineZoom(delta);
+      }, 0);
     });
   }, [applyTimelineZoom]);
 
@@ -829,13 +869,44 @@ export function TimelinePanel({
 
     const scrollElement = timelineScroll.current;
     if (scrollElement) {
-      /* La zone musicale reçoit une demi-fenêtre vide à chaque extrémité.
-         Le beat `n` est donc exactement au scrollLeft `n × pixelsPerBeat`;
-         cette écriture ne lit pas la mise en page et ne force pas de reflow. */
+      /* Le suivi se fait par **transformation**, plus par `scrollLeft`.
+       *
+       * `scrollLeft` n'est pas une valeur qu'on impose : le navigateur la
+       * rabat sur le maximum permis par la largeur qu'il connaît de la zone
+       * musicale. Et cette largeur avait systématiquement un cran de retard —
+       * mesuré : `contentWidth 347966` pour un `maxScroll 302546`, la valeur
+       * du cran précédent. On demandait donc un défilement calculé sur la
+       * nouvelle échelle et on en recevait un calculé sur l'ancienne.
+       *
+       * L'écart valait le facteur d'un cran, 1,1549, soit treize pour cent de
+       * la position : nul au début du mix, vingt mille pixels à cinquante-cinq
+       * minutes. C'est tout le défaut — jamais au début, à presque tous les
+       * crans à la fin, et jamais au zoom arrière dont la demande est plus
+       * petite.
+       *
+       * Écrire la largeur avant le rendu n'y changeait rien : `.timeline-scroll`
+       * porte `contain: layout paint`, et l'étendue défilable d'un sous-arbre
+       * confiné ne se recalcule pas dans la même image, quoi qu'on lise pour
+       * la forcer.
+       *
+       * Une transformation n'a pas de maximum. Elle ne demande rien à
+       * personne, ne dépend d'aucune mise en page, et s'applique sur le
+       * compositeur. Le beat `n` se retrouve exactement là où il doit être,
+       * quelle que soit l'échelle et quel que soit l'endroit du mix.
+       */
+      const content = scrollElement.firstElementChild as HTMLElement | null;
       const targetScroll = geometry.contentWidth > geometry.viewportWidth
-        ? Math.max(0, Math.min(geometry.contentWidth, displayed * geometry.pixelsPerBeat))
+        ? Math.max(0, displayed * geometry.pixelsPerBeat)
         : 0;
-      scrollElement.scrollLeft = targetScroll;
+      if (content) {
+        /* `translateX` et non `translate3d` : le second force la promotion en
+           calque composité, et ce calque fait jusqu'à quatre cent soixante
+           mille pixels de large. Il est alors découpé en tuiles que chaque
+           cran de zoom oblige à re-rastériser entièrement — d'où une image
+           blanche le temps qu'elles reviennent. Une transformation en deux
+           dimensions déplace le contenu sans réclamer de calque à soi. */
+        content.style.transform = `translateX(${-targetScroll}px)`;
+      }
     }
     if (scrollbarThumb.current) {
       const ratio = geometry.totalBeats > 0
@@ -969,16 +1040,11 @@ export function TimelinePanel({
   const thumbWidthRatio = Math.max(0.08, Math.min(1, visibleBeats / totalBeats));
   const thumbWidthPercent = thumbWidthRatio * 100;
 
-  /* La géométrie que `paintView` lira à la prochaine image, et le placement
-     initial écrit dans le rendu lui-même — pour que le premier affichage et
-     tout changement de zoom soient justes avant même le premier repeint. */
-  viewGeometry.current = {
-    pixelsPerBeat,
-    contentWidth,
-    viewportWidth,
-    totalBeats,
-    thumbWidthPercent,
-  };
+  /* Le placement initial vient du rendu React. La ref impérative, elle, reste
+     celle du **dernier commit** jusqu'au layout effect ci-dessous. La muter ici,
+     pendant le calcul React, permettait à un tick du transport d'appeler
+     `paintView` avec la nouvelle géométrie alors que le DOM portait encore
+     l'ancienne — la définition exacte de la frame désynchronisée observée. */
   const contentNeedsNativeScroll = contentWidth > viewportWidth;
   const currentScrollRatio = totalBeats > 0 ? Math.max(0, Math.min(1, viewBeat.current / totalBeats)) : 0;
   const thumbLeftPercent = currentScrollRatio * (100 - thumbWidthPercent);
@@ -988,10 +1054,29 @@ export function TimelinePanel({
      la position réelle. Sous `useLayoutEffect`, donc avant que l'écran ne
      montre quoi que ce soit — aucun scintillement possible. */
   useLayoutEffect(() => {
+    /* Publiée seulement après le commit : tout appel concurrent à `paintView`
+       voit soit l'ancienne géométrie complète, soit la nouvelle. Jamais un
+       mélange des deux. */
+    viewGeometry.current = {
+      pixelsPerBeat,
+      contentWidth,
+      viewportWidth,
+      totalBeats,
+      thumbWidthPercent,
+    };
     livePositionBeat.current = liveTransport.read().positionBeat;
     paintView();
     writeCurrentBpm(tempoBpmAtBeat(displayTempoPointsRef.current, livePositionBeat.current));
-  }, [contentWidth, liveTransport, paintView, pixelsPerBeat, viewportWidth, writeCurrentBpm]);
+  }, [
+    contentWidth,
+    liveTransport,
+    paintView,
+    pixelsPerBeat,
+    thumbWidthPercent,
+    totalBeats,
+    viewportWidth,
+    writeCurrentBpm,
+  ]);
 
   const handleScrollbarPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     const track = event.currentTarget;
@@ -1022,6 +1107,9 @@ export function TimelinePanel({
   useEffect(() => () => {
     if (zoomAnimationFrame.current !== null) {
       window.cancelAnimationFrame(zoomAnimationFrame.current);
+    }
+    if (zoomPostPaintTimer.current !== null) {
+      window.clearTimeout(zoomPostPaintTimer.current);
     }
   }, []);
 
@@ -1946,7 +2034,15 @@ export function TimelinePanel({
     setFilterStroke(null);
   };
 
-  const filterPointsForLane = (lane: number) => {
+  /* The persisted filter table can contain thousands of quarter-beat samples.
+     Sorting it again for every zoom was pure waste: zoom changes x coordinates,
+     never the musical order. Drafts still invalidate this cache immediately. */
+  const filterPointsByLane = useMemo(() => TIMELINE_LANES.map((lane) => {
+    const persisted = timeline.filterNodes
+      .filter((node) => node.lane === lane)
+      .map((node) => ({ beat: node.beat, value: node.value }))
+      .sort((left, right) => left.beat - right.beat);
+
     if (filterStroke?.lane === lane) {
       // Pendant un trait libre, la courbe montrée est celle qui sera écrite :
       // les mêmes points, passés par la même fonction.
@@ -1955,23 +2051,13 @@ export function TimelinePanel({
         const from = nodes[0][0];
         const to = nodes[nodes.length - 1][0];
         return [
-          ...timeline.filterNodes
-            .filter((node) => node.lane === lane && (node.beat < from || node.beat > to))
-            .map((node) => ({ beat: node.beat, value: node.value })),
+          ...persisted.filter((point) => point.beat < from || point.beat > to),
           ...nodes.map(([beat, value]) => ({ beat, value })),
         ].sort((left, right) => left.beat - right.beat);
       }
     }
-    return filterPointsForLaneWithBubble(lane);
-  };
 
-  const filterPointsForLaneWithBubble = (lane: number) => {
-    const persisted = timeline.filterNodes
-      .filter((node) => node.lane === lane)
-      .map((node) => ({ beat: node.beat, value: node.value }));
-    if (!filterBubbleDraft || filterBubbleDraft.lane !== lane) {
-      return persisted.sort((left, right) => left.beat - right.beat);
-    }
+    if (!filterBubbleDraft || filterBubbleDraft.lane !== lane) return persisted;
     const startBeat = Math.min(
       filterBubbleDraft.startBeat,
       filterBubbleDraft.hiddenRange?.startBeat ?? Number.POSITIVE_INFINITY,
@@ -1984,7 +2070,7 @@ export function TimelinePanel({
       ...persisted.filter((point) => point.beat < startBeat || point.beat > endBeat),
       ...filterBubblePoints(filterBubbleDraft),
     ].sort((left, right) => left.beat - right.beat);
-  };
+  }), [filterBubbleDraft, filterStroke, timeline.filterNodes]);
 
   const moveVolumeNodeDraft = (event: ReactPointerEvent<HTMLButtonElement>, nodeId: number, lane: number) => {
     if (activeVolumeNode.current !== nodeId) return;
@@ -2353,7 +2439,7 @@ export function TimelinePanel({
   }, [hatchBandList]);
 
   const filterPaths = useMemo(() => TIMELINE_LANES.map((lane) => {
-    const spanning = filterPointsForLane(lane);
+    const spanning = filterPointsByLane[lane];
     /* Le test « y a-t-il quelque chose à montrer » porte sur **toute** la voie,
        pas sur la tranche : autrement une bulle hors champ éteindrait la forme,
        et elle réapparaîtrait d'un coup en entrant dans la vue. */
@@ -2375,6 +2461,7 @@ export function TimelinePanel({
     curveFromBeat,
     curveToBeat,
     filterBubbleDraft,
+    filterPointsByLane,
     filterStroke,
     pixelsPerBeat,
     timeline.filterNodes,
@@ -2670,7 +2757,7 @@ export function TimelinePanel({
             className="bounce-btn"
             type="button"
             disabled={busy || timeline.clips.length === 0}
-            onClick={() => void onBounceMix()}
+            onClick={onBounceMix}
             title="Render the whole timeline to a 16-bit 44.1 kHz stereo WAV"
           >
             <TransportGlyph name="bounce" />
@@ -3479,8 +3566,9 @@ export function TimelinePanel({
                       event.stopPropagation();
                       setClipContextMenu({
                         clientX: Math.min(event.clientX, window.innerWidth - 205),
-                        clientY: Math.min(event.clientY, window.innerHeight - 46),
+                        clientY: Math.min(event.clientY, window.innerHeight - 126),
                         clipId: clip.id,
+                        libraryTrackId: clip.libraryTrackId,
                         label: clipLabel,
                       });
                     }}
@@ -3590,14 +3678,24 @@ export function TimelinePanel({
                   </div>
                   <ClipWaveform
                     waveform={clip.waveform}
-                    displayWidth={Math.max(1, clipWidth - 16)}
+                    /* La pleine largeur du clip, sans encart.
+
+                        Le dessin portait autrefois seize pixels de moins que
+                        le clip, pour lui laisser de l'air à gauche et à
+                        droite. Mais toute la durée du morceau était alors
+                        représentée dans une largeur qui n'était pas celle du
+                        clip : les deux axes du temps divergeaient. Sur mille
+                        pixels l'écart valait un pour cent et ne se voyait pas;
+                        au zoom large, sur un clip de cent pixels, il valait
+                        seize pour cent — plusieurs mesures d'avance à la fin,
+                        et le son continuait après la fin du dessin. */
+                    displayWidth={Math.max(1, clipWidth)}
                     trimStartBeats={live.trimStartBeats}
                     trimEndBeats={live.trimEndBeats}
                     durationBeats={liveDurationBeats}
-                    /* La fenêtre, ramenée dans les coordonnées du dessin : le
-                       clip commence à `visualStartBeat`, et le dessin huit
-                       pixels plus loin — c'est l'encart de `.clip-waveform`. */
-                    visibleFromPx={visibleContentFromPx - visualStartBeat * pixelsPerBeat - 8}
+                    /* La fenêtre, ramenée dans les coordonnées du dessin.
+                       Elles sont désormais celles du clip, tout simplement. */
+                    visibleFromPx={visibleContentFromPx - visualStartBeat * pixelsPerBeat}
                     visibleWidthPx={viewportWidth}
                   />
                   <span
@@ -3753,6 +3851,30 @@ export function TimelinePanel({
           role="menu"
           onMouseLeave={() => setClipContextMenu(null)}
         >
+          <button
+            type="button"
+            role="menuitem"
+            disabled={busy}
+            title="Corrects the track's grid, so every clip of it moves"
+            onClick={() => {
+              onShiftClipDownbeat(clipContextMenu.libraryTrackId, 1);
+              setClipContextMenu(null);
+            }}
+          >
+            Shift downbeat +1 beat
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            disabled={busy}
+            title="Corrects the track's grid, so every clip of it moves"
+            onClick={() => {
+              onShiftClipDownbeat(clipContextMenu.libraryTrackId, -1);
+              setClipContextMenu(null);
+            }}
+          >
+            Shift downbeat &minus;1 beat
+          </button>
           <button
             type="button"
             role="menuitem"

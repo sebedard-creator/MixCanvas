@@ -66,6 +66,23 @@ describe("waveformWindow", () => {
     expect(window.widthPx).toBe(600);
   });
 
+  /* Au zoom large, un clip de plusieurs minutes ne fait plus que quelques
+     dizaines de pixels, et c'est là que l'axe du temps du dessin doit encore
+     être exactement celui du clip. L'appelant passait la largeur du clip
+     moins seize pixels d'encart : sur mille pixels l'écart valait un pour
+     cent, sur cent il en valait seize — le son continuait plusieurs mesures
+     après la fin du dessin. */
+  it("covers the clip exactly, however narrow the clip has become", () => {
+    // Un clip plus large que la fenêtre est découpé, et c'est le but du
+    // module. Ce sont les clips **tenant à l'écran** qui doivent être couverts
+    // en entier, et le zoom large les rend tous petits.
+    for (const clipWidthPx of [24, 48, 100, 600, 1199]) {
+      const window = waveformWindow(clipWidthPx, 0, 1200)!;
+      expect(window.offsetPx).toBe(0);
+      expect(window.widthPx).toBe(clipWidthPx);
+    }
+  });
+
   it("refuses nonsense rather than producing a broken slice", () => {
     expect(waveformWindow(0, 0, 900)).toBeNull();
     expect(waveformWindow(1_000, Number.NaN, 900)).toBeNull();

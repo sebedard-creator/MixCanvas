@@ -1,4 +1,5 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 
 interface AboutModalProps {
   isOpen: boolean;
@@ -34,6 +35,7 @@ const CREDITS: Credit[] = [
   { name: "rodio", licence: "MIT / Apache-2.0", role: "Audio playback" },
   { name: "cpal", licence: "Apache-2.0", role: "Audio device access" },
   { name: "Symphonia", licence: "MPL-2.0", role: "MP3 and WAV decoding" },
+  { name: "LAME 3.100", licence: "LGPL-2.1", role: "MP3 encoding on bounce" },
   { name: "rubato", licence: "MIT", role: "Sample rate conversion" },
   { name: "rusqlite · SQLite", licence: "MIT · Public domain", role: "Library and project storage" },
   { name: "RustFFT", licence: "MIT / Apache-2.0", role: "Fourier transform behind stem separation" },
@@ -59,6 +61,25 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isOpen, onClose]);
 
+  /* Le numéro vient de l'exécutable lui-même, pas d'une constante recopiée.
+     Trois manifestes portent cette version et rien ne garantit qu'ils restent
+     d'accord; celui-ci est celui qui tourne. */
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isOpen) return;
+    let current = true;
+    void getVersion()
+      .then((value) => {
+        if (current) setVersion(value);
+      })
+      .catch(() => {
+        // Sans réponse, la ligne se tait plutôt que d'annoncer un faux numéro.
+      });
+    return () => {
+      current = false;
+    };
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   return (
@@ -76,7 +97,10 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
               <span className="help-modal-badge-dot" />
               <span>ABOUT</span>
             </div>
-            <h2 id="about-modal-title">MixCanvas</h2>
+            <h2 id="about-modal-title">
+              MixCanvas
+              {version && <span className="about-version">v{version}</span>}
+            </h2>
           </div>
           <button className="help-modal-close-btn" type="button" onClick={onClose} title="Close (Esc)">
             ✕

@@ -18,6 +18,22 @@ import { createLiveTransport } from "./lib/liveTransport";
 import type { PlayedEffect } from "./lib/mixEffects";
 import { UNDO_HISTORY_LIMIT, UndoRedoHistory } from "./lib/undoRedo";
 import {
+  BOUNCE_FORMATS,
+  BOUNCE_FORMAT_PREFERENCE,
+  DEFAULT_BOUNCE_FORMAT,
+  DEFAULT_MASTERING_SETTINGS,
+  MASTERING_ENABLED_PREFERENCE,
+  MASTERING_LIMITS,
+  MASTERING_PREFERENCE,
+  masteringGainDb,
+  parseMasteringSettings,
+  serializeMasteringSettings,
+  ceilingForFormat,
+  parseBounceFormat,
+  type BounceFormat,
+  type MasteringSettings,
+} from "./lib/masteringSettings";
+import {
   DEFAULT_LIBRARY_SORT,
   LIBRARY_SORT_PREFERENCE,
   parseLibrarySort,
@@ -436,6 +452,9 @@ function App() {
           /* Posé avant la liste : le tri doit être en place quand les morceaux
              arrivent, sinon on les verrait se réordonner sous les yeux. */
           setLibrarySort(parseLibrarySort(preferences[LIBRARY_SORT_PREFERENCE]));
+          setMastering(parseMasteringSettings(preferences[MASTERING_PREFERENCE]));
+          setMasteringEnabled(preferences[MASTERING_ENABLED_PREFERENCE] === "1");
+          setBounceFormat(parseBounceFormat(preferences[BOUNCE_FORMAT_PREFERENCE]));
           setLibrary(tracks);
           setTimeline(timelineSnapshot);
           publishTransport(transportSnapshot);
@@ -743,6 +762,40 @@ function App() {
   );
 
   /**
+   * Tourne la grille d'un morceau d'un temps, sans toucher à son tempo.
+   *
+   * L'analyse pose parfois le premier temps sur le deux ou le trois de la
+   * mesure. Le calcul vit côté Rust, pas ici : deux menus appellent ce geste —
+   * la bibliothèque et le clip — et la période d'un temps recopiée aux deux
+   * endroits aurait fini par diverger.
+   */
+  const shiftTrackDownbeat = useCallback(
+    async (trackId: number, beats: number) => {
+      setGridBusy(true);
+      setError(null);
+      try {
+        const tracks = await invoke<LibraryTrack[]>("shift_track_downbeat", {
+          id: trackId,
+          beats,
+        });
+        setLibrary(tracks);
+        await refreshTimeline();
+        const stored = tracks.find((candidate) => candidate.id === trackId);
+        if (stored?.firstBeatMs != null) {
+          setLibraryMessage(
+            `${stored.fileName} now starts its bar at ${formatDuration(stored.firstBeatMs)}.`,
+          );
+        }
+      } catch (shiftError) {
+        setError(errorMessage(shiftError));
+      } finally {
+        setGridBusy(false);
+      }
+    },
+    [refreshTimeline],
+  );
+
+  /**
    * Règle le tempo d'un morceau depuis son nœud sur la règle.
    *
    * Un nœud de tempo **est** le BPM du morceau posé à cet endroit : l'éditer
@@ -804,10 +857,47 @@ function App() {
    * machine le permet, et peut durer plusieurs minutes sur un long projet.
    * D'où l'état occupé, et un message qui dit ce qui a été écrit.
    */
+  /**
+   * Le limiteur de mastering, et s'il est armé.
+   *
+   * Retenu entre deux lancements : c'est un réglage de chaîne, pas une
+   * décision qu'on reprend à zéro à chaque rendu. Mais il reste montré avant
+   * chaque bounce, parce qu'appliquer trois décibels de gain sans le savoir
+   * serait pire que de retaper les chiffres.
+   */
+  const [masteringEnabled, setMasteringEnabled] = useState(false);
+  const [mastering, setMastering] = useState<MasteringSettings>(DEFAULT_MASTERING_SETTINGS);
+  const [bounceOptionsOpen, setBounceOptionsOpen] = useState(false);
+  const [bounceFormat, setBounceFormat] = useState<BounceFormat>(DEFAULT_BOUNCE_FORMAT);
+
+  const rememberMastering = useCallback((enabled: boolean, settings: MasteringSettings) => {
+    void invoke("write_app_preference", {
+      key: MASTERING_ENABLED_PREFERENCE,
+      value: enabled ? "1" : "0",
+    }).catch((preferenceError) => setError(errorMessage(preferenceError)));
+    void invoke("write_app_preference", {
+      key: MASTERING_PREFERENCE,
+      value: serializeMasteringSettings(settings),
+    }).catch((preferenceError) => setError(errorMessage(preferenceError)));
+  }, []);
+
+  const rememberFormat = useCallback((format: BounceFormat) => {
+    void invoke("write_app_preference", {
+      key: BOUNCE_FORMAT_PREFERENCE,
+      value: format,
+    }).catch((preferenceError) => setError(errorMessage(preferenceError)));
+  }, []);
+
   const bounceMix = useCallback(async () => {
+    setBounceOptionsOpen(false);
+    rememberMastering(masteringEnabled, mastering);
+    rememberFormat(bounceFormat);
     const path = await save({
-      filters: [{ name: "WAV audio", extensions: ["wav"] }],
-      defaultPath: "mix.wav",
+      filters:
+        bounceFormat === "mp3"
+          ? [{ name: "MP3 audio", extensions: ["mp3"] }]
+          : [{ name: "WAV audio", extensions: ["wav"] }],
+      defaultPath: `mix.${bounceFormat}`,
     });
     if (!path) return;
     setTimelineBusy(true);
@@ -821,13 +911,19 @@ function App() {
         trimmedSeconds: number;
         sampleRate: number;
         bitsPerSample: number;
-      }>("bounce_mix", { path });
+      }>("bounce_mix", {
+        path,
+        format: bounceFormat,
+        mastering: masteringEnabled ? mastering : null,
+      });
       const trimmed = summary.trimmedSeconds > 0.001
         ? `, ${summary.trimmedSeconds.toFixed(2)} s of leading silence skipped`
         : "";
       setLibraryMessage(
         `Bounced ${formatDuration(summary.durationSeconds * 1000)} to ${summary.path}`
-        + ` — ${summary.bitsPerSample}-bit ${summary.sampleRate / 1000} kHz stereo${trimmed}.`,
+        + ` — ${summary.bitsPerSample > 0
+          ? `${summary.bitsPerSample}-bit`
+          : "320 kbps"} ${summary.sampleRate / 1000} kHz stereo${trimmed}.`,
       );
     } catch (bounceError) {
       setLibraryMessage(null);
@@ -836,7 +932,7 @@ function App() {
       setBounceProgress(null);
       setTimelineBusy(false);
     }
-  }, []);
+  }, [bounceFormat, mastering, masteringEnabled, rememberFormat, rememberMastering]);
 
   const saveProject = useCallback(async () => {
     const path = await save({ filters: [PROJECT_FILTER], defaultPath: "session.mixcanvas" });
@@ -1621,6 +1717,7 @@ function App() {
             onEraseEffectSpan={(lane, startBeat, endBeat) =>
               clearTimelineEffectRange(null, lane, startBeat, endBeat)}
             onClearEffectRange={clearTimelineEffectRange}
+            onShiftClipDownbeat={(trackId, beats) => void shiftTrackDownbeat(trackId, beats)}
             busy={timelineBusy || timelinePreparing}
             preparing={timelinePreparing}
             libraryTracks={library}
@@ -1638,7 +1735,7 @@ function App() {
             onClearEverything={clearLibraryAndTimeline}
             onSaveProject={saveProject}
             onLoadProject={loadProject}
-            onBounceMix={bounceMix}
+            onBounceMix={() => setBounceOptionsOpen(true)}
             onTogglePlayback={toggleTimelineTransport}
             onSeek={seekTimeline}
             onSetClipTempoTarget={setClipTempoTarget}
@@ -1710,6 +1807,7 @@ function App() {
           onTogglePreview={() => void runTransportCommand(isPlaying ? "pause_preview" : "play_preview")}
           onSeekPreview={(positionMs) => void seekPreview(positionMs)}
           onRemove={(track) => void removeLibraryTrack(track)}
+          onShiftDownbeat={(track, beats) => void shiftTrackDownbeat(track.id, beats)}
         />
       </div>
       </div>
@@ -1766,6 +1864,166 @@ function App() {
                 ? "Its EQ and this lane's automation are going into the sound. The lane goes flat under it, and BAKE undoes this."
                 : "Only what this clip plays is separated, with a margin around it — not the whole track."}
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* Les options du rendu, avant de demander où écrire.
+
+          Le limiteur de mastering est montré à chaque bounce même si son
+          réglage est retenu : il applique plusieurs décibels de gain, et un
+          gain qu'on a oublié d'avoir armé est la pire des surprises sur un
+          master. */}
+      {bounceOptionsOpen && (
+        <div className="bounce-overlay" role="dialog" aria-modal="true" aria-labelledby="bounce-options-title">
+          <div className="bounce-dialog bounce-options">
+            <p className="bounce-eyebrow">OFFLINE RENDER</p>
+            <h2 id="bounce-options-title">Bounce the mix</h2>
+            {/* Le format d'abord : il décide de ce que le reste veut dire.
+                Le dither n'a de sens que pour le WAV, et la profondeur non
+                plus. */}
+            <div className="bounce-formats" role="radiogroup" aria-label="Format">
+              {BOUNCE_FORMATS.map((option) => (
+                <label
+                  key={option.id}
+                  className={`bounce-format${bounceFormat === option.id ? " is-picked" : ""}`}
+                >
+                  <input
+                    type="radio"
+                    name="bounce-format"
+                    checked={bounceFormat === option.id}
+                    /* Le plafond suit le format : un codec avec perte
+                       redessine les crêtes un peu plus haut, et il lui faut
+                       la marge. Pas de réglage de plus — le champ qui existe
+                       déjà prend la bonne valeur, et reste modifiable. */
+                    onChange={() => {
+                      setBounceFormat(option.id);
+                      setMastering((current) => ({
+                        ...current,
+                        ceilingDb: ceilingForFormat(option.id),
+                      }));
+                    }}
+                  />
+                  <span>
+                    <strong>{option.label}</strong>
+                    <em>{option.detail}</em>
+                  </span>
+                </label>
+              ))}
+            </div>
+
+            <p className="bounce-note">
+              {bounceFormat === "mp3"
+                ? "Encoded straight from the mix, with no 16-bit step in between."
+                : "Dithered on the way down to 16 bits."}
+            </p>
+
+            <label className="bounce-toggle">
+              <input
+                type="checkbox"
+                checked={masteringEnabled}
+                onChange={(event) => setMasteringEnabled(event.target.checked)}
+              />
+              <span>
+                <strong>Master limiter</strong>
+                <em>
+                  A brickwall with look-ahead, in place of the engine&apos;s safeguard.
+                  Nothing gets past the ceiling.
+                </em>
+              </span>
+            </label>
+
+            <div className={`bounce-fields${masteringEnabled ? "" : " is-off"}`}>
+              <label>
+                <span>Threshold</span>
+                <input
+                  type="number"
+                  step={0.1}
+                  min={MASTERING_LIMITS.thresholdDb.min}
+                  max={MASTERING_LIMITS.thresholdDb.max}
+                  value={mastering.thresholdDb}
+                  disabled={!masteringEnabled}
+                  onChange={(event) =>
+                    setMastering((current) => ({
+                      ...current,
+                      thresholdDb: Number(event.target.value),
+                    }))}
+                />
+                <em>dB</em>
+              </label>
+              <label>
+                <span>Ceiling</span>
+                <input
+                  type="number"
+                  step={0.1}
+                  min={MASTERING_LIMITS.ceilingDb.min}
+                  max={MASTERING_LIMITS.ceilingDb.max}
+                  value={mastering.ceilingDb}
+                  disabled={!masteringEnabled}
+                  onChange={(event) =>
+                    setMastering((current) => ({
+                      ...current,
+                      ceilingDb: Number(event.target.value),
+                    }))}
+                />
+                <em>dB</em>
+              </label>
+              <label>
+                <span>Release</span>
+                <input
+                  type="number"
+                  step={0.1}
+                  min={MASTERING_LIMITS.releaseMs.min}
+                  max={MASTERING_LIMITS.releaseMs.max}
+                  value={mastering.releaseMs}
+                  disabled={!masteringEnabled || mastering.autoRelease}
+                  onChange={(event) =>
+                    setMastering((current) => ({
+                      ...current,
+                      releaseMs: Number(event.target.value),
+                    }))}
+                />
+                <em>ms</em>
+              </label>
+              <label className="bounce-toggle bounce-toggle--inline">
+                <input
+                  type="checkbox"
+                  checked={mastering.autoRelease}
+                  disabled={!masteringEnabled}
+                  onChange={(event) =>
+                    setMastering((current) => ({
+                      ...current,
+                      autoRelease: event.target.checked,
+                    }))}
+                />
+                <span>Auto release</span>
+              </label>
+            </div>
+
+            {/* Deux nombres négatifs ne disent pas qu'on demande du gain. */}
+            {masteringEnabled && (
+              <p className="bounce-note bounce-gain">
+                Lifts the mix by <strong>{masteringGainDb(mastering).toFixed(1)} dB</strong>,
+                then holds it under {mastering.ceilingDb.toFixed(1)} dB.
+              </p>
+            )}
+
+            <div className="bounce-actions">
+              <button
+                className="bounce-btn bounce-btn--wide"
+                type="button"
+                onClick={() => setBounceOptionsOpen(false)}
+              >
+                <span>CANCEL</span>
+              </button>
+              <button
+                className="bounce-btn bounce-btn--wide bounce-btn--go"
+                type="button"
+                onClick={() => void bounceMix()}
+              >
+                <span>CHOOSE FILE &amp; BOUNCE</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

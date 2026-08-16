@@ -71,6 +71,9 @@ audible, guided, and repeatable.*
   lands on a beat where the transient hides it instead of drifting audibly.
 - Right-click a tempo target to set the speed that clip plays at, without
   touching the track's analysed BPM.
+- Right-click a track in the Library, or a clip on the timeline, to shift its
+  downbeat a beat either way — for when analysis puts the bar line on the 2 or
+  the 3. The grid is right, it is only turned; the tempo does not move.
 - Every clip follows the project tempo through pitch-preserving stereo-linked
   time-stretching, rather than varispeed, across a safe 0.5×–2× range.
 - Play/Pause transport, Spacebar control, optional Autoplay, and live timeline
@@ -144,7 +147,9 @@ Nothing to open and nothing to put away.
 - Three-band EQ on every clip, adjustable during playback.
 - Sidechain compression: make a clip the key and let it pump overlapping clips.
 - Master Glue Compressor with console colour/saturation.
-- Stereo-linked master limiter and a real post-limiter OL overload lamp.
+- Stereo-linked master limiter and a real post-limiter OL overload lamp. This
+  one is a safeguard for listening, and it stays out of the way of the
+  mastering limiter on the bounce.
 - Vintage stereo VU meters driven by the actual output signal.
 - All decoding, time-stretching, automation, mixing, and processing run in
   float32 at the audio device's native sample rate.
@@ -166,7 +171,19 @@ Nothing to open and nothing to put away.
 ## Save and export
 
 - Save and load portable .mixcanvas projects.
-- Bounce the complete mix to 16-bit / 44.1 kHz stereo WAV with TPDF dither.
+- Bounce the complete mix to 16-bit / 44.1 kHz stereo WAV with dither, or to
+  44.1 kHz CBR 320 kbps stereo MP3 encoded with LAME at its most thorough
+  setting. The mix reaches the encoder in floating point, so an MP3 is never
+  built from an already-quantised file.
+- **A mastering limiter you can arm on the bounce.** A brickwall with
+  look-ahead: it sees the peak coming and has already lowered the gain when it
+  arrives, so nothing gets past the ceiling and transients are limited rather
+  than clipped. Lowering the threshold lifts the whole mix to the ceiling, and
+  the dialog says by how many decibels. Its release can follow the programme —
+  quick after a lone peak, slow through a dense passage. Arming it renders
+  without the playback safeguard, which would otherwise clip the transients
+  first. Choosing MP3 lowers the ceiling a decibel, because a lossy codec
+  rebuilds peaks slightly higher than the file it came from.
 - The original MP3 files are never modified.
 - The Library only stores references and metadata, and warns when a source file
   was moved or is missing.
@@ -230,6 +247,7 @@ Runtime into the executable.
 - SQLite for the local Library, Timeline, and automation data.
 - Symphonia/Rodio for decoding and CPAL for native audio output.
 - Beat This! for beat/downbeat analysis and Open-Unmix for stem separation.
+- LAME 3.100, compiled in, for MP3 bounces.
 
 For implementation details and design decisions, see
 [architecture.md](architecture.md). The architecture notes and source comments

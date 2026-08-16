@@ -82,6 +82,7 @@ const SHORTCUTS: ShortcutItem[] = [
   { surface: "pointer", group: "Clips", keys: ["Drag the body"], description: "Draw the pencil's shape across the drag, live, onto whichever line VIEW is showing — nothing to arm" },
   { surface: "pointer", group: "Clips", keys: ["Drag from library"], description: "Drop a track straight onto the lane you want" },
 
+  { surface: "pointer", group: "Clips", keys: ["Right click a track or clip"], description: "Shift its downbeat a beat either way, when analysis put the bar line on the 2 or the 3. The tempo does not move, and every clip of that track follows" },
   { surface: "pointer", group: "Automation", keys: ["Right click"], description: "Add a volume or pan node; right-click a node to delete it" },
   { surface: "pointer", group: "Automation", keys: ["Drag a volume node"], description: "Set its level and position — to the bottom of the travel for silence" },
   { surface: "pointer", group: "Automation", keys: ["Drag a pan node"], description: "Up sends the track left, down sends it right" },
@@ -109,7 +110,7 @@ const SHORTCUTS: ShortcutItem[] = [
   { surface: "control", group: "Transport rail", keys: ["Effect pads"], description: "Hold one while the mix runs — reverb, flange, crush or delay onto that track. Let go and the pass is written onto the timeline" },
   { surface: "control", group: "Transport rail", keys: ["Eraser"], description: "The last pad on each track — sweep it while the music runs to wipe every effect it passes over" },
 
-  { surface: "control", group: "Project", keys: ["BOUNCE MIX"], description: "Render the whole timeline offline to a 16-bit 44.1 kHz stereo WAV" },
+  { surface: "control", group: "Project", keys: ["BOUNCE MIX"], description: "Render the whole timeline offline to a 16-bit 44.1 kHz stereo WAV, with an optional mastering limiter — a brickwall with look-ahead that lifts the mix to its ceiling and never lets anything past it" },
   { surface: "control", group: "Project", keys: ["SAVE", "LOAD"], description: "Write or reopen a .mixcanvas file — library, beatgrids and timeline together" },
 ];
 

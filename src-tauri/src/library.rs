@@ -567,6 +567,10 @@ struct DiscoveredPaths {
     failed_count: usize,
 }
 
+/// Le programme travaille en 4/4 : tourner la grille d'une mesure la laisse
+/// sur les mêmes temps forts.
+const BEATS_PER_BAR: f64 = 4.0;
+
 pub struct LibraryStore {
     pub(crate) connection: Connection,
 }
@@ -1127,6 +1131,65 @@ impl LibraryStore {
             )
             .map_err(database_write_error)?;
         self.list_tracks()
+    }
+
+    /// Décale le premier temps d'un nombre entier de temps, sans toucher au tempo.
+    ///
+    /// L'analyse pose parfois le premier temps sur le deux ou le trois de la
+    /// mesure : la grille est juste, elle est seulement tournée. Retaper la
+    /// position à la main dans l'éditeur demande de la lire d'abord; un temps
+    /// en avant ou en arrière est le geste qui correspond au défaut.
+    ///
+    /// Le calcul passe par `update_beatgrid_correction` plutôt que d'écrire
+    /// lui-même : c'est là que vivent la validation, la borne de fin, et la
+    /// règle qui efface la correction quand elle retombe sur l'analyse. Deux
+    /// écrivains pour une même colonne finiraient par diverger.
+    pub fn shift_downbeat(&self, id: i64, beats: i32) -> Result<Vec<LibraryTrack>, String> {
+        let (bpm, first_beat_ms, duration_ms) = self
+            .connection
+            .query_row(
+                "SELECT COALESCE(manual_bpm, bpm),
+                        COALESCE(manual_first_beat_ms, first_beat_ms),
+                        duration_ms
+                 FROM library_tracks WHERE id = ?1",
+                [id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<f64>>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .map_err(database_read_error)?;
+
+        let (Some(bpm), Some(first_beat_ms)) = (bpm, first_beat_ms) else {
+            return Err("This track has no beatgrid to shift yet.".to_owned());
+        };
+        if !bpm.is_finite() || bpm <= 0.0 {
+            return Err("This track has no usable tempo to shift against.".to_owned());
+        }
+
+        let period_ms = 60_000.0 / bpm;
+        let bar_ms = period_ms * BEATS_PER_BAR;
+        let duration_ms = duration_ms.max(0) as f64;
+        let mut shifted = first_beat_ms as f64 + f64::from(beats) * period_ms;
+
+        /* Un temps en arrière depuis le tout début tomberait avant zéro, et un
+           temps en avant sur un morceau très court, après la fin. Une mesure
+           entière plus loin — ou plus tôt — marque exactement les mêmes temps
+           forts : c'est le même réglage, à une place valide. */
+        while shifted < 0.0 {
+            shifted += bar_ms;
+        }
+        while shifted > duration_ms && shifted - bar_ms >= 0.0 {
+            shifted -= bar_ms;
+        }
+        if !shifted.is_finite() || shifted < 0.0 || shifted > duration_ms {
+            return Err("This track is too short to shift its downbeat.".to_owned());
+        }
+
+        self.update_beatgrid_correction(id, bpm, shifted.round() as u64)
     }
 
     /// Si ces valeurs sont, au millième près, celles que l'analyse a trouvées.
@@ -2809,6 +2872,70 @@ mod tests {
         assert_eq!(restored[0].bpm, Some(126.0));
         assert_eq!(restored[0].first_beat_ms, Some(61_946));
         assert!(!restored[0].is_corrected);
+
+        drop(store);
+        remove_database_files(&database_path);
+    }
+
+    /// Tourner la grille garde le tempo et ne sort jamais du morceau.
+    #[test]
+    fn shifting_the_downbeat_turns_the_bar_without_touching_the_tempo() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-downbeat-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+        let store = LibraryStore::open(&database_path).expect("database should open");
+        // 120 BPM : un temps vaut exactement 500 ms, une mesure 2000.
+        store
+            .connection
+            .execute(
+                "INSERT INTO library_tracks
+                 (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                  bpm, first_beat_ms, beat_count, analysis_status)
+                 VALUES ('missing.mp3', 'missing.mp3', 'downbeat.mp3', 120000, 44100, 2,
+                         120.0, 300, 240, 'analyzed')",
+                [],
+            )
+            .expect("analyzed track should be inserted");
+        let id = store.connection.last_insert_rowid();
+
+        let forward = store.shift_downbeat(id, 1).expect("one beat forward");
+        assert_eq!(forward[0].first_beat_ms, Some(800));
+        assert_eq!(
+            forward[0].bpm,
+            Some(120.0),
+            "tourner la mesure ne touche pas au tempo"
+        );
+        assert!(forward[0].is_corrected);
+
+        // Retour au point de départ : la correction s'efface d'elle-même,
+        // parce qu'elle retombe exactement sur l'analyse.
+        let back = store.shift_downbeat(id, -1).expect("one beat back");
+        assert_eq!(back[0].first_beat_ms, Some(300));
+        assert!(
+            !back[0].is_corrected,
+            "revenir sur la valeur analysée n'est pas une correction"
+        );
+
+        /* Un temps en arrière depuis 300 ms tomberait à −200. Une mesure plus
+           loin marque les mêmes temps forts : 300 − 500 + 2000 = 1800. */
+        let wrapped = store
+            .shift_downbeat(id, -1)
+            .and_then(|_| store.shift_downbeat(id, -1))
+            .expect("a backward shift from the very start should wrap by a bar");
+        let first = wrapped[0]
+            .first_beat_ms
+            .expect("the wrapped grid keeps a downbeat");
+        assert!(first > 0, "la grille ne peut pas commencer avant le morceau");
+        assert_eq!(
+            (first as i64 - 300).rem_euclid(500),
+            0,
+            "le premier temps reste sur la grille des temps"
+        );
 
         drop(store);
         remove_database_files(&database_path);

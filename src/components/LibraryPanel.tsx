@@ -63,6 +63,13 @@ interface LibraryPanelProps {
   onTogglePreview: () => void;
   onSeekPreview: (positionMs: number) => void;
   onRemove: (track: LibraryTrack) => void;
+  /**
+   * Tourne la grille d'un temps en avant ou en arrière.
+   *
+   * L'analyse pose parfois le premier temps sur le deux ou le trois de la
+   * mesure : la grille est juste, elle est seulement tournée.
+   */
+  onShiftDownbeat: (track: LibraryTrack, beats: number) => void;
 }
 
 export function LibraryPanel({
@@ -93,6 +100,7 @@ export function LibraryPanel({
   onTogglePreview,
   onSeekPreview,
   onRemove,
+  onShiftDownbeat,
 }: LibraryPanelProps) {
   const pointerDrag = useRef<PointerDragCandidate | null>(null);
   const suppressClickUntil = useRef(0);
@@ -421,6 +429,32 @@ export function LibraryPanel({
           aria-label={`Actions for ${libraryDisplayName(contextMenu.track)}`}
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
+          {/* Le décalage d'abord : c'est le geste courant, et il ne détruit
+              rien. Le retrait ferme la liste, séparé et en dernier. */}
+          <button
+            type="button"
+            role="menuitem"
+            disabled={libraryBusy || analysisBusy || contextMenu.track.firstBeatMs === null}
+            title="The grid keeps its tempo; only the bar line moves"
+            onClick={() => {
+              setContextMenu(null);
+              onShiftDownbeat(contextMenu.track, 1);
+            }}
+          >
+            Shift downbeat +1 beat
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            disabled={libraryBusy || analysisBusy || contextMenu.track.firstBeatMs === null}
+            title="The grid keeps its tempo; only the bar line moves"
+            onClick={() => {
+              setContextMenu(null);
+              onShiftDownbeat(contextMenu.track, -1);
+            }}
+          >
+            Shift downbeat &minus;1 beat
+          </button>
           <button
             type="button"
             role="menuitem"
