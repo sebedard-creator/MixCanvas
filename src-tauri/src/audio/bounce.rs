@@ -134,10 +134,11 @@ impl<W: Write> Mp3Sink<W> {
         }
         self.encoded.clear();
         /* `encode_to_vec` écrit dans la **capacité libre** du vecteur et n'en
-           réserve aucune : sans cette ligne, LAME reçoit un tampon de taille
-           nulle. C'est ce qui faisait planter le rendu MP3 à la première
-           image. */
-        self.encoded.reserve(max_required_buffer_size(self.left.len()));
+        réserve aucune : sans cette ligne, LAME reçoit un tampon de taille
+        nulle. C'est ce qui faisait planter le rendu MP3 à la première
+        image. */
+        self.encoded
+            .reserve(max_required_buffer_size(self.left.len()));
         self.encoder
             .encode_to_vec(
                 DualPcm {
@@ -159,7 +160,8 @@ impl<W: Write> Mp3Sink<W> {
 impl<W: Write> BounceSink for Mp3Sink<W> {
     fn write_frame(&mut self, frame: &[f32]) -> Result<(), String> {
         self.left.push(frame[0].clamp(-1.0, 1.0));
-        self.right.push(frame[frame.len().min(2) - 1].clamp(-1.0, 1.0));
+        self.right
+            .push(frame[frame.len().min(2) - 1].clamp(-1.0, 1.0));
         if self.left.len() >= MP3_BLOCK_FRAMES {
             self.drain()?;
         }
@@ -194,7 +196,8 @@ impl<W: Write> BounceSink for Mp3Sink<W> {
 /// les deux canaux, et les passes d'effets de ce programme travaillent
 /// justement l'image stéréo.
 fn build_mp3_encoder() -> Result<mp3lame_encoder::Encoder, String> {
-    let mut builder = Builder::new().ok_or_else(|| "The MP3 encoder could not start.".to_owned())?;
+    let mut builder =
+        Builder::new().ok_or_else(|| "The MP3 encoder could not start.".to_owned())?;
     fn refused(what: &'static str) -> impl Fn(mp3lame_encoder::BuildError) -> String {
         move |error| format!("The MP3 encoder refused {what}: {error:?}")
     }
@@ -348,19 +351,17 @@ pub fn bounce_timeline(
     let mut filled = 0_usize;
     let expected_frames = (expected_samples / channels).max(1);
 
-    let mut push = |sink: &mut Box<dyn BounceSink>,
-                    frames: &mut usize,
-                    frame: &[f32]|
-     -> Result<(), String> {
-        sink.write_frame(frame)?;
-        *frames += 1;
-        let percent = *frames * 100 / expected_frames;
-        if percent != last_percent {
-            last_percent = percent;
-            on_progress(*frames as f64 / expected_frames as f64);
-        }
-        Ok(())
-    };
+    let mut push =
+        |sink: &mut Box<dyn BounceSink>, frames: &mut usize, frame: &[f32]| -> Result<(), String> {
+            sink.write_frame(frame)?;
+            *frames += 1;
+            let percent = *frames * 100 / expected_frames;
+            if percent != last_percent {
+                last_percent = percent;
+                on_progress(*frames as f64 / expected_frames as f64);
+            }
+            Ok(())
+        };
 
     for sample in source.by_ref() {
         frame[filled] = sample;
@@ -720,7 +721,11 @@ mod mp3_tests {
                 let t = index as f32 / BOUNCE_SAMPLE_RATE as f32;
                 // Un grave soutenu, une frappe périodique, et du bruit.
                 let bass = (std::f32::consts::TAU * 55.0 * t).sin() * 0.35;
-                let beat = if index % 22_050 < 400 { noise() * 0.5 } else { 0.0 };
+                let beat = if index % 22_050 < 400 {
+                    noise() * 0.5
+                } else {
+                    0.0
+                };
                 let air = noise() * 0.05;
                 let left = (bass + beat + air).clamp(-1.0, 1.0);
                 let right = (bass + beat + air * 0.8).clamp(-1.0, 1.0);
@@ -743,10 +748,7 @@ mod mp3_tests {
             high_sum += f64::from((sample - high) * (sample - high));
         }
         let n = samples.len().max(1) as f64;
-        (
-            (low_sum / n).sqrt() as f32,
-            (high_sum / n).sqrt() as f32,
-        )
+        ((low_sum / n).sqrt() as f32, (high_sum / n).sqrt() as f32)
     }
 
     /// La comparaison que fait l'oreille : le même mix, en WAV et en MP3.
@@ -782,7 +784,13 @@ mod mp3_tests {
 
         let skip = BOUNCE_SAMPLE_RATE as usize;
         let take = BOUNCE_SAMPLE_RATE as usize;
-        let cut = |data: &[f32]| data.iter().skip(skip).take(take).copied().collect::<Vec<_>>();
+        let cut = |data: &[f32]| {
+            data.iter()
+                .skip(skip)
+                .take(take)
+                .copied()
+                .collect::<Vec<_>>()
+        };
         let (wav_low, wav_high) = band_energies(&cut(&reference));
         let (mp3_low, mp3_high) = band_energies(&cut(&decoded));
 

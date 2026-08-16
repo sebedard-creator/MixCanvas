@@ -2053,8 +2053,11 @@ impl TimelineMixSource {
             return;
         }
 
-        self.meter_left_envelope =
-            vu_envelope(self.meter_left_envelope, self.meter_pending_left, self.meter_release);
+        self.meter_left_envelope = vu_envelope(
+            self.meter_left_envelope,
+            self.meter_pending_left,
+            self.meter_release,
+        );
         self.meter_right_envelope =
             vu_envelope(self.meter_right_envelope, sample.abs(), self.meter_release);
         if frame.is_multiple_of(METER_PUBLISH_FRAMES) {
@@ -3114,9 +3117,8 @@ fn duration_to_frame(duration: Duration, sample_rate: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        BiquadKind, BiquadState, COLOUR_AIR_DB, COLOUR_LOW_SHELF_DB,
-        COMPRESSOR_MAKEUP_GAIN, CachedTimeline,
-        ClipEqState, DELAY_TAIL_SECONDS, DUCK_DEPTH_DB, DUCK_FLOOR, EffectTails,
+        BiquadKind, BiquadState, COLOUR_AIR_DB, COLOUR_LOW_SHELF_DB, COMPRESSOR_MAKEUP_GAIN,
+        CachedTimeline, ClipEqState, DELAY_TAIL_SECONDS, DUCK_DEPTH_DB, DUCK_FLOOR, EffectTails,
         FALLBACK_OUTPUT_SAMPLE_RATE, FILTER_HIGH_PASS_CLOSED_HZ, FILTER_HIGH_PASS_OPEN_HZ,
         FILTER_LOW_PASS_CLOSED_HZ, FILTER_Q, FLANGER_TAIL_SECONDS, FilterAutomation,
         FilterFramePoint, LaneAutomation, METER_PUBLISH_FRAMES, MasterColour, MasterCompressor,
@@ -3124,9 +3126,9 @@ mod tests {
         PanFramePoint, PlacedClip, REVERB_TAIL_SECONDS, SendAutomation, SidechainDucker,
         TimelineMixSource, TimelinePlaybackEngine, VolumeAutomation, VolumeFramePoint,
         WSOLA_MAX_SEARCH_FRAMES, best_wsola_offset, cubic_interpolate, equal_power_pan,
-        filter_cutoff_hz, filter_makeup_gain, playback_signature, prepare_timeline,
-        meter_release_coefficient, sidechain_pan_weight, smooth_crossfade,
-        stretch_duration_ratio, vu_envelope,
+        filter_cutoff_hz, filter_makeup_gain, meter_release_coefficient, playback_signature,
+        prepare_timeline, sidechain_pan_weight, smooth_crossfade, stretch_duration_ratio,
+        vu_envelope,
     };
     use crate::{
         tempo::{TempoMap, TempoPoint},
@@ -4175,8 +4177,14 @@ mod tests {
                 bitcrush_nodes: Vec::new(),
                 delay_nodes: Vec::new(),
             };
-            crate::audio::bounce_timeline(&plan, &rendu, crate::audio::BounceFormat::Wav, None, &mut |_| {})
-                .expect("le rendu devrait aboutir");
+            crate::audio::bounce_timeline(
+                &plan,
+                &rendu,
+                crate::audio::BounceFormat::Wav,
+                None,
+                &mut |_| {},
+            )
+            .expect("le rendu devrait aboutir");
 
             let decodeur = super::open_mp3_decoder(&rendu).expect("le rendu devrait se relire");
             let sortie: Vec<f32> = decodeur.collect();
@@ -4295,8 +4303,14 @@ mod tests {
             bitcrush_nodes: Vec::new(),
             delay_nodes: Vec::new(),
         };
-        crate::audio::bounce_timeline(&plan, &rendu, crate::audio::BounceFormat::Wav, None, &mut |_| {})
-            .expect("le rendu devrait aboutir");
+        crate::audio::bounce_timeline(
+            &plan,
+            &rendu,
+            crate::audio::BounceFormat::Wav,
+            None,
+            &mut |_| {},
+        )
+        .expect("le rendu devrait aboutir");
 
         let sortie: Vec<f32> = super::open_mp3_decoder(&rendu)
             .expect("le rendu devrait se relire")

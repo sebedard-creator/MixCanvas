@@ -1176,9 +1176,9 @@ impl LibraryStore {
         let mut shifted = first_beat_ms as f64 + f64::from(beats) * period_ms;
 
         /* Un temps en arrière depuis le tout début tomberait avant zéro, et un
-           temps en avant sur un morceau très court, après la fin. Une mesure
-           entière plus loin — ou plus tôt — marque exactement les mêmes temps
-           forts : c'est le même réglage, à une place valide. */
+        temps en avant sur un morceau très court, après la fin. Une mesure
+        entière plus loin — ou plus tôt — marque exactement les mêmes temps
+        forts : c'est le même réglage, à une place valide. */
         while shifted < 0.0 {
             shifted += bar_ms;
         }
@@ -2922,7 +2922,7 @@ mod tests {
         );
 
         /* Un temps en arrière depuis 300 ms tomberait à −200. Une mesure plus
-           loin marque les mêmes temps forts : 300 − 500 + 2000 = 1800. */
+        loin marque les mêmes temps forts : 300 − 500 + 2000 = 1800. */
         let wrapped = store
             .shift_downbeat(id, -1)
             .and_then(|_| store.shift_downbeat(id, -1))
@@ -2930,7 +2930,10 @@ mod tests {
         let first = wrapped[0]
             .first_beat_ms
             .expect("the wrapped grid keeps a downbeat");
-        assert!(first > 0, "la grille ne peut pas commencer avant le morceau");
+        assert!(
+            first > 0,
+            "la grille ne peut pas commencer avant le morceau"
+        );
         assert_eq!(
             (first as i64 - 300).rem_euclid(500),
             0,

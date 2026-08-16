@@ -12,51 +12,27 @@ wrote it. What changed, and what it means when you sit down to build a mix.
 
 ---
 
-## 1.6.0 — Unreleased
+## 1.6.0 — 2026-08-16
 
 ### Fixed
 
-- **Zooming no longer exposes the original large mismatched frame.**
-  The live transport could receive the new zoom geometry while React was still
-  committing clips and waveforms drawn with the previous one. The zoom scale
-  and its virtualized viewport anchor now commit as one visual transaction,
-  and the transport only sees geometry after its matching DOM has been
-  committed. This substantially reduces the original flash, but a much shorter
-  artifact is still visible in the heavy reference session. Disabling
-  compositor-thread scrolling, disabling partial raster, and pixel-buffering
-  the viewport produced no observable difference; those ineffective
-  experiments were removed rather than becoming permanent complexity. The
-  remaining artifact is tracked as unresolved pending frame-by-frame evidence.
-  Inspection of the actual heavy portable session then found the useful load:
-  20 clips, 4,198 filter samples, and 327,441 referenced waveform buckets.
-  Filter samples are now sorted only when their musical data changes; their
-  exact visible samples remain in the path so drawing retains its characteristic
-  right-triangle ramps. Visible waveform slices are now cached
-  as Canvas bitmaps built from the same min/max and RMS buckets. When a zoom
-  step keeps the same pyramid level and source bucket range, it only resizes the
-  cached image instead of making WebView2 retessellate four long SVG paths per
-  clip. These changes preserve the displayed envelope while removing substantial
-  synchronous and compositor work from each zoom step. A per-pixel filter-path
-  reduction tried in RC3 was removed after it visibly altered filter drawing.
-  Holding `R` or `T` exposes the residual frame continuously because every key
-  repeat commits another complete geometry. RC5 tested whether the project-wide
-  filter SVG was responsible by replacing it with a viewport Canvas. It neither
-  improved the flash nor preserved the filter appearance, so the experiment was
-  completely removed and RC4's exact SVG rendering restored. This negative
-  result moves the remaining investigation from drawing primitives to global
-  geometry publication.
-  RC6 carried one temporary A/B probe: plain `R/T` zoomed and recentred, while
-  `Shift+R/T` committed the same geometry without writing native `scrollLeft`.
-  Both produced the same artifact, clearing native scrolling and identifying
-  the global geometry commit as the remaining boundary. The probe is removed.
-  RC7 then tried a bounded FLIP handoff with `scaleX`; it made the artifact more
-  visible by adding another software-composited texture, so it too is completely
-  removed. The exact RC4 DOM and SVG path is restored. The remaining scheduling
-  flaw is narrower: the heavy geometry commit ran inside `requestAnimationFrame`,
-  immediately before Chromium's paint phase. The rAF queue now only batches
-  input and posts the atomic commit as the first task after the previous frame
-  has had a chance to present. This gives layout and raster almost a complete
-  refresh interval without changing any visual primitive or project data.
+- **Zooming keeps the timeline in one piece.** Past the first few minutes of a
+  long mix, a zoom step could leave the clips, waveforms and automation sitting
+  at a different position than the grid and the playhead — barely a jitter near
+  the start, unwatchable an hour in. The view was being placed by writing a
+  scroll position, and a browser silently trims that request to the width it
+  currently believes the content has. Right after a zoom, that belief is one
+  step out of date, so the timeline landed at the previous step's limit instead
+  of where it was asked to go. The further along the mix, the wider the gap.
+  The visible surface is now positioned directly rather than requested, which
+  has no such dependency: every element lands on the same beat at every zoom
+  level. Getting there also removed a real amount of work from each step —
+  filter samples are sorted only when their musical data changes, and a clip's
+  visible waveform is cached as a bitmap that a zoom step resizes instead of
+  making the browser retessellate four long paths per clip.
+
+  A single blank frame can still appear as the timeline redraws at the new
+  scale. Hardware rendering, now the default, makes it far less noticeable.
 
 - **Waveforms line up with the sound when you zoom right out.** A clip's
   waveform was drawn into a width sixteen pixels narrower than the clip itself,
@@ -67,10 +43,38 @@ wrote it. What changed, and what it means when you sit down to build a mix.
   the clip exactly. The eight-pixel inset it used to have was cosmetic, and
   horizontal space is time.
 
+### Changed
+
+- **`COMP` colours with a lighter hand.** Its console tilt was two shelves of
+  +2 dB, one under 90 Hz and one over 10 kHz. A shelf keeps climbing to the
+  edge of hearing and never comes back down, so the top one was lifting
+  everything above 10 kHz by the same two decibels — cymbals, sibilance and
+  hiss together. Checked on other systems, the smile was too wide at both ends.
+  The low shelf is now +1.5 dB, and the top is a bell centred at 13 kHz worth
+  +1.0 dB: it opens, and it closes. From 18 kHz up the curve is flat, because
+  nobody in the room hears what is up there and the encoder should not spend
+  bits on it. Measured against the old curve: −0.5 dB at 50 Hz, −1.0 dB at
+  10 kHz, −1.6 dB at 16 kHz, −2.0 dB from 18 kHz up. Nothing changes when
+  `COMP` is off.
+- **The portable build now draws with the GPU by default.** Software drawing
+  had that job since July, because WebView2's hardware compositor tore the
+  picture during a zoom on some drivers. Fixing the zoom geometry changed what
+  was left to see: with everything finally in step, the remaining fault was a
+  blank frame while the processor repainted a long surface by itself — and the
+  graphics card does that without breaking a sweat. Retested on a one-hour mix,
+  the tearing did not come back and the GPU was plainly the better of the two.
+  The other two modes are still one launch flag away, because this kind of
+  fault belongs to the driver more than to the program: start with `--no-gpu`
+  for the old software behaviour, or `--gpu-safe` for hardware drawing with
+  software compositing.
+
 ### Added
 
 - **A mastering limiter on the bounce.** `BOUNCE MIX` now opens a short dialog
-  with a **Master limiter** you can arm. It is a different instrument from the
+  with a **Mastering Limiter**, armed unless you turn it off — a mix rendered
+  without one is quieter than everything it will be played next to, and that is
+  the kind of fault nobody notices, because it does not make a noise, it makes
+  less of one. It is a different instrument from the
   one on the transport: that one is a safeguard for listening, two milliseconds
   of attack and a hard clamp at the end. This one looks three milliseconds
   ahead, so the gain is already down when the peak arrives — nothing gets past

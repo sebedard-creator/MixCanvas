@@ -24,10 +24,11 @@ you want, and keep editing while the timeline plays.
 - Local audio processing in 32-bit floating point.
 - No subscriptions, no telemetry, and no network connection required.
 
-![MixCanvas Timeline: three stereo tracks, tempo curve, automation, waveforms, and Library](assets/screenshots/timeline.png)
+![MixCanvas: the console with transport, VU meters and Mix FX pads above three stereo tracks carrying clips, waveforms, tempo targets and automation, with the Library on the right](assets/screenshots/timeline.png)
 
-*The full mix at a glance: musical timeline, visual transitions, live transport,
-and Library in one workspace.*
+*The whole mix at a glance: console across the top, three lanes of clips,
+waveforms and automation below, Library on the right. A fifty-eight minute set,
+all of it editable while it plays.*
 
 ## Core workflow
 
@@ -107,12 +108,11 @@ written onto the timeline as automation you can keep, undo, or replay over.
 Nothing to open and nothing to put away.
 
 <p align="center">
-  <img src="assets/screenshots/mix-fx.png" width="310"
-       alt="The Mix FX pads in the console: reverb, flange, crush, delay, and eraser on tracks A, B, and C, with reverb and delay lit on A, flange on B, and crush on C">
+  <img src="assets/screenshots/mix-fx.png" width="344"
+       alt="The Mix FX bay: rows for tracks A, B, and C, each with reverb, flange, crush, delay, and eraser pads. Delay is lit orange on A and reverb lit purple on B.">
   <br>
   <em>Five pads per track, in the console beside the transport. A pad lights
-  while its effect is sounding — here reverb and delay on A, flange on B,
-  crush on C.</em>
+  while its effect is sounding — here delay on A and reverb on B.</em>
 </p>
 
 - **Reverb** — a shared room. Bright and generous, sitting well behind the
@@ -170,15 +170,23 @@ Nothing to open and nothing to put away.
 
 ## Save and export
 
+<p align="center">
+  <img src="assets/screenshots/bounce.png" width="512"
+       alt="The Bounce the mix dialog: WAV and MP3 format cards, an armed Mastering Limiter with threshold, ceiling, and release fields, auto release, and a line reading Lifts the mix by 2.7 dB, then holds it under -1.0 dB.">
+  <br>
+  <em>One dialog before the render: pick the format, and the limiter tells you
+  what it is about to do before it does it.</em>
+</p>
+
 - Save and load portable .mixcanvas projects.
 - Bounce the complete mix to 16-bit / 44.1 kHz stereo WAV with dither, or to
   44.1 kHz CBR 320 kbps stereo MP3 encoded with LAME at its most thorough
   setting. The mix reaches the encoder in floating point, so an MP3 is never
   built from an already-quantised file.
-- **A mastering limiter you can arm on the bounce.** A brickwall with
+- **A mastering limiter on the bounce, armed by default.** A brickwall with
   look-ahead: it sees the peak coming and has already lowered the gain when it
   arrives, so nothing gets past the ceiling and transients are limited rather
-  than clipped. Lowering the threshold lifts the whole mix to the ceiling, and
+  than clipped. Uncheck it if you master the file elsewhere. Lowering the threshold lifts the whole mix to the ceiling, and
   the dialog says by how many decibels. Its release can follow the programme —
   quick after a lone peak, slow through a dense passage. Arming it renders
   without the playback safeguard, which would otherwise clip the transients
@@ -206,15 +214,18 @@ If it has been removed or is unavailable, install the
 [WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/).
 You do not need to install or use the Microsoft Edge browser itself.
 
-The portable build uses software drawing by default for visual stability on
-Windows systems where WebView2 GPU compositing can show artifacts. Audio remains
-native Rust processing in every render mode. Advanced launch flags are available:
+The portable build draws with the GPU by default. Software drawing held that
+place until 1.6, because WebView2's hardware compositor tore the picture during
+a zoom on some drivers; measured again on a one-hour mix, the tearing was gone
+and the GPU was plainly the better of the two. If your driver disagrees, the
+other two modes are a launch flag away. Audio is native Rust processing in every
+render mode.
 
 | Flag | Render mode |
 |---|---|
-| *(none)* or --no-gpu | software rendering (default) |
+| *(none)* or --gpu | full GPU rendering (default) |
 | --gpu-safe | GPU drawing with software compositing |
-| --gpu | full GPU rendering |
+| --no-gpu | software rendering |
 
 ## Build from source
 

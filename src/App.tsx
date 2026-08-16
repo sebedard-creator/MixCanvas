@@ -453,7 +453,9 @@ function App() {
              arrivent, sinon on les verrait se réordonner sous les yeux. */
           setLibrarySort(parseLibrarySort(preferences[LIBRARY_SORT_PREFERENCE]));
           setMastering(parseMasteringSettings(preferences[MASTERING_PREFERENCE]));
-          setMasteringEnabled(preferences[MASTERING_ENABLED_PREFERENCE] === "1");
+          /* Armé sauf refus explicite : une préférence absente est celle de
+             quelqu'un qui n'a jamais ouvert la boîte. */
+          setMasteringEnabled(preferences[MASTERING_ENABLED_PREFERENCE] !== "0");
           setBounceFormat(parseBounceFormat(preferences[BOUNCE_FORMAT_PREFERENCE]));
           setLibrary(tracks);
           setTimeline(timelineSnapshot);
@@ -864,8 +866,13 @@ function App() {
    * décision qu'on reprend à zéro à chaque rendu. Mais il reste montré avant
    * chaque bounce, parce qu'appliquer trois décibels de gain sans le savoir
    * serait pire que de retaper les chiffres.
+   *
+   * Armé par défaut. Un mix sorti sans limiteur est plus faible que tout ce
+   * à côté de quoi il sera écouté, et c'est le défaut qu'on ne remarque pas :
+   * il ne fait pas de bruit, il en fait moins. Le décocher est un geste
+   * délibéré, pour qui masterise ailleurs.
    */
-  const [masteringEnabled, setMasteringEnabled] = useState(false);
+  const [masteringEnabled, setMasteringEnabled] = useState(true);
   const [mastering, setMastering] = useState<MasteringSettings>(DEFAULT_MASTERING_SETTINGS);
   const [bounceOptionsOpen, setBounceOptionsOpen] = useState(false);
   const [bounceFormat, setBounceFormat] = useState<BounceFormat>(DEFAULT_BOUNCE_FORMAT);
@@ -1925,10 +1932,11 @@ function App() {
                 onChange={(event) => setMasteringEnabled(event.target.checked)}
               />
               <span>
-                <strong>Master limiter</strong>
+                <strong>Mastering Limiter</strong>
                 <em>
-                  A brickwall with look-ahead, in place of the engine&apos;s safeguard.
-                  Nothing gets past the ceiling.
+                  Brings the mix up to full level and keeps every peak under the
+                  ceiling. Leave it on unless you are mastering the file
+                  elsewhere.
                 </em>
               </span>
             </label>

@@ -256,7 +256,13 @@ async fn bounce_mix(
             // minutes : au pire la barre cesse d'avancer.
             let _ = app.emit("bounce-progress", fraction);
         };
-        bounce_timeline(&plan, std::path::Path::new(&path), format, mastering, &mut report)
+        bounce_timeline(
+            &plan,
+            std::path::Path::new(&path),
+            format,
+            mastering,
+            &mut report,
+        )
     })
     .await
     .map_err(|error| format!("The bounce was interrupted: {error}"))?
@@ -1957,15 +1963,26 @@ fn unpacked_resources_folder(app: &tauri::AppHandle) -> Option<PathBuf> {
 /// permet de comparer sans reconstruire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RenderMode {
-    /// Tout en logiciel. Le défaut : correct sur n'importe quel pilote, et
-    /// l'interface est du DOM en deux dimensions — le vrai travail (décodage,
-    /// analyse, DSP) est en Rust et n'y touche pas.
+    /// Tout en logiciel. Correct sur n'importe quel pilote, et l'interface est
+    /// du DOM en deux dimensions — le vrai travail (décodage, analyse, DSP)
+    /// est en Rust et n'y touche pas.
+    ///
+    /// Ce fut le défaut de juillet 2026 à la 1.6, parce que le compositeur
+    /// matériel de WebView2 déchirait l'image pendant un zoom sur certains
+    /// pilotes. C'est la porte de sortie si cela réapparaît : `--no-gpu`.
     Software,
     /// Rastérisation matérielle, composition logicielle. L'entre-deux qui
     /// corrige le plus souvent cette famille d'artefacts sans rendre la carte
     /// inutile; à essayer avant de conclure que le GPU est perdu.
     Hybrid,
-    /// Accélération complète, pour une machine dont le pilote se tient bien.
+    /// Accélération complète. **Le défaut depuis la 1.6.**
+    ///
+    /// Le zoom d'un long mix laisse une image blanche en rendu logiciel, le
+    /// temps que le processeur repeigne une surface que rien ne l'aide à
+    /// couvrir. Mesuré à l'usage sur une session d'une heure : nettement mieux
+    /// avec le GPU, et sans le déchirement qui avait fait fuir l'accélération
+    /// en juillet. Le compromis a changé de sens; les deux autres modes
+    /// restent à un drapeau de distance.
     Hardware,
 }
 
@@ -1978,7 +1995,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let mut mode = RenderMode::Software;
+    let mut mode = RenderMode::Hardware;
     for argument in arguments {
         match argument.as_ref() {
             "--gpu" => mode = RenderMode::Hardware,
@@ -2256,19 +2273,27 @@ mod render_mode_tests {
         RenderMode, browser_arguments_for, merge_browser_arguments, render_mode_from_args,
     };
 
-    /// Sans rien demander, on peint en logiciel : correct sur n'importe quel
-    /// pilote, et c'est le seul défaut qui ne peut pas rendre l'outil
-    /// inutilisable sur la machine de quelqu'un d'autre.
+    /// Sans rien demander, on peint avec le GPU.
+    ///
+    /// Le logiciel a tenu ce rôle de juillet 2026 à la 1.6, parce que le
+    /// compositeur matériel déchirait l'image au zoom sur certains pilotes.
+    /// Le compromis a changé de sens : sur un mix d'une heure, le rendu
+    /// logiciel laisse une image blanche à chaque cran de zoom, et le
+    /// déchirement, lui, n'a pas reparu. Les deux autres modes restent à un
+    /// drapeau de distance — `--no-gpu` est la porte de sortie.
     #[test]
-    fn software_is_what_you_get_without_asking() {
+    fn hardware_is_what_you_get_without_asking() {
         assert_eq!(
             render_mode_from_args::<[&str; 0], &str>([]),
-            RenderMode::Software
+            RenderMode::Hardware
         );
         assert_eq!(
             render_mode_from_args(["--some-other-flag"]),
-            RenderMode::Software
+            RenderMode::Hardware
         );
+        assert_eq!(browser_arguments_for(RenderMode::Hardware), "");
+        // La porte de sortie doit rester ouverte.
+        assert_eq!(render_mode_from_args(["--no-gpu"]), RenderMode::Software);
         assert_eq!(browser_arguments_for(RenderMode::Software), "--disable-gpu");
     }
 

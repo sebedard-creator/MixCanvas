@@ -138,8 +138,9 @@ pub struct MasteringLimiter {
 impl MasteringLimiter {
     pub fn new(settings: MasteringSettings, sample_rate: u32, channels: usize) -> Self {
         let channels = channels.clamp(1, MAX_CHANNELS);
-        let lookahead_frames =
-            ((LOOKAHEAD_MS / 1_000.0) * sample_rate as f32).round().max(1.0) as usize;
+        let lookahead_frames = ((LOOKAHEAD_MS / 1_000.0) * sample_rate as f32)
+            .round()
+            .max(1.0) as usize;
         let ceiling = from_decibels(settings.ceiling_db.min(0.0));
         // Le seuil **remonte** le niveau jusqu'au plafond, comme sur les
         // limiteurs de mastering dont il porte le nom : descendre le seuil de
@@ -153,11 +154,11 @@ impl MasteringLimiter {
             write: 0,
             lookahead_frames,
             /* `+ 1`, et il compte. L'image qui sort à l'instant `n` est
-               celle entrée en `n − L`; une fenêtre de `L` ne couvrirait que
-               `n − L + 1 .. n`, c'est-à-dire tout ce qui la suit **sauf
-               elle-même**. Une crête isolée suivie de silence échappait ainsi
-               à sa propre exigence et sortait deux millièmes de décibel
-               au-dessus du plafond. */
+            celle entrée en `n − L`; une fenêtre de `L` ne couvrirait que
+            `n − L + 1 .. n`, c'est-à-dire tout ce qui la suit **sauf
+            elle-même**. Une crête isolée suivie de silence échappait ainsi
+            à sa propre exigence et sortait deux millièmes de décibel
+            au-dessus du plafond. */
             required: SlidingMinimum::new(lookahead_frames + 1),
             makeup,
             ceiling,
@@ -224,8 +225,7 @@ impl MasteringLimiter {
     /// ce qui vient.
     fn advance_gain(&mut self, target: f32) {
         let depth = 1.0 - target;
-        self.sensed_depth =
-            depth + self.sense_coefficient * (self.sensed_depth - depth);
+        self.sensed_depth = depth + self.sense_coefficient * (self.sensed_depth - depth);
 
         if target < self.gain {
             self.gain = target;

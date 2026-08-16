@@ -1,8 +1,8 @@
-pub mod mastering;
 mod bitcrush;
 mod bounce;
 mod delay;
 mod flanger;
+pub mod mastering;
 mod metadata;
 mod preview;
 mod reverb;
