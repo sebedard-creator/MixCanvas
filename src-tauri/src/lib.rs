@@ -1381,6 +1381,105 @@ fn save_clip_eq(
     Ok(snapshot)
 }
 
+/// Duplique un clip là où la copie ne détruit rien.
+///
+/// Passe par le rafraîchissement du plan vivant comme une découpe : un clip de
+/// plus doit s'entendre sans qu'on arrête la lecture.
+/// Règle de combien une boucle déborde de son motif.
+#[tauri::command]
+fn set_timeline_clip_loop_extent(
+    clip_id: i64,
+    lead_beats: f64,
+    tail_beats: f64,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::set_clip_loop_extent(connection, clip_id, lead_beats, tail_beats)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+/// Rend un clip bouclable, ou lui retire cette propriété.
+///
+/// Le plan vivant est reconstruit parce que la boucle s'y déplie en clips de
+/// rendu : allumer l'état ne change rien à ce qu'on entend tant qu'aucune
+/// poignée n'a été tirée, mais éteindre en pleine boucle doit faire taire les
+/// tours sur-le-champ.
+#[tauri::command]
+fn set_timeline_clip_looping(
+    clip_id: i64,
+    looping: bool,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::set_clip_looping(connection, clip_id, looping)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+/// Coupe ou rétablit un clip.
+///
+/// Passe par le rafraîchissement du plan vivant : couper doit s'entendre sans
+/// qu'on arrête la lecture, ce qui est le seul moment où on s'en sert.
+#[tauri::command]
+fn set_timeline_clip_muted(
+    clip_id: i64,
+    muted: bool,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::set_clip_muted(connection, clip_id, muted)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn duplicate_timeline_clip(
+    clip_id: i64,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::duplicate_clip(connection, clip_id)
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
 #[tauri::command]
 fn split_timeline_clip(
     clip_id: i64,
@@ -2191,6 +2290,10 @@ pub fn run() {
             clear_timeline_filter_range,
             save_clip_eq,
             split_timeline_clip,
+            duplicate_timeline_clip,
+            set_timeline_clip_muted,
+            set_timeline_clip_looping,
+            set_timeline_clip_loop_extent,
             clear_timeline,
             clear_library_and_timeline,
             restore_timeline_snapshot,

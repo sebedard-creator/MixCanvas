@@ -169,3 +169,59 @@ describe("volumeDbAtBeat", () => {
     expect(volumeDbAtBeat([{ lane: 0, beat: 0, gainDb: null }], 0, 4)).toBe(VOLUME_FLOOR_DB);
   });
 });
+
+describe("la courbe de la moitié basse", () => {
+  /* Où tombe une position donnée de la course sous l'unité, en fraction. */
+  const dbAtTravel = (travel: number) => {
+    const top = volumeNodeY(0, 0);
+    const bottom = volumeNodeY(0, VOLUME_FLOOR_DB);
+    return volumeNodeGainDb(0, top + (bottom - top) * travel);
+  };
+
+  /* Le défaut rapporté : à mi-course on entendait −20 dB, c'est-à-dire un
+     dixième de l'amplitude, là où l'oreille attend « moitié moins fort ». */
+  it("donne à mi-course ce que donne un fader de console", () => {
+    expect(dbAtTravel(0.5)).toBeCloseTo(-10, 1);
+  });
+
+  /* L'autre moitié du même défaut : deux pixels sous l'unité valaient quatre
+     décibels, donc la retouche fine était impossible. */
+  it("laisse de la place au travail fin près de l'unité", () => {
+    expect(dbAtTravel(0.1)).toBeCloseTo(-0.4, 1);
+    expect(dbAtTravel(0.2)).toBeCloseTo(-1.6, 1);
+  });
+
+  /* Et le dernier quart cesse d'être perdu : il couvre une vraie descente
+     plutôt que la zone où plus rien ne s'entend. */
+  it("réserve le dernier quart à la fin de la descente", () => {
+    expect(dbAtTravel(0.75)).toBeCloseTo(-22.5, 1);
+    expect(dbAtTravel(1)).toBe(null);
+  });
+
+  it("descend sans jamais remonter", () => {
+    let previous = 0;
+    for (let step = 1; step <= 40; step += 1) {
+      const db = dbAtTravel(step / 41) ?? VOLUME_FLOOR_DB;
+      expect(db).toBeLessThanOrEqual(previous);
+      previous = db;
+    }
+  });
+
+  /* Un cran d'unité, qui vient de l'affichage et non de la courbe : sous
+     l'unité la résolution est désormais plus fine que le dixième de décibel
+     montré à l'écran, si bien que les tout premiers pour cent lisent 0,0. Deux
+     pixels, et plutôt utiles : on peut revenir à l'unité sans viser. Ce qui
+     compte est que ça s'arrête là. */
+  it("ne garde qu'un cran d'unité de deux pour cent", () => {
+    expect(dbAtTravel(0.02)).toBe(-0);
+    expect(dbAtTravel(0.06)).toBeLessThanOrEqual(-0.1);
+  });
+
+  /* Les deux sens doivent rester d'accord au centième, sinon un nœud saisi
+     saute avant de suivre le pointeur — le défaut qui a fait naître ce module. */
+  it("fait l'aller-retour sur toute la course basse", () => {
+    for (const db of [-0.1, -1, -2.5, -6, -10, -18, -22.5, -30, -39.9]) {
+      expect(volumeNodeGainDb(0, volumeNodeY(0, db))).toBeCloseTo(db, 1);
+    }
+  });
+});

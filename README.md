@@ -66,6 +66,18 @@ audible, guided, and repeatable.*
   and a horizontal navigator.
 - Drag clips, trim either edge, split a clip, remove it, or undo/redo up to
   fifty edits.
+- Make a clip loopable with its `∞` key. Its two edges then repeat it instead
+  of trimming it: drag either one out and the pattern fills the space, on the
+  beat, as many times as it takes. The last turn stops where you let go rather
+  than at the next repeat. Turning looping off leaves the clip exactly as it
+  was.
+- Mute a single clip with its `M` key, without touching the two clips beside
+  it on the same track. Nothing is destroyed: its EQ, the automation drawn over
+  it and its bake stay put and come back untouched.
+- Right-click a clip to duplicate it, exactly as it is trimmed. The copy never
+  displaces anything: it goes to a free track at the same beats when there is
+  one, otherwise immediately beside the clip, and says so plainly when there is
+  no room.
 - Floating Mute and Solo controls per lane.
 - Global tempo map with draggable tempo targets. Between two targets the tempo
   moves in whole-beat steps rather than sliding continuously, so a tempo change
@@ -84,7 +96,10 @@ audible, guided, and repeatable.*
 
 MixCanvas lets you draw transitions directly where they happen.
 
-- Volume automation from −∞ dB to +12 dB.
+- Volume automation from −∞ dB to +12 dB, on a fader taper rather than a
+  ruler: half way down the lane is −10 dB, the way it is on a console, and the
+  decibel or two below unity where most of the work happens gets the room it
+  needs.
 - Pan automation with a constant-power pan law.
 - Smart Filter automation: draw high-pass or low-pass sweeps as visual curves,
   reshape them, and remove them with a right click.

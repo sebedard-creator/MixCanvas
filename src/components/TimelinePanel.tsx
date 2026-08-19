@@ -42,10 +42,14 @@ import { isClipEqActive } from "../lib/clipEq";
 import { canBeSidechainKey, clipsCoveredByKey } from "../lib/sidechainKey";
 import {
   clipTrimLimits,
+  clipWithLoop,
   clipWithTrim,
   minimumAnchorBeat,
+  loopForEdge,
+  loopTurns,
   trimEdgeAtPointer,
   trimForEdge,
+  type ClipLoop,
   type ClipTrim,
   type TrimEdge,
 } from "../lib/clipTrim";
@@ -267,6 +271,10 @@ interface TimelinePanelProps {
    * d'analyse, pas une décision de mix — mais le menu le dit.
    */
   onShiftClipDownbeat: (libraryTrackId: number, beats: number) => void;
+  onDuplicateClip: (clipId: number) => Promise<void>;
+  onSetClipMuted: (clipId: number, muted: boolean) => Promise<void>;
+  onSetClipLooping: (clipId: number, looping: boolean) => Promise<void>;
+  onSetClipLoopExtent: (clipId: number, leadBeats: number, tailBeats: number) => Promise<void>;
   onClearEffectRange: (
     effect: PlayedEffect | null,
     lane: number,
@@ -456,6 +464,10 @@ export function TimelinePanel({
   onLivePass,
   livePasses,
   onShiftClipDownbeat,
+  onDuplicateClip,
+  onSetClipMuted,
+  onSetClipLooping,
+  onSetClipLoopExtent,
   onClearEffectRange,
   selectedLane,
   onSelectLane,
@@ -603,12 +615,34 @@ export function TimelinePanel({
     return measured > 0 ? measured : CLIP_HEADING_FALLBACK_PX;
   };
   const [trimDrafts, setTrimDrafts] = useState<Record<number, ClipTrim>>({});
-  const activeTrim = useRef<{ clipId: number; edge: TrimEdge; trim: ClipTrim } | null>(null);
+  const [loopDrafts, setLoopDrafts] = useState<Record<number, ClipLoop>>({});
+
+  /**
+   * Le clip tel qu'il paraît à l'instant, brouillon de geste compris.
+   *
+   * Une poignée fait deux choses différentes selon l'état du clip : elle rogne,
+   * ou elle allonge la boucle. Tout ce qui lit la géométrie — la boîte
+   * dessinée, la waveform à l'intérieur, la détection du bord sous le pointeur
+   * — doit passer par ici, sinon deux vérités coexistent pendant le glissement
+   * et on voit la tranche se comprimer dans une boîte qui bouge.
+   */
+  const liveClip = useCallback(
+    (clip: TimelineClip): TimelineClip => (
+      clip.looping
+        ? clipWithLoop(clip, loopDrafts[clip.id])
+        : clipWithTrim(clip, trimDrafts[clip.id])
+    ),
+    [loopDrafts, trimDrafts],
+  );
+  const activeTrim = useRef<
+    { clipId: number; edge: TrimEdge; trim: ClipTrim; loop: ClipLoop } | null
+  >(null);
   const activeTempoPointDrag = useRef<ActiveTempoPointDrag | null>(null);
   const activeVolumeNode = useRef<number | null>(null);
   const activePanNode = useRef<number | null>(null);
   const activeFilterBubble = useRef<ActiveFilterBubble | null>(null);
   const timelineScroll = useRef<HTMLDivElement | null>(null);
+  const tempoPopover = useRef<HTMLDivElement | null>(null);
   const timelineTracks = useRef<HTMLDivElement | null>(null);
   const pendingZoomDelta = useRef(0);
   const zoomAnimationFrame = useRef<number | null>(null);
@@ -996,7 +1030,7 @@ export function TimelinePanel({
     const toBeat = (visibleContentFromPx + viewportWidth + marginPx) / pixelsPerBeat;
     return timeline.clips.filter((clip) => {
       const draft = clipDrafts[clip.id];
-      const trimmed = clipWithTrim(clip, trimDrafts[clip.id]);
+      const trimmed = liveClip(clip);
       const offset = draft ? draft.anchorBeat - clip.anchorBeat : 0;
       return trimmed.visualEndBeat + offset >= fromBeat && trimmed.visualStartBeat + offset <= toBeat;
     });
@@ -1005,7 +1039,7 @@ export function TimelinePanel({
     contentWidth,
     pixelsPerBeat,
     timeline.clips,
-    trimDrafts,
+    liveClip,
     visibleContentFromPx,
     viewportWidth,
   ]);
@@ -1409,7 +1443,7 @@ export function TimelinePanel({
     }
     const beat = pointerBeat(event.clientX);
     if (beat === null) return null;
-    return smartToolAt(clipWithTrim(clip, trimDrafts[clip.id]), {
+    return smartToolAt(liveClip(clip), {
       beat,
       offsetY: event.clientY - event.currentTarget.getBoundingClientRect().top,
       headingHeight: headingHeightOf(event.currentTarget),
@@ -1453,11 +1487,12 @@ export function TimelinePanel({
     if (busy || event.button !== 0) return false;
     const beat = pointerBeat(event.clientX);
     if (beat === null) return false;
-    const edge = trimEdgeAtPointer(clipWithTrim(clip, trimDrafts[clip.id]), beat, pixelsPerBeat);
+    const edge = trimEdgeAtPointer(liveClip(clip), beat, pixelsPerBeat);
     if (!edge) return false;
     event.currentTarget.setPointerCapture(event.pointerId);
     const trim = { trimStartBeats: clip.trimStartBeats, trimEndBeats: clip.trimEndBeats };
-    activeTrim.current = { clipId: clip.id, edge, trim };
+    const loop = { loopLeadBeats: clip.loopLeadBeats, loopTailBeats: clip.loopTailBeats };
+    activeTrim.current = { clipId: clip.id, edge, trim, loop };
     setHoveredTrim({ clipId: clip.id, edge });
     return true;
   };
@@ -1468,6 +1503,15 @@ export function TimelinePanel({
     const beat = pointerBeat(event.clientX);
     if (beat === null) return true;
     const limits = clipTrimLimits(timeline.clips, clip);
+    // Bouclable : la poignée allonge au lieu de rogner. C'est le seul endroit
+    // où les deux gestes se séparent — la prise du bord, sa surbrillance et le
+    // relâchement sont les mêmes.
+    if (clip.looping) {
+      const loop = loopForEdge(clip, drag.edge, beat, limits);
+      drag.loop = loop;
+      setLoopDrafts((current) => ({ ...current, [clip.id]: loop }));
+      return true;
+    }
     const trim = trimForEdge(clip, drag.edge, beat, limits);
     drag.trim = trim;
     setTrimDrafts((current) => ({ ...current, [clip.id]: trim }));
@@ -1478,6 +1522,13 @@ export function TimelinePanel({
     const drag = activeTrim.current;
     activeTrim.current = null;
     if (!drag || drag.clipId !== clip.id) return false;
+    if (clip.looping) {
+      const { loopLeadBeats, loopTailBeats } = drag.loop;
+      if (loopLeadBeats !== clip.loopLeadBeats || loopTailBeats !== clip.loopTailBeats) {
+        void onSetClipLoopExtent(clip.id, loopLeadBeats, loopTailBeats);
+      }
+      return true;
+    }
     const { trimStartBeats, trimEndBeats } = drag.trim;
     if (trimStartBeats !== clip.trimStartBeats || trimEndBeats !== clip.trimEndBeats) {
       void onTrimClip(clip.id, trimStartBeats, trimEndBeats);
@@ -1562,6 +1613,39 @@ export function TimelinePanel({
     const clip = timeline.clips.find((candidate) => candidate.id === nearest.clipId);
     if (clip) startTempoPointDrag(event, clip);
   };
+
+  /**
+   * La boîte de saisie reste dans la fenêtre.
+   *
+   * Elle est posée sur le nœud qu'elle règle et centrée dessus, ce qui est le
+   * bon endroit — sauf pour le premier clip du mix, dont le nœud est à quelques
+   * pixels du bord : la moitié gauche de la boîte sortait de l'écran et le
+   * champ devenait invisible. Le même défaut existe à l'autre bout.
+   *
+   * Le rattrapage se mesure en coordonnées d'écran plutôt qu'en temps, parce
+   * que le contenu est décalé par une transformation et bordé d'une demi-largeur
+   * de vide : refaire ce calcul ici donnerait une deuxième vérité à tenir
+   * d'accord avec la première. On repart de zéro à chaque ouverture, sinon le
+   * rattrapage précédent fausserait la mesure suivante.
+   */
+  useLayoutEffect(() => {
+    const popover = tempoPopover.current;
+    const viewport = timelineScroll.current;
+    if (!popover || !viewport) return;
+    popover.style.marginLeft = "0px";
+    const box = popover.getBoundingClientRect();
+    const frame = viewport.getBoundingClientRect();
+    const margin = 6;
+    let shift = 0;
+    if (box.left < frame.left + margin) {
+      shift = frame.left + margin - box.left;
+    } else if (box.right > frame.right - margin) {
+      shift = frame.right - margin - box.right;
+    }
+    if (shift !== 0) {
+      popover.style.marginLeft = `${shift}px`;
+    }
+  }, [tempoEdit?.clipId]);
 
   /**
    * Le clic droit sur la règle propose de **taper** le tempo du nœud le plus
@@ -2978,6 +3062,7 @@ export function TimelinePanel({
                  voit le chiffre qu'on change à l'endroit où on l'a lu. */
               <div
                 className="tempo-edit-popover"
+                ref={tempoPopover}
                 style={{ left: tempoEdit.x }}
                 onClick={(event) => event.stopPropagation()}
               >
@@ -3450,7 +3535,7 @@ export function TimelinePanel({
               const isAudible = laneState
                 ? !laneState.isMuted && (!anySolo || laneState.isSolo)
                 : true;
-              const live = clipWithTrim(clip, trimDrafts[clip.id]);
+              const live = liveClip(clip);
               const visualStartBeat = live.visualStartBeat + (draft ? draft.anchorBeat - clip.anchorBeat : 0);
               const liveDurationBeats = live.visualEndBeat - live.visualStartBeat;
               const clipWidth = Math.max(0, liveDurationBeats * pixelsPerBeat);
@@ -3566,7 +3651,8 @@ export function TimelinePanel({
                       event.stopPropagation();
                       setClipContextMenu({
                         clientX: Math.min(event.clientX, window.innerWidth - 205),
-                        clientY: Math.min(event.clientY, window.innerHeight - 126),
+                        // Quatre entrées depuis le duplicata, à 42 px pièce.
+                        clientY: Math.min(event.clientY, window.innerHeight - 168),
                         clipId: clip.id,
                         libraryTrackId: clip.libraryTrackId,
                         label: clipLabel,
@@ -3613,6 +3699,26 @@ export function TimelinePanel({
                           </button>
                         );
                       })}
+                      {/* Bouclable. Posée avant le sidechain, et dessinée en
+                          droites : le signe rond de l'infini aurait mis deux
+                          boucles à côté des deux anneaux de la chaîne. */}
+                      <button
+                        type="button"
+                        className={`clip-loop-btn${clip.looping ? " is-active" : ""}`}
+                        disabled={busy || clip.needsAnalysis}
+                        aria-pressed={clip.looping}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void onSetClipLooping(clip.id, !clip.looping);
+                        }}
+                        title={
+                          clip.looping
+                            ? "Looping — drag either edge to repeat it. Click to stop looping"
+                            : "Make this clip loopable: its edges repeat it instead of trimming it"
+                        }
+                      >
+                        <TransportGlyph name="loop" />
+                      </button>
                       <button
                         type="button"
                         className={`clip-key-btn${clip.isSidechainKey ? " is-active" : ""}`}
@@ -3664,6 +3770,23 @@ export function TimelinePanel({
                       >
                         {clip.bakeIsMissing ? "BAKE?" : "BAKE"}
                       </button>
+                      {/* Couper ce clip, et rien d'autre : le `MUTE` de la
+                          voie éteindrait ses voisins avec lui. Ce qui est
+                          dessiné dessus — automation, égalisation, cuisson —
+                          reste en place et revient tel quel. */}
+                      <button
+                        type="button"
+                        className={`clip-mute-btn${clip.muted ? " is-active" : ""}`}
+                        disabled={tempoEditingLocked}
+                        aria-pressed={clip.muted}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void onSetClipMuted(clip.id, !clip.muted);
+                        }}
+                        title={clip.muted ? "Muted — click to hear it again" : "Mute this clip"}
+                      >
+                        M
+                      </button>
                       <button
                         type="button"
                         className="clip-remove-btn"
@@ -3676,6 +3799,16 @@ export function TimelinePanel({
                       </button>
                     </div>
                   </div>
+                  {loopTurns(live, pixelsPerBeat).map((turn, index) => (
+                  <div
+                    key={turn.key}
+                    className={`clip-waveform-turn${index > 0 || turn.offsetPx > 0 ? " clip-waveform-turn--repeat" : ""}`}
+                    style={
+                      live.looping
+                        ? { left: turn.offsetPx, width: turn.widthPx }
+                        : undefined
+                    }
+                  >
                   <ClipWaveform
                     waveform={clip.waveform}
                     /* La pleine largeur du clip, sans encart.
@@ -3689,15 +3822,21 @@ export function TimelinePanel({
                         au zoom large, sur un clip de cent pixels, il valait
                         seize pour cent — plusieurs mesures d'avance à la fin,
                         et le son continuait après la fin du dessin. */
-                    displayWidth={Math.max(1, clipWidth)}
-                    trimStartBeats={live.trimStartBeats}
-                    trimEndBeats={live.trimEndBeats}
-                    durationBeats={liveDurationBeats}
+                    displayWidth={Math.max(1, turn.widthPx)}
+                    trimStartBeats={turn.trimStartBeats}
+                    trimEndBeats={turn.trimEndBeats}
+                    durationBeats={turn.durationBeats}
                     /* La fenêtre, ramenée dans les coordonnées du dessin.
-                       Elles sont désormais celles du clip, tout simplement. */
-                    visibleFromPx={visibleContentFromPx - visualStartBeat * pixelsPerBeat}
+                       Elles sont celles du tour, et non celles du clip : une
+                       boucle en compte plusieurs, chacun avec sa propre
+                       tranche de source à dessiner. */
+                    visibleFromPx={
+                      visibleContentFromPx - visualStartBeat * pixelsPerBeat - turn.offsetPx
+                    }
                     visibleWidthPx={viewportWidth}
                   />
+                  </div>
+                  ))}
                   <span
                     className="clip-anchor"
                     style={{ left: clip.preRollBeats * pixelsPerBeat }}
@@ -3851,6 +3990,22 @@ export function TimelinePanel({
           role="menu"
           onMouseLeave={() => setClipContextMenu(null)}
         >
+          {/* En tête du menu : c'est l'action qu'on vient chercher, les deux
+              corrections de grille en dessous étant rares. Le libellé ne promet
+              pas d'endroit — la place se trouve au moment du clic, et l'annoncer
+              obligerait à recalculer la géométrie ici pour l'écrire. */}
+          <button
+            type="button"
+            role="menuitem"
+            disabled={busy}
+            title="Copies the clip as it is trimmed, onto a free track or beside itself"
+            onClick={() => {
+              void onDuplicateClip(clipContextMenu.clipId);
+              setClipContextMenu(null);
+            }}
+          >
+            Duplicate {clipContextMenu.label}
+          </button>
           <button
             type="button"
             role="menuitem"

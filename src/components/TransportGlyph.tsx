@@ -28,6 +28,7 @@ export type TransportGlyphName =
   | "draw-sine"
   | "draw-triangle"
   | "sidechain"
+  | "loop"
   | "autoplay"
   | "fx-reverb"
   | "fx-flanger"
@@ -118,13 +119,21 @@ export function TransportGlyph({ name }: { name: TransportGlyphName }) {
           <path {...STROKE} d="M10 5.5V6.5" opacity={0.25} />
         </>
       )}
-      {/* La gomme d'écolier : un bloc incliné, sa bande plus épaisse d'un
-          côté. La même forme que celle qu'elle remplace en CSS. */}
+      {/* La gomme, saisie en plein passage.
+          À quarante-cinq degrés pile, la facette d'usure du coin qui frotte
+          tombe horizontale : elle se lit comme une usure et non comme un raté
+          de tracé. C'est aussi ce qui distingue ce dessin d'un rectangle
+          simplement pivoté — un `rect` tourné ne peut pas avoir un seul coin
+          rogné, il faut poser les cinq sommets.
+          Le trait de la feuille dit le sens du geste : intact devant elle,
+          effacé derrière. */}
       {name === "fx-eraser" && (
-        <g transform="rotate(-32 6 6)">
-          <rect {...STROKE} x="1.8" y="4.2" width="8.4" height="3.6" rx="0.7" />
-          <path {...STROKE} d="M4.9 4.2V7.8" />
-        </g>
+        <>
+          <path {...STROKE} d="M5.85 9.5 8.96 6.39 6.41 3.84 2.45 7.8 4.15 9.5Z" />
+          <path {...STROKE} d="M6.77 8.58 4.22 6.03" />
+          <path {...STROKE} d="M1.3 10h2.3" opacity={0.28} />
+          <path {...STROKE} d="M6.5 10h4.2" />
+        </>
       )}
       {name === "pause" && (
         <>
@@ -194,6 +203,22 @@ export function TransportGlyph({ name }: { name: TransportGlyphName }) {
             d="M6.9 5.1a2.3 2.3 0 0 0-3.45-.25L2.1 6.2a2.3 2.3 0 0 0 3.25 3.25l.75-.75"
           />
         </>
+      )}
+      {/* L'infini, en segments droits.
+          Le signe rond aurait posé deux boucles à côté des deux anneaux du
+          sidechain, sa voisine immédiate dans la barre du clip : à douze
+          pixels, deux paires de ronds ne se distinguent pas. Le même nœud
+          construit en droites garde le sens et perd la ressemblance.
+
+          Trait de 1,1 et non 1,4, comme la chaîne : les deux touches se
+          touchent, et une différence d'épaisseur entre voisines se voit plus
+          qu'elle ne se justifie. */}
+      {name === "loop" && (
+        <path
+          {...STROKE}
+          strokeWidth={1.1}
+          d="M6 6 7.6 4.3h2.2v3.4H7.6L4.4 4.3H2.2v3.4h2.2Z"
+        />
       )}
       {name === "busy" && (
         <>

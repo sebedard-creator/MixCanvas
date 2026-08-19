@@ -38,6 +38,15 @@ interface LibraryPanelProps {
   sort: LibrarySort;
   onSortChange: (update: (current: LibrarySort) => LibrarySort) => void;
   libraryBusy: boolean;
+  /**
+   * Pourquoi les deux touches du haut sont éteintes, en une phrase.
+   *
+   * `libraryBusy` fond plusieurs empêchements en un seul booléen, dont la
+   * lecture en cours. La touche portait « Importing… » pour tous : pendant un
+   * mix, elle annonçait un import qui n'existait pas. Le libellé ne bouge plus,
+   * et la raison — la vraie — passe par l'infobulle.
+   */
+  libraryBusyReason: string | null;
   analysisBusy: boolean;
   timelineAddBusy: boolean;
   /** Le rang de chaque morceau dans l'ordre où la timeline le fait entendre. */
@@ -77,6 +86,7 @@ export function LibraryPanel({
   sort,
   onSortChange,
   libraryBusy,
+  libraryBusyReason,
   analysisBusy,
   timelineAddBusy,
   timelineTrackOrder,
@@ -220,11 +230,23 @@ export function LibraryPanel({
           <h2 id="library-title">LIBRARY</h2>
           <span className="track-count">{tracks.length}</span>
           <div className="library-actions">
-            <button className="secondary-button" type="button" onClick={onAddFolder} disabled={libraryBusy || analysisBusy}>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={onAddFolder}
+              disabled={libraryBusy || analysisBusy}
+              title={libraryBusyReason ?? undefined}
+            >
               Add Folder
             </button>
-            <button className="primary-button" type="button" onClick={onAddFiles} disabled={libraryBusy || analysisBusy}>
-              {libraryBusy ? "Importing…" : "+ MP3"}
+            <button
+              className="primary-button"
+              type="button"
+              onClick={onAddFiles}
+              disabled={libraryBusy || analysisBusy}
+              title={libraryBusyReason ?? undefined}
+            >
+              + MP3
             </button>
           </div>
         </div>

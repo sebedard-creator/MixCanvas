@@ -414,11 +414,56 @@ function App() {
     return () => window.removeEventListener("keydown", handleUndoRedoShortcuts);
   }, [handleUndo, handleRedo]);
 
+  /**
+   * L'état de la timeline avant qu'on ouvre l'EQ, gardé pour l'annulation.
+   *
+   * Un réglage d'EQ est **un** geste, du premier curseur touché à la fermeture
+   * de la fenêtre. L'historique doit en garder une entrée, pas une par palier.
+   */
+  const clipEqUndoBase = useRef<TimelineSnapshot | null>(null);
+
+  /**
+   * La sauvegarde vivante, qui ne passe pas par React.
+   *
+   * Elle ne sert qu'à une chose : que le moteur entende le réglage pendant
+   * qu'on le fait. Elle passait par `runTimelineEdit`, donc par un
+   * `setTimeline` qui re-rend `TimelinePanel` en entier — le composant le plus
+   * cher de l'application — et par un `push` dans l'historique. Toutes les deux
+   * cents millisecondes pendant qu'on tire un curseur : le curseur saccadait à
+   * ce rythme-là, et trois secondes de réglage effaçaient quinze niveaux
+   * d'annulation.
+   *
+   * Rien de tout cela n'était nécessaire. La fenêtre couvre la timeline, et la
+   * seule chose que le réglage y change est un point à côté du mot EQ. La
+   * timeline est donc relue une seule fois, à la fermeture, avec l'entrée
+   * d'historique qui va avec.
+   */
   const saveClipEq = useCallback(async (clipId: number, eqSettings: ClipEqSettings) => {
-    await runTimelineEdit(() =>
-      invoke<TimelineSnapshot>("save_clip_eq", { clipId, eqSettings }),
-    );
-  }, [runTimelineEdit]);
+    if (clipEqUndoBase.current === null) {
+      clipEqUndoBase.current = timelineRef.current;
+    }
+    try {
+      await invoke<TimelineSnapshot>("save_clip_eq", { clipId, eqSettings });
+    } catch (eqError) {
+      setError(errorMessage(eqError));
+    }
+  }, []);
+
+  /** Ferme l'EQ : une seule lecture, une seule entrée d'historique. */
+  const finishClipEq = useCallback(async () => {
+    const base = clipEqUndoBase.current;
+    clipEqUndoBase.current = null;
+    setEditingClipEq(null);
+    if (base === null) return;
+    try {
+      const snapshot = await invoke<TimelineSnapshot>("timeline_snapshot");
+      history.current.push(base);
+      syncHistoryFlags();
+      setTimeline(snapshot);
+    } catch (eqError) {
+      setError(errorMessage(eqError));
+    }
+  }, [syncHistoryFlags]);
 
   const refreshTimeline = useCallback(async () => {
     const snapshot = await invoke<TimelineSnapshot>("timeline_snapshot");
@@ -1401,6 +1446,31 @@ function App() {
    * le clip pendant un moment, et les distinguer n'apprendrait rien à qui
    * attend. Défaire est instantané et ne mérite pas de barre.
    */
+  const setClipLooping = useCallback(async (clipId: number, looping: boolean) => {
+    await runTimelineEdit(
+      () => invoke<TimelineSnapshot>("set_timeline_clip_looping", { clipId, looping }),
+    );
+  }, [runTimelineEdit]);
+
+  const setClipLoopExtent = useCallback(
+    async (clipId: number, leadBeats: number, tailBeats: number) => {
+      await runTimelineEdit(
+        () => invoke<TimelineSnapshot>("set_timeline_clip_loop_extent", {
+          clipId,
+          leadBeats,
+          tailBeats,
+        }),
+      );
+    },
+    [runTimelineEdit],
+  );
+
+  const setClipMuted = useCallback(async (clipId: number, muted: boolean) => {
+    await runTimelineEdit(
+      () => invoke<TimelineSnapshot>("set_timeline_clip_muted", { clipId, muted }),
+    );
+  }, [runTimelineEdit]);
+
   const setClipBaked = useCallback(async (clipId: number, baked: boolean) => {
     if (!baked) {
       await runTimelineEdit(() => invoke<TimelineSnapshot>("unbake_clip", { clipId }));
@@ -1522,6 +1592,25 @@ function App() {
   // Declared before the keyboard effect that reads it: a `const` referenced
   // from a dependency array is evaluated during render, not after it.
   const editingTrack = library.find((track) => track.id === editingTrackId) ?? null;
+
+  /**
+   * Duplique un clip sans rien écraser.
+   *
+   * Le placement est décidé côté Rust, qui est le seul à connaître la géométrie
+   * de tous les clips : la refaire ici donnerait deux règles à tenir d'accord.
+   * L'échec est un message, pas un silence — un duplicata qui n'apparaît nulle
+   * part se lit comme une panne.
+   */
+  const duplicateTimelineClip = useCallback(async (clipId: number) => {
+    setTimelineBusy(true);
+    try {
+      await runTimelineEdit(
+        () => invoke<TimelineSnapshot>("duplicate_timeline_clip", { clipId }),
+      );
+    } finally {
+      setTimelineBusy(false);
+    }
+  }, [runTimelineEdit]);
 
   const splitTimelineClipAtPlayhead = useCallback(async () => {
     if (editingClipEq || editingTrackId) return;
@@ -1725,6 +1814,7 @@ function App() {
               clearTimelineEffectRange(null, lane, startBeat, endBeat)}
             onClearEffectRange={clearTimelineEffectRange}
             onShiftClipDownbeat={(trackId, beats) => void shiftTrackDownbeat(trackId, beats)}
+            onDuplicateClip={duplicateTimelineClip}
             busy={timelineBusy || timelinePreparing}
             preparing={timelinePreparing}
             libraryTracks={library}
@@ -1756,6 +1846,9 @@ function App() {
             onSetClipStem={setTimelineClipStem}
             onSeparateStems={separateAndSelectStem}
             onSetClipBaked={setClipBaked}
+            onSetClipMuted={setClipMuted}
+            onSetClipLooping={setClipLooping}
+            onSetClipLoopExtent={setClipLoopExtent}
             onAddVolumeNode={addTimelineVolumeNode}
             onAddPanNode={addTimelinePanNode}
             onMovePanNode={moveTimelinePanNode}
@@ -1786,6 +1879,15 @@ function App() {
           sort={librarySort}
           onSortChange={changeLibrarySort}
           libraryBusy={libraryBusy || gridBusy || timelinePlaybackLocked}
+          libraryBusyReason={
+            libraryBusy
+              ? "Importing…"
+              : gridBusy
+                ? "Not while the Beatgrid Editor is open"
+                : timelinePlaybackLocked
+                  ? "Not while the mix is playing"
+                  : null
+          }
           analysisBusy={analysisBusy || timelinePlaybackLocked}
           timelineAddBusy={libraryBusy || gridBusy || analysisBusy || timelineBusy || timelinePreparing}
           timelineTrackOrder={timelineTrackOrder}
@@ -1844,7 +1946,7 @@ function App() {
       {editingClipEq && (
         <ClipEqModal
           clip={editingClipEq}
-          onClose={() => setEditingClipEq(null)}
+          onClose={() => void finishClipEq()}
           onSave={saveClipEq}
         />
       )}

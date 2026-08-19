@@ -24,7 +24,21 @@ export interface MasteringSettings {
  * mêmes nombres à chaque fois.
  */
 export const DEFAULT_MASTERING_SETTINGS: MasteringSettings = {
-  thresholdDb: -3.7,
+  /**
+   * Quatre décibels sous le plafond, et non trois virgule sept.
+   *
+   * Le seuil venait des réglages d'usine d'un L1. Adoucir le « smiling V » du
+   * compresseur a ensuite retiré du niveau à l'étage de couleur : mesuré sur les
+   * deux courbes pondérées par un spectre de programme, 0,40 dB de moins —
+   * 0,28 dB si l'on pondère en bruit blanc. Le mix arrivait donc au limiteur un
+   * peu plus bas qu'avant pour un rendu identique.
+   *
+   * Quatre tout rond tombe dans cette fourchette et reste un chiffre qu'on peut
+   * lire. La différence ne se rattrape que lorsque `COMP` est allumé; sans lui,
+   * le bounce gagne les mêmes trois dixièmes, ce qui est le sens où l'on se
+   * trompe le moins.
+   */
+  thresholdDb: -4.0,
   ceilingDb: -0.1,
   releaseMs: 1.0,
   autoRelease: true,

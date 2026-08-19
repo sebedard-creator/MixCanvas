@@ -239,6 +239,25 @@ pub struct TimelineClip {
     pub trim_start_beats: f64,
     pub trim_end_beats: f64,
     pub is_sidechain_key: bool,
+    /// Ce clip est-il coupé ?
+    ///
+    /// Distinct du `MUTE` de la voie : celui-là éteint les trois clips posés
+    /// dessus, celui-ci n'en éteint qu'un. Un clip coupé n'entre pas dans le
+    /// plan de rendu — donc ni lecture, ni bounce — mais compte toujours dans
+    /// la longueur du projet, sans quoi la carte de tempo du transport et celle
+    /// du rendu cesseraient de concorder.
+    pub muted: bool,
+    /// Ce clip se répète-t-il ?
+    ///
+    /// Tant que c'est le cas, ses deux poignées cessent de rogner et allongent
+    /// la boucle — le *loop trim* de Pro Tools. Le motif répété reste décrit
+    /// par le rognage, donc éteindre la boucle rend le clip exactement tel
+    /// qu'il était.
+    pub looping: bool,
+    /// De combien la boucle déborde **avant** le motif, en temps.
+    pub loop_lead_beats: f64,
+    /// De combien elle déborde **après**, en temps.
+    pub loop_tail_beats: f64,
     /// `full`, `vocals` ou `instrumental` : laquelle des voix du morceau ce clip
     /// joue. La sÃ©paration appartient au morceau, le choix appartient au clip.
     pub stem: String,
@@ -369,7 +388,11 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
                     -- En derniÃ¨re colonne, et non Ã  sa place logique : le
                     -- mapping ci-dessous est positionnel, et l'insÃ©rer au milieu
                     -- dÃ©calerait silencieusement vingt indices.
-                    clips.tempo_target_bpm
+                    clips.tempo_target_bpm,
+                    clips.muted,
+                    clips.looping,
+                    clips.loop_lead_beats,
+                    clips.loop_tail_beats
              FROM timeline_clips AS clips
              JOIN library_tracks AS tracks ON tracks.id = clips.library_track_id
              LEFT JOIN track_waveforms AS waveforms ON waveforms.track_id = tracks.id
@@ -408,6 +431,10 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
                 row.get::<_, i64>(23)? != 0,
                 row.get::<_, Option<String>>(24)?,
                 row.get::<_, Option<f64>>(25)?,
+                row.get::<_, i64>(26)? != 0,
+                row.get::<_, i64>(27)? != 0,
+                row.get::<_, f64>(28)?,
+                row.get::<_, f64>(29)?,
             ))
         })
         .map_err(database_read_error)?;
@@ -441,6 +468,10 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
             is_baked,
             bake_file_path,
             tempo_target_bpm,
+            muted,
+            looping,
+            loop_lead_beats,
+            loop_tail_beats,
         ) = row.map_err(database_read_error)?;
         let geometry = clip_geometry(
             duration_ms,
@@ -478,11 +509,20 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
             first_beat_ms: first_beat_ms.and_then(|value| u64::try_from(value).ok()),
             pre_roll_beats: geometry.pre_roll_beats,
             duration_beats: geometry.duration_beats,
-            visual_start_beat: geometry.visual_start_beat,
-            visual_end_beat: geometry.visual_end_beat,
+            // Ce que le clip **occupe**, débordement de boucle compris. Tout
+            // ce qui raisonne en place prise — chevauchement, longueur du
+            // projet, dessin — lit ces deux bornes, et doit donc voir la
+            // boucle entière et non son seul motif.
+            visual_start_beat: geometry.visual_start_beat
+                - if looping { loop_lead_beats } else { 0.0 },
+            visual_end_beat: geometry.visual_end_beat + if looping { loop_tail_beats } else { 0.0 },
             trim_start_beats,
             trim_end_beats,
             is_sidechain_key,
+            muted,
+            looping,
+            loop_lead_beats,
+            loop_tail_beats,
             stem,
             has_stems,
             is_baked,
@@ -888,6 +928,15 @@ pub(crate) fn render_plan(connection: &Connection) -> Result<TimelineRenderPlan,
         })?;
 
         end_beat = end_beat.max(clip.visual_end_beat);
+        // Coupé : il ne va pas au moteur, donc ni décodeur ouvert ni cycle
+        // dépensé pour du silence. Mais la longueur juste au-dessus a déjà été
+        // prise, et c'est voulu : `project_timing` compte tous les clips,
+        // coupés compris. Si le plan s'arrêtait plus tôt, les deux cartes de
+        // tempo cesseraient de concorder et le transport perdrait
+        // silencieusement le suivi des éditions en cours de lecture.
+        if clip.muted {
+            continue;
+        }
         // Le clip lit son stem s'il en joue un. Les fichiers sÃ©parÃ©s Ã©tant
         // alignÃ©s Ã  l'Ã©chantillon prÃ¨s sur l'original, tout ce qui a Ã©tÃ© rÃ©glÃ©
         // dessus â€” ancre, rognage, grille, automation â€” reste valable.
@@ -910,20 +959,35 @@ pub(crate) fn render_plan(connection: &Connection) -> Result<TimelineRenderPlan,
             0.0
         };
         let trim_start_beats = (clip.trim_start_beats - stem_trim_beats).max(0.0);
-        clips.push(TimelineRenderClip {
-            id: clip.id,
-            lane: clip.lane,
-            file_path,
-            source_bpm,
-            first_beat_ms,
-            anchor_beat: clip.anchor_beat as f64,
-            visual_start_beat: clip.visual_start_beat,
-            duration_beats: clip.duration_beats,
-            trim_start_beats,
-            trim_end_beats: clip.trim_end_beats,
-            is_sidechain_key: clip.is_sidechain_key,
-            eq_settings: clip.eq_settings,
-        });
+
+        // Une boucle se déplie ici, en clips de rendu consécutifs.
+        //
+        // Répéter à l'intérieur d'une voix demanderait de recoudre le
+        // fenêtrage WSOLA au point de bouclage, à chaque tour. Poser plutôt
+        // côte à côte des clips que le moteur sait déjà jouer donne exactement
+        // le son de copies déposées à la main — ce que la boucle est, vue de
+        // l'oreille. Ils ne se chevauchent pas, donc rien ne change pour la
+        // voie.
+        //
+        // `id` est partagé par les répétitions : le moteur ne s'en sert que
+        // pour la signature du plan, qui hache aussi les bornes et les
+        // rognages, si bien que chaque tour y contribue distinctement.
+        for tile in loop_tiles(&clip, trim_start_beats) {
+            clips.push(TimelineRenderClip {
+                id: clip.id,
+                lane: clip.lane,
+                file_path: file_path.clone(),
+                source_bpm,
+                first_beat_ms,
+                anchor_beat: tile.anchor_beat,
+                visual_start_beat: tile.visual_start_beat,
+                duration_beats: tile.duration_beats,
+                trim_start_beats: tile.trim_start_beats,
+                trim_end_beats: tile.trim_end_beats,
+                is_sidechain_key: clip.is_sidechain_key,
+                eq_settings: clip.eq_settings.clone(),
+            });
+        }
     }
 
     Ok(TimelineRenderPlan {
@@ -1429,6 +1493,121 @@ pub fn move_clip(
 /// de justesse. C'est le bon sens de l'inÃ©galitÃ© : mieux vaut un message clair
 /// qu'un empilement de nÅ“uds Ã  un millioniÃ¨me de temps l'un de l'autre.
 const BEAT_SAME_SLOT_EPSILON: f64 = 1e-6;
+
+/// Règle de combien une boucle déborde de son motif, de part et d'autre.
+///
+/// Les deux valeurs sont vérifiées contre les voisins de la voie comme le
+/// serait un déplacement : la place existe ou elle n'existe pas, et le fait
+/// qu'elle soit demandée par une poignée plutôt que par un glissé n'y change
+/// rien. Sans cette vérification, une boucle tirée trop loin recouvrirait le
+/// clip suivant, que la voie ne sait pas jouer en même temps.
+pub fn set_clip_loop_extent(
+    connection: &Connection,
+    clip_id: i64,
+    lead_beats: f64,
+    tail_beats: f64,
+) -> Result<TimelineSnapshot, String> {
+    if !lead_beats.is_finite() || !tail_beats.is_finite() || lead_beats < 0.0 || tail_beats < 0.0 {
+        return Err("A loop cannot reach backwards.".to_owned());
+    }
+
+    let current = snapshot(connection)?;
+    let clip = current
+        .clips
+        .iter()
+        .find(|candidate| candidate.id == clip_id)
+        .ok_or_else(|| "This clip is no longer on the timeline.".to_owned())?;
+    if !clip.looping {
+        return Err("This clip does not loop.".to_owned());
+    }
+
+    // Les bornes du clip portent déjà le débordement en vigueur; le motif est
+    // à l'intérieur, et c'est de lui qu'on repart.
+    let body_start = clip.visual_start_beat + clip.loop_lead_beats;
+    let body_end = clip.visual_end_beat - clip.loop_tail_beats;
+    let start = body_start - lead_beats;
+    let end = body_end + tail_beats;
+    if start < 0.0 {
+        return Err("A loop cannot start before the first beat of the project.".to_owned());
+    }
+
+    let collides = current.clips.iter().any(|other| {
+        other.id != clip_id
+            && other.lane == clip.lane
+            && clips_overlap(start, end, other.visual_start_beat, other.visual_end_beat)
+    });
+    if collides {
+        return Err(
+            "The loop would run into another clip on this track. Make room, or stop it sooner."
+                .to_owned(),
+        );
+    }
+
+    connection
+        .execute(
+            "UPDATE timeline_clips SET loop_lead_beats = ?2, loop_tail_beats = ?3 WHERE id = ?1",
+            params![clip_id, lead_beats, tail_beats],
+        )
+        .map_err(database_write_error)?;
+    snapshot(connection)
+}
+
+/// Rend un clip bouclable, ou lui retire cette propriété.
+///
+/// C'est un **état**, pas une action : tant qu'il dure, les deux poignées du
+/// clip cessent de rogner et allongent la boucle de part et d'autre du motif.
+/// Le motif, lui, reste décrit par le rognage — éteindre la boucle rend donc
+/// le clip exactement tel qu'il était.
+pub fn set_clip_looping(
+    connection: &Connection,
+    clip_id: i64,
+    looping: bool,
+) -> Result<TimelineSnapshot, String> {
+    // Éteindre la boucle remet les débordements à zéro. Les garder ferait
+    // réapparaître une longueur qu'on ne voit plus, au prochain allumage, et
+    // c'est le genre de mémoire cachée dont on ne se méfie qu'une fois.
+    let changed = connection
+        .execute(
+            "UPDATE timeline_clips
+             SET looping = ?2,
+                 loop_lead_beats = CASE WHEN ?2 = 1 THEN loop_lead_beats ELSE 0.0 END,
+                 loop_tail_beats = CASE WHEN ?2 = 1 THEN loop_tail_beats ELSE 0.0 END
+             WHERE id = ?1",
+            params![clip_id, i64::from(looping)],
+        )
+        .map_err(database_write_error)?;
+    if changed == 0 {
+        return Err("This clip is no longer on the timeline.".to_owned());
+    }
+    snapshot(connection)
+}
+
+/// Coupe ou rétablit un clip.
+///
+/// Une décision de mix qui appartient au **clip**. Le `MUTE` de la voie répond
+/// à une autre question — « je n'entends plus cette piste » — et éteindrait
+/// les clips voisins avec lui.
+///
+/// Rien n'est détruit : l'automation, l'égalisation et la cuisson restent en
+/// place et reviennent telles quelles au rétablissement. C'est ce qui fait de
+/// la coupure un geste qu'on peut se permettre en cours de mix, contrairement
+/// au retrait du clip.
+pub fn set_clip_muted(
+    connection: &Connection,
+    clip_id: i64,
+    muted: bool,
+) -> Result<TimelineSnapshot, String> {
+    let changed = connection
+        .execute(
+            "UPDATE timeline_clips SET muted = ?2 WHERE id = ?1",
+            params![clip_id, i64::from(muted)],
+        )
+        .map_err(database_write_error)?;
+    if changed == 0 {
+        return Err("This clip is no longer on the timeline.".to_owned());
+    }
+    snapshot(connection)
+}
 
 /// Choisit laquelle des voix d'un morceau ce clip joue.
 ///
@@ -3029,6 +3208,19 @@ pub fn split_timeline_clip(
         return Err("This track needs analyzing before it can be split.".to_owned());
     }
 
+    // La coupe tombe sur le temps entier le plus proche.
+    //
+    // La tête de lecture est à la milliseconde près, et couper là donnait des
+    // clips de 4,0173 temps. Une ancre est un entier et se pose à la mesure :
+    // aucune position de la grille ne peut suivre un tel clip bout à bout. On
+    // ne pouvait donc pas boucler une mesure prise à la main sans un trou de
+    // silence, ni combler ce trou — la seule place permise chevauchait
+    // l'original de dix-sept millièmes de temps.
+    //
+    // L'arrondi se fait ici plutôt que dans l'interface : la touche `B` et le
+    // menu doivent couper au même endroit, et une règle posée à un seul des
+    // deux endroits finit par diverger.
+    let split_beat = split_beat.round();
     if split_beat <= geometry.visual_start_beat + 0.01
         || split_beat >= geometry.visual_end_beat - 0.01
     {
@@ -3109,6 +3301,297 @@ pub fn split_timeline_clip(
     transaction.commit().map_err(database_write_error)?;
 
     snapshot(connection)
+}
+
+/// Duplique un clip sans rien écraser.
+///
+/// Quatre places sont essayées, dans cet ordre, et la première libre gagne :
+///
+/// 1. **La voie du dessous, aux mêmes temps.** Rien ne bouge sur l'axe du
+///    temps, donc rien ne peut être poussé; c'est la seule des quatre qui ne
+///    demande aucune place nouvelle dans le mix.
+/// 2. **La voie du dessus, aux mêmes temps.** Haut ou bas n'a pas de sens
+///    musical ici — l'ordre est fixé pour que le geste soit prévisible, pas
+///    parce qu'une direction vaudrait mieux que l'autre.
+/// 3. **Collé à droite**, sur la même voie.
+/// 4. **Collé à gauche**, sur la même voie.
+///
+/// « Collé » veut dire au plus près sans se toucher, arrondi à la mesure : les
+/// ancres de clips sont toutes des multiples de [`BEATS_PER_MEASURE`], et une
+/// copie qui atterrirait entre deux mesures ne pourrait plus être ramenée là où
+/// elle est par un simple glissement. On ne cherche pas plus loin qu'accolé :
+/// une copie qui part se poser hors de l'écran n'est pas ce qu'on a demandé en
+/// cliquant sur ce clip-là.
+///
+/// L'étendue réservée est celle du clip **rogné**, pas celle du morceau :
+/// tailler quatre mesures dans un titre de six minutes et les dupliquer demande
+/// quatre mesures de place.
+///
+/// La copie est nue côté automation. Le volume, le panoramique, les filtres et
+/// les passages d'effets appartiennent à la voie et à l'endroit, pas au clip;
+/// les emporter écrirait par-dessus ce qui est déjà tracé là où la copie
+/// atterrit. Ce qui appartient vraiment au clip la suit : l'égalisation, le
+/// rognage, la voix choisie, les stems séparés et la cuisson.
+pub fn duplicate_clip(
+    connection: &mut Connection,
+    clip_id: i64,
+) -> Result<TimelineSnapshot, String> {
+    let source = connection
+        .query_row(
+            "SELECT clips.library_track_id, clips.lane, clips.anchor_beat,
+                    clips.tempo_anchor_beat, clips.eq_settings,
+                    clips.trim_start_beats, clips.trim_end_beats,
+                    tracks.duration_ms,
+                    COALESCE(tracks.manual_bpm, tracks.bpm),
+                    COALESCE(tracks.manual_first_beat_ms, tracks.first_beat_ms)
+             FROM timeline_clips AS clips
+             JOIN library_tracks AS tracks ON tracks.id = clips.library_track_id
+             WHERE clips.id = ?1",
+            [clip_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, f64>(5)?,
+                    row.get::<_, f64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, Option<f64>>(8)?,
+                    row.get::<_, Option<i64>>(9)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(database_read_error)?
+        .ok_or_else(|| "The clip to duplicate no longer exists.".to_owned())?;
+
+    let (
+        library_track_id,
+        lane,
+        anchor_beat,
+        tempo_anchor_beat,
+        eq_settings,
+        trim_start,
+        trim_end,
+        duration_ms,
+        bpm,
+        first_beat_ms,
+    ) = source;
+
+    let geometry = clip_geometry(
+        duration_ms,
+        bpm,
+        first_beat_ms,
+        anchor_beat,
+        trim_start,
+        trim_end,
+    );
+    if geometry.needs_analysis {
+        return Err("This track needs analyzing before it can be duplicated.".to_owned());
+    }
+
+    let current = snapshot(connection)?;
+    let minimum = minimum_anchor_beat(geometry.pre_roll_beats, trim_start);
+    let placement = duplicate_placements(&geometry, lane, anchor_beat, minimum)
+        .into_iter()
+        .find(|(candidate_lane, candidate_anchor)| {
+            let candidate = clip_geometry(
+                duration_ms,
+                bpm,
+                first_beat_ms,
+                *candidate_anchor,
+                trim_start,
+                trim_end,
+            );
+            !current.clips.iter().any(|other| {
+                other.lane == *candidate_lane
+                    && clips_overlap(
+                        candidate.visual_start_beat,
+                        candidate.visual_end_beat,
+                        other.visual_start_beat,
+                        other.visual_end_beat,
+                    )
+            })
+        });
+
+    let Some((new_lane, new_anchor)) = placement else {
+        return Err(
+            "There is no room for a copy here: the other tracks are busy, \
+                    and so is the space on either side."
+                .to_owned(),
+        );
+    };
+    validate_lane(new_lane)?;
+
+    // Une seule transaction : une copie sans ses stems jouerait le morceau
+    // entier en gardant sa touche VOX allumée, et une copie sans sa cuisson
+    // repartirait de l'original — donc sans les effets qu'on venait d'y cuire.
+    let transaction = connection.transaction().map_err(database_write_error)?;
+    transaction
+        .execute(
+            "INSERT INTO timeline_clips (library_track_id, lane, anchor_beat, tempo_anchor_beat, eq_settings, trim_start_beats, trim_end_beats, stem)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
+                     (SELECT stem FROM timeline_clips WHERE id = ?8))",
+            params![
+                library_track_id,
+                new_lane,
+                new_anchor,
+                tempo_anchor_beat + (new_anchor - anchor_beat),
+                eq_settings,
+                trim_start,
+                trim_end,
+                clip_id,
+            ],
+        )
+        .map_err(database_write_error)?;
+    let new_id = transaction.last_insert_rowid();
+    transaction
+        .execute(
+            "INSERT INTO clip_stems
+             (clip_id, kind, file_path, source_from_ms, bucket_count,
+              left_min, left_max, left_rms, right_min, right_max, right_rms)
+             SELECT ?1, kind, file_path, source_from_ms, bucket_count,
+                    left_min, left_max, left_rms, right_min, right_max, right_rms
+             FROM clip_stems WHERE clip_id = ?2",
+            params![new_id, clip_id],
+        )
+        .map_err(database_write_error)?;
+
+    // La cuisson suit, mais pas ce qu'elle avait retiré.
+    //
+    // `removed` sert à une seule chose : rendre à la voie l'automation que la
+    // cuisson lui a prise. La copie n'en a pris aucune. Recopier l'étendue de
+    // l'originale ferait qu'un UNBAKE sur la copie effacerait l'automation de
+    // l'originale pour la réécrire ailleurs — un bouton de retour en arrière
+    // qui détruit du travail. La copie porte donc une étendue vide.
+    let has_bake: bool = transaction
+        .query_row(
+            "SELECT 1 FROM clip_bakes WHERE clip_id = ?1",
+            params![clip_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(database_read_error)?
+        .is_some();
+    if has_bake {
+        let nothing_removed = serde_json::to_string(&RemovedAutomation::nothing_on(new_lane))
+            .map_err(|error| format!("The removed automation could not be stored: {error}"))?;
+        transaction
+            .execute(
+                "INSERT INTO clip_bakes
+                 (clip_id, file_path, source_from_ms, removed, bucket_count,
+                  left_min, left_max, left_rms, right_min, right_max, right_rms)
+                 SELECT ?1, file_path, source_from_ms, ?3, bucket_count,
+                        left_min, left_max, left_rms, right_min, right_max, right_rms
+                 FROM clip_bakes WHERE clip_id = ?2",
+                params![new_id, clip_id, nothing_removed],
+            )
+            .map_err(database_write_error)?;
+    }
+    transaction.commit().map_err(database_write_error)?;
+
+    snapshot(connection)
+}
+
+/// Les quatre places d'un duplicata, dans l'ordre où on les essaie.
+///
+/// Séparé du reste pour être vérifiable sans base de données : c'est de
+/// l'arithmétique de mesures, et c'est là que se logent les erreurs d'un temps.
+fn duplicate_placements(
+    geometry: &ClipGeometry,
+    lane: i64,
+    anchor_beat: i64,
+    minimum_anchor: i64,
+) -> Vec<(i64, i64)> {
+    let length = geometry.visual_end_beat - geometry.visual_start_beat;
+    // Arrondi à la mesure supérieure : c'est le plus petit écart qui garantisse
+    // à la fois qu'on ne touche pas l'original et que la copie reste sur la
+    // grille. Un clip plus court qu'une mesure se décale quand même d'une
+    // mesure entière.
+    let step = (length / BEATS_PER_MEASURE as f64).ceil().max(1.0) as i64 * BEATS_PER_MEASURE;
+
+    let mut places = Vec::with_capacity(4);
+    for neighbour in [lane + 1, lane - 1] {
+        if (0..=MAX_LANE).contains(&neighbour) {
+            places.push((neighbour, anchor_beat));
+        }
+    }
+    places.push((lane, anchor_beat + step));
+    let to_the_left = anchor_beat - step;
+    if to_the_left >= minimum_anchor && to_the_left >= 0 {
+        places.push((lane, to_the_left));
+    }
+    places
+}
+
+/// Un tour de boucle, prêt à devenir un clip de rendu.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LoopTile {
+    anchor_beat: f64,
+    visual_start_beat: f64,
+    duration_beats: f64,
+    trim_start_beats: f64,
+    trim_end_beats: f64,
+}
+
+/// Combien de tours il faut, et où chacun commence.
+///
+/// Un clip sans boucle donne un seul pavé : le clip lui-même. Avec la boucle,
+/// on carrelle l'étendue occupée avec des copies du motif, calées pour qu'une
+/// d'elles tombe exactement sur le motif d'origine — sans quoi allonger d'un
+/// côté déplacerait ce qu'on entend de l'autre.
+///
+/// Les deux pavés des extrémités sont généralement partiels, et c'est voulu :
+/// la poignée s'arrête où on la lâche, pas au tour suivant. Un tour tronqué
+/// n'est qu'un rognage de plus, ce que le moteur sait déjà lire.
+///
+/// `stem_adjusted_trim_start` est le rognage de départ **après** correction du
+/// décalage de stem : c'est lui qui désigne la bonne place dans le fichier
+/// réellement lu, et le carrelage s'ajoute par-dessus.
+fn loop_tiles(clip: &TimelineClip, stem_adjusted_trim_start: f64) -> Vec<LoopTile> {
+    let plain = LoopTile {
+        anchor_beat: clip.anchor_beat as f64,
+        visual_start_beat: clip.visual_start_beat,
+        duration_beats: clip.duration_beats,
+        trim_start_beats: stem_adjusted_trim_start,
+        trim_end_beats: clip.trim_end_beats,
+    };
+    let body = clip.duration_beats;
+    if !clip.looping || body <= 0.0 || !body.is_finite() {
+        return vec![plain];
+    }
+
+    // Les bornes de `clip` portent déjà le débordement; le motif est à
+    // l'intérieur.
+    let extent_start = clip.visual_start_beat;
+    let extent_end = clip.visual_end_beat;
+    let body_start = extent_start + clip.loop_lead_beats;
+
+    let first = -((clip.loop_lead_beats / body).ceil() as i64);
+    let last = (clip.loop_tail_beats / body).ceil() as i64;
+
+    let mut tiles = Vec::new();
+    for turn in first..=last {
+        let tile_start = body_start + turn as f64 * body;
+        let head_cut = (extent_start - tile_start).max(0.0);
+        let tail_cut = (tile_start + body - extent_end).max(0.0);
+        let duration = body - head_cut - tail_cut;
+        // Un reste plus court qu'un millième de temps ne s'entend pas et
+        // coûterait un décodeur.
+        if duration <= 1.0e-3 {
+            continue;
+        }
+        tiles.push(LoopTile {
+            anchor_beat: clip.anchor_beat as f64 + turn as f64 * body,
+            visual_start_beat: tile_start + head_cut,
+            duration_beats: duration,
+            trim_start_beats: stem_adjusted_trim_start + head_cut,
+            trim_end_beats: clip.trim_end_beats + tail_cut,
+        });
+    }
+    if tiles.is_empty() { vec![plain] } else { tiles }
 }
 
 fn validate_filter_value(value: f64) -> Result<(), String> {
@@ -3364,6 +3847,24 @@ pub(crate) struct RemovedAutomation {
     pan: Vec<(f64, f64)>,
     /// `(temps, valeur, tension)`.
     filter: Vec<(f64, f64, f64)>,
+}
+
+impl RemovedAutomation {
+    /// Une cuisson qui n'a rien pris à la voie.
+    ///
+    /// C'est le cas d'un duplicata : il porte le fichier cuit de son original,
+    /// mais l'automation de l'original est restée sous l'original. L'étendue est
+    /// vide au sens strict — `from > to` ne sélectionne aucune ligne — pour que
+    /// décuire la copie ne puisse effacer aucun temps, pas même celui sur lequel
+    /// elle commence.
+    fn nothing_on(lane: i64) -> Self {
+        Self {
+            lane,
+            from_beat: 1.0,
+            to_beat: 0.0,
+            ..Self::default()
+        }
+    }
 }
 
 /// Tout ce qu'il faut pour cuire un clip, lu sans rien modifier.
@@ -3728,13 +4229,15 @@ fn database_write_error(error: rusqlite::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_TRACK_GAIN_DB, FILTER_BUBBLE_MAX_SAMPLES, FILTER_BUBBLE_MAX_WIDTH_BEATS,
-        FILTER_BUBBLE_STEP_BEATS, TimelineLane, TimelineSnapshot, add_clip, add_filter_node,
-        add_pan_node, add_volume_node, audible_lane_mask, clear_filter_range, clear_timeline,
-        clip_geometry, clips_overlap, draw_filter_bubble, filter_bubble_step_beats,
-        minimum_anchor_beat, move_clip, move_tempo_point, move_volume_node, project_timing,
-        remove_clip, restore_snapshot, set_clip_trim, set_lane_muted, set_lane_solo,
-        set_sidechain_key, snap_anchor_beat, snap_tempo_anchor_beat, snapshot, split_timeline_clip,
+        ClipGeometry, DEFAULT_TRACK_GAIN_DB, FILTER_BUBBLE_MAX_SAMPLES,
+        FILTER_BUBBLE_MAX_WIDTH_BEATS, FILTER_BUBBLE_STEP_BEATS, MAX_LANE, TimelineClip,
+        TimelineLane, TimelineSnapshot, add_clip, add_filter_node, add_pan_node, add_volume_node,
+        audible_lane_mask, clear_filter_range, clear_timeline, clip_geometry, clips_overlap,
+        draw_filter_bubble, duplicate_clip, duplicate_placements, filter_bubble_step_beats,
+        loop_tiles, minimum_anchor_beat, move_clip, move_tempo_point, move_volume_node,
+        project_timing, remove_clip, restore_snapshot, set_clip_trim, set_lane_muted,
+        set_lane_solo, set_sidechain_key, snap_anchor_beat, snap_tempo_anchor_beat, snapshot,
+        split_timeline_clip,
     };
     use crate::library::LibraryStore;
     use rusqlite::params;
@@ -5951,6 +6454,491 @@ mod tests {
         assert!(clips_overlap(0.0, 16.0, 15.0, 32.0));
         assert!(clips_overlap(10.0, 20.0, 5.0, 25.0));
         assert!(!clips_overlap(0.0, 16.0, 20.0, 32.0));
+    }
+
+    /// L'ordre des places, sans base de données.
+    ///
+    /// Un clip de dix temps sur la voie B : les voisines d'abord, aux mêmes
+    /// temps, puis un décalage de douze temps — trois mesures, la plus petite
+    /// avance qui dépasse dix et retombe sur la grille.
+    #[test]
+    fn a_duplicate_looks_at_its_neighbours_before_it_looks_sideways() {
+        let geometry = ClipGeometry {
+            pre_roll_beats: 0.0,
+            duration_beats: 10.0,
+            visual_start_beat: 16.0,
+            visual_end_beat: 26.0,
+            needs_analysis: false,
+        };
+        assert_eq!(
+            duplicate_placements(&geometry, 1, 16, 0),
+            vec![(2, 16), (0, 16), (1, 28), (1, 4)]
+        );
+    }
+
+    /// La voie A n'a pas de dessus, la voie C pas de dessous.
+    #[test]
+    fn the_outer_lanes_only_have_one_neighbour() {
+        let geometry = ClipGeometry {
+            pre_roll_beats: 0.0,
+            duration_beats: 4.0,
+            visual_start_beat: 32.0,
+            visual_end_beat: 36.0,
+            needs_analysis: false,
+        };
+        assert_eq!(
+            duplicate_placements(&geometry, 0, 32, 0),
+            vec![(1, 32), (0, 36), (0, 28)]
+        );
+        assert_eq!(
+            duplicate_placements(&geometry, MAX_LANE, 32, 0),
+            vec![(1, 32), (2, 36), (2, 28)]
+        );
+    }
+
+    /// Un clip trop près du début n'a pas de place à sa gauche.
+    ///
+    /// Le minimum n'est pas zéro pour un clip à pré-amorce : la copie devrait
+    /// commencer avant le premier temps du projet, ce que l'ancre interdit.
+    #[test]
+    fn there_is_no_room_on_the_left_at_the_start_of_a_set() {
+        let geometry = ClipGeometry {
+            pre_roll_beats: 1.0,
+            duration_beats: 8.0,
+            visual_start_beat: 3.0,
+            visual_end_beat: 11.0,
+            needs_analysis: false,
+        };
+        assert_eq!(
+            duplicate_placements(&geometry, 0, 4, 1),
+            vec![(1, 4), (0, 12)]
+        );
+    }
+
+    /// Un clip plus court qu'une mesure avance quand même d'une mesure entière.
+    ///
+    /// Sans le plancher, un rognage d'un temps donnerait un pas de zéro et la
+    /// copie se poserait exactement sur l'original.
+    #[test]
+    fn a_clip_shorter_than_a_bar_still_moves_a_whole_bar() {
+        let geometry = ClipGeometry {
+            pre_roll_beats: 0.0,
+            duration_beats: 1.0,
+            visual_start_beat: 8.0,
+            visual_end_beat: 9.0,
+            needs_analysis: false,
+        };
+        let places = duplicate_placements(&geometry, 1, 8, 0);
+        assert!(places.contains(&(1, 12)));
+        assert!(places.contains(&(1, 4)));
+    }
+
+    /// Un clip de quatre temps qui boucle, pour les tests de carrelage.
+    fn looping_clip() -> TimelineClip {
+        TimelineClip {
+            id: 1,
+            library_track_id: 1,
+            file_name: "loop.mp3".to_owned(),
+            file_path: "loop.mp3".to_owned(),
+            is_missing: false,
+            lane: 0,
+            anchor_beat: 16,
+            tempo_anchor_beat: 16,
+            bpm: Some(120.0),
+            tempo_target_bpm: None,
+            first_beat_ms: Some(0),
+            pre_roll_beats: 0.0,
+            duration_beats: 4.0,
+            visual_start_beat: 16.0,
+            visual_end_beat: 20.0,
+            trim_start_beats: 0.0,
+            trim_end_beats: 0.0,
+            is_sidechain_key: false,
+            muted: false,
+            looping: true,
+            loop_lead_beats: 0.0,
+            loop_tail_beats: 0.0,
+            stem: "full".to_owned(),
+            has_stems: false,
+            is_baked: false,
+            bake_is_missing: false,
+            needs_analysis: false,
+            eq_settings: None,
+            waveform: None,
+        }
+    }
+
+    /// Le carrelage d'une boucle, sans base de données.
+    ///
+    /// Un motif de quatre temps allongé de six temps à droite et de deux à
+    /// gauche : un tour partiel de deux temps devant, le motif, un tour plein,
+    /// puis un reste de deux temps. Les quatre doivent se toucher exactement et
+    /// couvrir l'étendue, sans trou ni recouvrement.
+    #[test]
+    fn a_loop_tiles_its_extent_with_partial_turns_at_both_ends() {
+        let mut clip = looping_clip();
+        clip.loop_lead_beats = 2.0;
+        clip.loop_tail_beats = 6.0;
+        // Les bornes portent déjà le débordement, comme dans un instantané.
+        clip.visual_start_beat = 14.0;
+        clip.visual_end_beat = 26.0;
+
+        let tiles = loop_tiles(&clip, 0.0);
+        assert_eq!(tiles.len(), 4, "{tiles:#?}");
+
+        // Le tour partiel de tête entre par le milieu du motif.
+        assert!((tiles[0].visual_start_beat - 14.0).abs() < 1.0e-9);
+        assert!((tiles[0].duration_beats - 2.0).abs() < 1.0e-9);
+        assert!((tiles[0].trim_start_beats - 2.0).abs() < 1.0e-9);
+
+        // Le motif d'origine tombe exactement où il était : allonger d'un côté
+        // ne doit pas déplacer ce qu'on entend de l'autre.
+        assert!((tiles[1].visual_start_beat - 16.0).abs() < 1.0e-9);
+        assert!((tiles[1].duration_beats - 4.0).abs() < 1.0e-9);
+        assert!((tiles[1].trim_start_beats - 0.0).abs() < 1.0e-9);
+        assert!((tiles[1].anchor_beat - clip.anchor_beat as f64).abs() < 1.0e-9);
+
+        assert!((tiles[2].visual_start_beat - 20.0).abs() < 1.0e-9);
+        assert!((tiles[2].duration_beats - 4.0).abs() < 1.0e-9);
+
+        // Le reste s'arrête où la poignée a été lâchée, pas au tour suivant.
+        assert!((tiles[3].visual_start_beat - 24.0).abs() < 1.0e-9);
+        assert!((tiles[3].duration_beats - 2.0).abs() < 1.0e-9);
+        assert!((tiles[3].trim_end_beats - 2.0).abs() < 1.0e-9);
+
+        // Bout à bout, et rien qui dépasse.
+        for pair in tiles.windows(2) {
+            let end = pair[0].visual_start_beat + pair[0].duration_beats;
+            assert!((end - pair[1].visual_start_beat).abs() < 1.0e-9);
+        }
+        let last = tiles.last().expect("there is a last turn");
+        assert!((last.visual_start_beat + last.duration_beats - 26.0).abs() < 1.0e-9);
+    }
+
+    /// Sans la boucle, le clip reste un seul pavé : le sien.
+    #[test]
+    fn a_clip_that_does_not_loop_yields_itself() {
+        let mut clip = looping_clip();
+        clip.looping = false;
+        clip.loop_tail_beats = 12.0;
+        let tiles = loop_tiles(&clip, 0.0);
+        assert_eq!(tiles.len(), 1);
+        assert!((tiles[0].duration_beats - clip.duration_beats).abs() < 1.0e-9);
+    }
+
+    /// Le rognage de stem est le point de départ, et le carrelage s'y ajoute.
+    #[test]
+    fn the_stem_offset_stays_underneath_every_turn() {
+        let mut clip = looping_clip();
+        clip.loop_lead_beats = 0.0;
+        clip.loop_tail_beats = 4.0;
+        clip.visual_start_beat = 16.0;
+        clip.visual_end_beat = 24.0;
+        let tiles = loop_tiles(&clip, 7.5);
+        assert_eq!(tiles.len(), 2);
+        assert!((tiles[0].trim_start_beats - 7.5).abs() < 1.0e-9);
+        assert!((tiles[1].trim_start_beats - 7.5).abs() < 1.0e-9);
+    }
+
+    /// Boucler une mesure prise à la main, sans trou.
+    ///
+    /// Le scénario exact qui échouait : on découpe une mesure à la tête de
+    /// lecture, qui n'est jamais sur un temps rond, puis on duplique pour
+    /// boucler. Le clip mesurait 4,0173 temps, le duplicata avançait donc de
+    /// deux mesures — quatre temps de silence — et la seule place où on
+    /// pouvait le ramener chevauchait l'original de dix-sept millièmes.
+    #[test]
+    fn a_bar_cut_by_hand_loops_end_to_end() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-loop-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+        let fake_mp3 = database_path.with_extension("mp3");
+        fs::write(&fake_mp3, []).expect("fake MP3 should be created");
+
+        {
+            let mut store = LibraryStore::open(&database_path).expect("database should open");
+            store
+                .connection
+                .execute(
+                    "INSERT INTO library_tracks
+                     (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                      bpm, first_beat_ms, beat_count, analysis_status)
+                     VALUES (?1, ?2, 'loop.mp3', 60000, 44100, 2,
+                             120.0, 500, 120, 'analyzed')",
+                    params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+                )
+                .expect("track should be inserted");
+            let track_id = store.connection.last_insert_rowid();
+
+            let added = add_clip(&mut store.connection, track_id, Some(4.0), Some(0))
+                .expect("clip should be added");
+            let clip_id = added.clips[0].id;
+
+            // Deux coupes à la tête de lecture, quatre temps d'écart, mais
+            // jamais sur un temps rond : c'est ce que donne un clic pendant la
+            // lecture.
+            let after_first = split_timeline_clip(&mut store.connection, clip_id, 20.017_3)
+                .expect("the first cut lands inside the clip");
+            let middle_id = after_first
+                .clips
+                .iter()
+                .find(|clip| clip.id != clip_id)
+                .expect("the cut makes a second clip")
+                .id;
+            let after_second = split_timeline_clip(&mut store.connection, middle_id, 23.981_2)
+                .expect("the second cut lands inside the middle clip");
+
+            let bar = after_second
+                .clips
+                .iter()
+                .find(|clip| clip.id == middle_id)
+                .expect("the middle clip is the bar we kept");
+            // Arrondie au temps : une vraie mesure, pas 3,9639.
+            assert!((bar.visual_start_beat - 20.0).abs() < 1.0e-9);
+            assert!((bar.visual_end_beat - 24.0).abs() < 1.0e-9);
+
+            let bar_anchor = bar.anchor_beat;
+
+            // On déblaie ce qui suit sur la voie A, pour laisser la place à la
+            // boucle.
+            for other in after_second
+                .clips
+                .iter()
+                .filter(|clip| clip.id != middle_id && clip.visual_start_beat >= 24.0)
+                .map(|clip| clip.id)
+                .collect::<Vec<_>>()
+            {
+                remove_clip(&mut store.connection, other).expect("the tail goes away");
+            }
+
+            // La copie part sur la voie libre, comme demandé : c'est la place
+            // qui ne coûte rien au mix.
+            let looped =
+                duplicate_clip(&mut store.connection, middle_id).expect("there is room to loop");
+            let copy_id = looped
+                .clips
+                .iter()
+                .find(|clip| clip.id != clip_id && clip.id != middle_id)
+                .expect("the loop copy exists")
+                .id;
+
+            // Puis on la ramène à la main juste après l'originale, ce qui est le
+            // geste qui échouait : quatre temps plus loin, la copie de 4,0173
+            // temps mordait sur l'originale de dix-sept millièmes.
+            let moved = move_clip(&mut store.connection, copy_id, (bar_anchor + 4) as f64, 0)
+                .expect("a bar loops right after itself");
+            let copy = moved
+                .clips
+                .iter()
+                .find(|clip| clip.id == copy_id)
+                .expect("the copy is still there");
+
+            assert_eq!(copy.lane, 0);
+            assert!(
+                (copy.visual_start_beat - 24.0).abs() < 1.0e-9,
+                "la copie commence à {}, pas à 24",
+                copy.visual_start_beat
+            );
+            assert!((copy.visual_end_beat - 28.0).abs() < 1.0e-9);
+            assert!(!clips_overlap(
+                20.0,
+                24.0,
+                copy.visual_start_beat,
+                copy.visual_end_beat
+            ));
+        }
+
+        let _ = fs::remove_file(&database_path);
+        let _ = fs::remove_file(&fake_mp3);
+    }
+
+    /// Le duplicata bout à bout, et ce qu'il emporte.
+    ///
+    /// Les trois voies sont occupées aux mêmes temps, donc la copie n'a plus
+    /// que les côtés — et c'est le cas qui compte, puisque c'est celui qui
+    /// pourrait écraser quelque chose.
+    #[test]
+    fn a_duplicate_lands_beside_its_original_when_every_lane_is_busy() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-duplicate-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+        let fake_mp3 = database_path.with_extension("mp3");
+        fs::write(&fake_mp3, []).expect("fake MP3 should be created");
+
+        {
+            let mut store = LibraryStore::open(&database_path).expect("database should open");
+            store
+                .connection
+                .execute(
+                    "INSERT INTO library_tracks
+                     (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                      bpm, first_beat_ms, beat_count, analysis_status)
+                     VALUES (?1, ?2, 'duplicate.mp3', 60000, 44100, 2,
+                             120.0, 500, 120, 'analyzed')",
+                    params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+                )
+                .expect("track should be inserted");
+            let track_id = store.connection.last_insert_rowid();
+
+            // Le même morceau sur les trois voies, aux mêmes temps : plus une
+            // seule voisine de libre.
+            let mut clip_ids = Vec::new();
+            for lane in 0..=MAX_LANE {
+                let added = add_clip(&mut store.connection, track_id, Some(4.0), Some(lane))
+                    .expect("clip should be added");
+                clip_ids.push(
+                    added
+                        .clips
+                        .iter()
+                        .filter(|clip| clip.lane == lane)
+                        .map(|clip| clip.id)
+                        .next_back()
+                        .expect("the new clip is on the lane it was asked for"),
+                );
+            }
+
+            // Taillé sur quatre mesures : c'est cette étendue-là qu'il faut
+            // réserver, pas les cent vingt temps du morceau. La queue est
+            // retirée pour laisser la place, sinon B est plein lui aussi et il
+            // n'y a plus de duplicata possible du tout — ce que le test
+            // suivant vérifie.
+            let trimmed = split_timeline_clip(&mut store.connection, clip_ids[1], 19.0)
+                .expect("the clip should split");
+            let tail_id = trimmed
+                .clips
+                .iter()
+                .find(|clip| clip.lane == 1 && !clip_ids.contains(&clip.id))
+                .expect("the split creates a right subclip")
+                .id;
+            let trimmed = remove_clip(&mut store.connection, tail_id).expect("the tail goes away");
+            let head = trimmed
+                .clips
+                .iter()
+                .find(|clip| clip.id == clip_ids[1])
+                .expect("the original becomes the left subclip");
+            assert!((head.visual_end_beat - 19.0).abs() < 1.0e-9);
+            let head_trim_start = head.trim_start_beats;
+            let head_trim_end = head.trim_end_beats;
+
+            let duplicated = duplicate_clip(&mut store.connection, clip_ids[1])
+                .expect("a busy timeline still has room beside the clip");
+            let copy = duplicated
+                .clips
+                .iter()
+                .find(|clip| !clip_ids.contains(&clip.id))
+                .expect("the duplicate is the only new clip");
+
+            // Sur sa voie, collé à droite, et de la longueur du clip rogné.
+            assert_eq!(copy.lane, 1);
+            assert!((copy.visual_start_beat - 19.0).abs() < 1.0e-9);
+            assert!((copy.visual_end_beat - 35.0).abs() < 1.0e-9);
+            assert!((copy.trim_start_beats - head_trim_start).abs() < 1.0e-9);
+            assert!((copy.trim_end_beats - head_trim_end).abs() < 1.0e-9);
+
+            // Et un deuxième duplicata n'a plus nulle part où aller : A et C
+            // sont occupées, la place de droite vient d'être prise, et la
+            // gauche bute sur le début du projet.
+            assert!(duplicate_clip(&mut store.connection, clip_ids[1]).is_err());
+
+            // Et rien n'a été écrasé.
+            for other in duplicated.clips.iter().filter(|clip| clip.id != copy.id) {
+                if other.lane == copy.lane {
+                    assert!(
+                        !clips_overlap(
+                            copy.visual_start_beat,
+                            copy.visual_end_beat,
+                            other.visual_start_beat,
+                            other.visual_end_beat,
+                        ),
+                        "the copy must not sit on top of clip {}",
+                        other.id
+                    );
+                }
+            }
+        }
+
+        let _ = fs::remove_file(&database_path);
+        let _ = fs::remove_file(&fake_mp3);
+    }
+
+    /// Une voie libre au-dessous gagne, et l'automation reste où elle est.
+    #[test]
+    fn a_free_lane_wins_and_the_copy_arrives_bare() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-duplicate-lane-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+        let fake_mp3 = database_path.with_extension("mp3");
+        fs::write(&fake_mp3, []).expect("fake MP3 should be created");
+
+        {
+            let mut store = LibraryStore::open(&database_path).expect("database should open");
+            store
+                .connection
+                .execute(
+                    "INSERT INTO library_tracks
+                     (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                      bpm, first_beat_ms, beat_count, analysis_status)
+                     VALUES (?1, ?2, 'duplicate.mp3', 60000, 44100, 2,
+                             120.0, 500, 120, 'analyzed')",
+                    params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+                )
+                .expect("track should be inserted");
+            let track_id = store.connection.last_insert_rowid();
+
+            let added = add_clip(&mut store.connection, track_id, Some(4.0), Some(0))
+                .expect("clip should be added");
+            let clip_id = added.clips[0].id;
+            add_volume_node(&store.connection, 0, 8.0)
+                .expect("a volume node should be placed under the original");
+
+            let duplicated =
+                duplicate_clip(&mut store.connection, clip_id).expect("lane B is free");
+            let copy = duplicated
+                .clips
+                .iter()
+                .find(|clip| clip.id != clip_id)
+                .expect("the duplicate exists");
+
+            // Sous l'original, aux mêmes temps : rien n'a bougé sur l'axe du
+            // temps, donc rien n'a pu être poussé.
+            assert_eq!(copy.lane, 1);
+            assert_eq!(copy.anchor_beat, added.clips[0].anchor_beat);
+
+            // L'automation appartient à la voie : elle est restée sur A, et la
+            // copie arrive sur une voie vierge.
+            assert!(
+                duplicated
+                    .volume_nodes
+                    .iter()
+                    .any(|node| node.lane == 0 && (node.beat - 8.0).abs() < 1.0e-9),
+                "the node drawn under the original stays where it was"
+            );
+            assert!(
+                duplicated
+                    .volume_nodes
+                    .iter()
+                    .all(|node| node.lane != copy.lane),
+                "nothing was written onto the lane the copy landed on"
+            );
+        }
+
+        let _ = fs::remove_file(&database_path);
+        let _ = fs::remove_file(&fake_mp3);
     }
 
     #[test]

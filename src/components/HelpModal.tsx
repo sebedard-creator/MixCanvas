@@ -82,6 +82,9 @@ const SHORTCUTS: ShortcutItem[] = [
   { surface: "pointer", group: "Clips", keys: ["Drag the body"], description: "Draw the pencil's shape across the drag, live, onto whichever line VIEW is showing — nothing to arm" },
   { surface: "pointer", group: "Clips", keys: ["Drag from library"], description: "Drop a track straight onto the lane you want" },
 
+  { surface: "control", group: "Clips", keys: ["∞"], description: "Make the clip loopable. Its two edges then repeat it instead of trimming it — drag either one out and the pattern fills the space. Turning it off leaves the clip exactly as it was" },
+  { surface: "control", group: "Clips", keys: ["M"], description: "Mute this clip alone. Its EQ, automation and bake stay put and come back untouched — unlike the lane MUTE, which takes its neighbours with it" },
+  { surface: "pointer", group: "Clips", keys: ["Right click a clip"], description: "Duplicate it, exactly as it is trimmed. The copy goes to a free track at the same beats when there is one, otherwise right beside the clip" },
   { surface: "pointer", group: "Clips", keys: ["Right click a track or clip"], description: "Shift its downbeat a beat either way, when analysis put the bar line on the 2 or the 3. The tempo does not move, and every clip of that track follows" },
   { surface: "pointer", group: "Automation", keys: ["Right click"], description: "Add a volume or pan node; right-click a node to delete it" },
   { surface: "pointer", group: "Automation", keys: ["Drag a volume node"], description: "Set its level and position — to the bottom of the travel for silence" },

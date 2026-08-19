@@ -5033,6 +5033,135 @@ body,
   transform: translateY(1px);
 }
 
+/* Un tour de boucle.
+   Sans boucle il n'y en a qu'un, qui occupe toute la boîte et n'a besoin
+   d'aucune position : c'est le cas ordinaire, et il ne coûte rien de plus
+   qu'avant. Avec la boucle, chaque tour reçoit sa place et sa largeur en
+   ligne. */
+.clip-waveform-turn{
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+/* Une répétition porte un fil à sa gauche : c'est la couture, l'endroit exact
+   où le motif recommence. Sans elle, une boucle de huit mesures se lit comme un
+   long clip et on ne sait plus où couper. */
+.clip-waveform-turn--repeat::before{
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: rgba(3, 105, 161, 0.45);
+  pointer-events: none;
+}
+
+/* Bouclable.
+   Bleu à l'allumage, et non rouge : la coupure du clip vient de prendre le
+   rouge trois pixels plus loin dans la même barre, et deux rouges voisins qui
+   veulent dire des choses opposées se confondent. */
+.clip-loop-btn{
+  display: grid;
+  place-items: center;
+  /* La même plaque que la chaîne d'à côté, et pas 15 px comme au premier jet.
+     Le glyphe fait douze pixels dans les deux : trois pixels de marge de part
+     et d'autre chez l'une, un et demi chez l'autre, et le signe le plus à
+     l'étroit se lit comme le plus gras. Ce n'était pas le dessin. */
+  width: 18px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid #94a3b8;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 100%);
+  color: #0f172a;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  transition: all 120ms ease;
+}
+
+.clip-loop-btn svg{
+  width: 12px;
+  height: 12px;
+}
+
+.clip-loop-btn:hover:not(:disabled){
+  border-color: #0369a1;
+  background: linear-gradient(180deg, #ffffff 0%, #e0f2fe 100%);
+  color: #075985;
+  box-shadow: 0 1px 3px rgba(3, 105, 161, 0.25);
+}
+
+.clip-loop-btn:disabled{
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.clip-loop-btn:active:not(:disabled){
+  transform: translateY(1px);
+}
+
+.clip-loop-btn.is-active{
+  border-color: #0369a1;
+  border-top-color: #38bdf8;
+  border-bottom-color: #075985;
+  color: #ffffff;
+  background: linear-gradient(180deg, #0ea5e9 0%, #0369a1 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.35),
+    0 0 6px rgba(14, 165, 233, 0.5);
+}
+
+/* Couper ce clip-là, et pas la voie.
+   La touche reprend la carrure de BAKE — même hauteur, même graisse — parce
+   qu'elles vivent côte à côte dans une barre de quatorze pixels où la moindre
+   différence de gabarit se voit. Tenue, elle prend le même rouge que le reste
+   du programme donne à ce qui est armé. */
+.clip-mute-btn{
+  width: 15px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid #94a3b8;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 100%);
+  color: #0f172a;
+  font-family: inherit;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  transition: all 120ms ease;
+}
+
+.clip-mute-btn:hover:not(:disabled){
+  border-color: #dc2626;
+  background: linear-gradient(180deg, #ffffff 0%, #fee2e2 100%);
+  color: #991b1b;
+  box-shadow: 0 1px 3px rgba(220, 38, 38, 0.25);
+}
+
+.clip-mute-btn:disabled{
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.clip-mute-btn:active:not(:disabled){
+  transform: translateY(1px);
+}
+
+.clip-mute-btn.is-active{
+  border-color: #7f1d1d;
+  border-top-color: #ef4444;
+  border-bottom-color: #7f1d1d;
+  color: #ffffff;
+  background: linear-gradient(180deg, #dc2626 0%, #991b1b 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.32),
+    0 0 6px rgba(220, 38, 38, 0.5);
+}
+
 .clip-bake-btn.is-active{
   border-color: #5b21b6;
   border-top-color: #a78bfa;
@@ -5120,8 +5249,16 @@ body,
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(15, 23, 42, 0.65);
-  backdrop-filter: blur(4px);
+  /* Un voile plus dense, et pas de flou.
+     Le `backdrop-filter` d'ici était le seul de la feuille posé sur du contenu
+     **en mouvement** : les deux autres surfaces floutuées — l'éditeur de grille
+     et l'aide — se consultent à l'arrêt, alors que l'EQ reste ouvert pendant
+     que la timeline défile. Le compositeur devait donc relire le fond à chaque
+     image, et sur certains pilotes il présentait une trame où la couche
+     n'était pas prête : la fenêtre clignotait, en rendu matériel seulement.
+     Le voile passe de 0,65 à 0,78 pour tenir seul la séparation que le flou
+     aidait à donner. */
+  background: rgba(15, 23, 42, 0.78);
   animation: clipEqFadeIn 150ms ease-out;
 }
 

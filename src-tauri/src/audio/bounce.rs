@@ -465,6 +465,182 @@ fn finish_header<W: Write + Seek>(writer: &mut W, data_bytes: usize) -> Result<(
 mod tests {
     use super::*;
 
+    /// Symphonia contre un décodeur de référence, sur le même MP3.
+    ///
+    /// Sonde manuelle, pas un test de la suite : elle veut trois fichiers sur
+    /// le disque et un ffmpeg pour les avoir produits. Elle se lance avec
+    ///
+    /// ```text
+    /// set MIXCANVAS_PROBE_DIR=...\decode
+    /// cargo test --lib symphonia_agrees -- --ignored --nocapture
+    /// ```
+    ///
+    /// Ce qu'elle mesure : le décalage entier entre les deux décodages — un
+    /// MP3 porte un retard d'encodeur que chaque décodeur traite à sa façon —
+    /// puis, une fois recalés, l'écart échantillon par échantillon.
+    #[test]
+    #[ignore = "demande un dossier de sonde produit par ffmpeg"]
+    fn symphonia_agrees_with_a_reference_decoder() {
+        let dir = std::path::PathBuf::from(
+            std::env::var("MIXCANVAS_PROBE_DIR").expect("MIXCANVAS_PROBE_DIR"),
+        );
+
+        // Le chemin exact de l'application : rodio ouvre le MP3 avec
+        // symphonia-bundle-mp3 et rend des f32 entrelacés.
+        let file = std::fs::File::open(dir.join("probe.mp3")).expect("probe.mp3");
+        let decoder = rodio::Decoder::new(std::io::BufReader::new(file)).expect("mp3 decodes");
+        let channels = rodio::Source::channels(&decoder);
+        let rate = rodio::Source::sample_rate(&decoder);
+        let ours: Vec<f32> = decoder.collect();
+        println!(
+            "symphonia : {rate} Hz, {channels} canaux, {} échantillons",
+            ours.len()
+        );
+
+        // Le décodage de référence, en f32 brut : pas d'entête à interpréter,
+        // donc rien qui puisse introduire un décalage de notre côté.
+        let raw = std::fs::read(dir.join("ffmpeg-decode.f32")).expect("reference f32");
+        let reference: Vec<f32> = raw
+            .chunks_exact(4)
+            .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            .collect();
+        println!("ffmpeg    : {} échantillons", reference.len());
+
+        // Recalage : on cherche le décalage en trames qui minimise l'erreur sur
+        // une fenêtre prise dans le bruit rose, là où le signal est riche.
+        let frames_ours = ours.len() / usize::from(channels.get());
+        let frames_reference = reference.len() / 2;
+        // La fenêtre tombe dans le bruit large bande : deux sinus graves se
+        // ressemblent d'une période à l'autre, et le recalage y serait ambigu.
+        let window_start = 44_100;
+        let window = 44_100;
+        let mut best = (0_i64, f64::INFINITY);
+        for offset in -3_000_i64..=3_000 {
+            let mut sum = 0.0_f64;
+            for index in 0..window {
+                let a = window_start + index;
+                let b = a as i64 + offset;
+                if b < 0 || b as usize >= frames_reference || a >= frames_ours {
+                    sum = f64::INFINITY;
+                    break;
+                }
+                let difference =
+                    ours[a * usize::from(channels.get())] as f64 - reference[b as usize * 2] as f64;
+                sum += difference * difference;
+            }
+            if sum < best.1 {
+                best = (offset, sum);
+            }
+        }
+        let offset = best.0;
+        println!(
+            "décalage  : {offset} trames ({:.2} ms)",
+            offset as f64 * 1000.0 / 44_100.0
+        );
+
+        // Erreur une fois recalés, sur tout ce que les deux ont en commun.
+        let mut peak_error = 0.0_f64;
+        let mut squared = 0.0_f64;
+        let mut compared = 0_usize;
+        let mut peak_reference = 0.0_f64;
+        for frame in 0..frames_ours {
+            let other = frame as i64 + offset;
+            if other < 0 || other as usize >= frames_reference {
+                continue;
+            }
+            for channel in 0..2usize {
+                let a = ours[frame * usize::from(channels.get()) + channel] as f64;
+                let b = reference[other as usize * 2 + channel] as f64;
+                let error = (a - b).abs();
+                peak_error = peak_error.max(error);
+                peak_reference = peak_reference.max(b.abs());
+                squared += error * error;
+                compared += 1;
+            }
+        }
+        let rms = (squared / compared as f64).sqrt();
+        println!("comparés  : {compared} échantillons");
+        println!(
+            "écart max : {peak_error:.3e}  ({:.1} dBFS)",
+            20.0 * peak_error.max(1.0e-30).log10()
+        );
+        println!(
+            "écart RMS : {rms:.3e}  ({:.1} dBFS)",
+            20.0 * rms.max(1.0e-30).log10()
+        );
+        println!("crête référence : {peak_reference:.4}");
+
+        // Et le rapport signal/erreur, qui est la vraie mesure de conformité.
+        println!(
+            "S/E       : {:.1} dB",
+            20.0 * (peak_reference / rms.max(1.0e-30)).log10()
+        );
+
+        // Un décodage MP3 dépasse la pleine échelle : le codec ne reconstruit
+        // pas les crêtes exactement. Si un maillon de la chaîne rabote à ±1, le
+        // gros de l'écart se trouvera là et nulle part ailleurs — ce qui n'est
+        // pas une erreur de décodage mais une perte de matière. On sépare donc
+        // les deux mesures.
+        let mut clamped = 0_usize;
+        let mut over_full_scale = 0_usize;
+        let mut peak_inside = 0.0_f64;
+        let mut squared_inside = 0.0_f64;
+        let mut inside = 0_usize;
+        let mut peak_ours = 0.0_f64;
+        for frame in 0..frames_ours {
+            let other = frame as i64 + offset;
+            if other < 0 || other as usize >= frames_reference {
+                continue;
+            }
+            for channel in 0..2usize {
+                let a = ours[frame * usize::from(channels.get()) + channel] as f64;
+                let b = reference[other as usize * 2 + channel] as f64;
+                peak_ours = peak_ours.max(a.abs());
+                if a.abs() >= 0.999_999 {
+                    clamped += 1;
+                }
+                if b.abs() > 1.0 {
+                    over_full_scale += 1;
+                }
+                if b.abs() <= 0.98 {
+                    let error = (a - b).abs();
+                    peak_inside = peak_inside.max(error);
+                    squared_inside += error * error;
+                    inside += 1;
+                }
+            }
+        }
+        // La question qui compte vraiment pour un bounce : après passage en
+        // seize bits, les deux décodeurs écrivent-ils le même fichier ?
+        let mut differing_16bit = 0_usize;
+        for frame in 0..frames_ours {
+            let other = frame as i64 + offset;
+            if other < 0 || other as usize >= frames_reference {
+                continue;
+            }
+            for channel in 0..2usize {
+                let a = ours[frame * usize::from(channels.get()) + channel] as f64;
+                let b = reference[other as usize * 2 + channel] as f64;
+                let quantise = |value: f64| (value.clamp(-1.0, 1.0) * 32767.0).round() as i32;
+                if quantise(a) != quantise(b) {
+                    differing_16bit += 1;
+                }
+            }
+        }
+        println!("échantillons différents une fois en 16 bits : {differing_16bit}");
+
+        let rms_inside = (squared_inside / inside.max(1) as f64).sqrt();
+        println!("--- en séparant les crêtes ---");
+        println!("crête à nous    : {peak_ours:.6}");
+        println!("nos échantillons collés à ±1 : {clamped}");
+        println!("référence au-delà de ±1      : {over_full_scale}");
+        println!(
+            "sous 0,98 — écart max : {peak_inside:.3e} ({:.1} dBFS), RMS {rms_inside:.3e} ({:.1} dBFS), sur {inside} échantillons",
+            20.0 * peak_inside.max(1.0e-30).log10(),
+            20.0 * rms_inside.max(1.0e-30).log10()
+        );
+    }
+
     #[test]
     fn the_dither_is_triangular_and_bounded_to_one_lsb() {
         let mut dither = TriangularDither::new();

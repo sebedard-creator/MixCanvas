@@ -2087,7 +2087,7 @@ dependencies = [
 
 [[package]]
 name = "mixcanvas"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "base64 0.22.1",
  "beat-this",

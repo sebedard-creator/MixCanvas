@@ -169,3 +169,158 @@ export function minimumAnchorBeat(preRollBeats: number, trimStartBeats: number):
   if (!usable) return 0;
   return Math.max(0, Math.ceil(preRollBeats - trimStartBeats));
 }
+
+/**
+ * Une boucle, vue de ses deux poignées.
+ *
+ * `loopLeadBeats` et `loopTailBeats` disent de combien la boucle déborde du
+ * motif, avant et après. Le motif lui-même reste décrit par le rognage : c'est
+ * ce qui fait qu'éteindre la boucle rend le clip exactement tel qu'il était.
+ */
+export interface ClipLoop {
+  loopLeadBeats: number;
+  loopTailBeats: number;
+}
+
+export interface LoopableClip extends TrimmableClip {
+  looping: boolean;
+  loopLeadBeats: number;
+  loopTailBeats: number;
+}
+
+/** Où commence et finit le motif, à l'intérieur d'un clip qui boucle. */
+export function loopBody(clip: LoopableClip): { startBeat: number; endBeat: number } {
+  return {
+    startBeat: clip.visualStartBeat + clip.loopLeadBeats,
+    endBeat: clip.visualEndBeat - clip.loopTailBeats,
+  };
+}
+
+/**
+ * Le clip tel qu'il paraît pendant qu'on tire une poignée de boucle.
+ *
+ * Même rôle que `clipWithTrim`, et pour la même raison : la boîte dessinée et
+ * la waveform qu'elle contient doivent lire une seule géométrie, sinon on voit
+ * une tranche fixe se comprimer dans une boîte qui bouge.
+ */
+export function clipWithLoop<T extends LoopableClip>(clip: T, loop: ClipLoop | undefined): T {
+  if (!loop) return clip;
+  const body = loopBody(clip);
+  return {
+    ...clip,
+    loopLeadBeats: loop.loopLeadBeats,
+    loopTailBeats: loop.loopTailBeats,
+    visualStartBeat: body.startBeat - loop.loopLeadBeats,
+    visualEndBeat: body.endBeat + loop.loopTailBeats,
+  };
+}
+
+/**
+ * Le débordement que produit le fait de tirer `edge` jusqu'à `pointerBeat`.
+ *
+ * Une poignée de boucle ne peut que rallonger : ramenée à l'intérieur du motif,
+ * elle s'arrête sur son bord. Pour raccourcir le motif lui-même, il faut
+ * éteindre la boucle et rogner — deux gestes distincts pour deux idées
+ * distinctes, plutôt qu'une poignée dont le sens change à mi-course.
+ */
+export function loopForEdge(
+  clip: LoopableClip,
+  edge: TrimEdge,
+  pointerBeat: number,
+  limits: { limitStartBeat: number; limitEndBeat: number },
+): ClipLoop {
+  const body = loopBody(clip);
+  const snapped = snapTrimBeat(pointerBeat);
+
+  if (edge === "start") {
+    // Jamais dans le voisin de gauche, jamais avant le premier temps du
+    // projet, et jamais au-delà du début du motif.
+    const earliest = Math.max(0, limits.limitStartBeat);
+    const startBeat = Math.min(Math.max(snapped, earliest), body.startBeat);
+    return {
+      loopLeadBeats: Math.max(0, body.startBeat - startBeat),
+      loopTailBeats: clip.loopTailBeats,
+    };
+  }
+
+  const latest = limits.limitEndBeat;
+  const endBeat = Math.max(Math.min(snapped, latest), body.endBeat);
+  return {
+    loopLeadBeats: clip.loopLeadBeats,
+    loopTailBeats: Math.max(0, endBeat - body.endBeat),
+  };
+}
+
+/** Un tour de boucle, tel qu'il se dessine dans la boîte du clip. */
+export interface LoopTurn {
+  key: string;
+  offsetPx: number;
+  widthPx: number;
+  trimStartBeats: number;
+  trimEndBeats: number;
+  durationBeats: number;
+}
+
+/**
+ * Les tours à dessiner, du premier au dernier.
+ *
+ * Miroir de `loop_tiles` dans `src-tauri/src/timeline.rs`, et il doit le
+ * rester : ce qu'on voit et ce qu'on entend sont deux lectures du même
+ * découpage, et deux carrelages qui divergent donnent une waveform qui ment.
+ *
+ * Un clip sans boucle rend un seul tour — le clip lui-même — pour que l'appelant
+ * n'ait pas deux chemins à écrire.
+ */
+export function loopTurns(clip: LoopableClip, pixelsPerBeat: number): LoopTurn[] {
+  const width = clip.visualEndBeat - clip.visualStartBeat;
+  const plain: LoopTurn = {
+    key: "body",
+    offsetPx: 0,
+    widthPx: Math.max(1, width * pixelsPerBeat),
+    trimStartBeats: clip.trimStartBeats,
+    trimEndBeats: clip.trimEndBeats,
+    durationBeats: width,
+  };
+
+  const body = loopBody(clip);
+  const bodyBeats = body.endBeat - body.startBeat;
+  if (!clip.looping || !(bodyBeats > 0) || !Number.isFinite(bodyBeats)) return [plain];
+
+  const first = -Math.ceil(clip.loopLeadBeats / bodyBeats);
+  const last = Math.ceil(clip.loopTailBeats / bodyBeats);
+
+  const turns: LoopTurn[] = [];
+  for (let turn = first; turn <= last; turn += 1) {
+    const startBeat = body.startBeat + turn * bodyBeats;
+    const headCut = Math.max(0, clip.visualStartBeat - startBeat);
+    const tailCut = Math.max(0, startBeat + bodyBeats - clip.visualEndBeat);
+    const duration = bodyBeats - headCut - tailCut;
+    // Un reste plus court qu'un millième de temps ne se voit pas et coûterait
+    // un canvas.
+    if (duration <= 1e-3) continue;
+    turns.push({
+      key: `turn-${turn}`,
+      offsetPx: (startBeat + headCut - clip.visualStartBeat) * pixelsPerBeat,
+      widthPx: Math.max(1, duration * pixelsPerBeat),
+      trimStartBeats: clip.trimStartBeats + headCut,
+      trimEndBeats: clip.trimEndBeats + tailCut,
+      durationBeats: duration,
+    });
+  }
+  if (turns.length === 0) return [plain];
+
+  /* Les tours sont ramenés sur la grille de pixels.
+     Chaque bord est arrondi, et la largeur se déduit du bord suivant plutôt
+     que d'être arrondie pour elle-même : deux arrondis indépendants laissent
+     un pixel de vide ou de recouvrement à la couture. Un bord fractionnaire
+     ferait aussi ré-échantillonner l'image du tour à chaque trame pendant la
+     lecture, chacun à sa propre fraction — la waveform se mettait à danser. */
+  const right = clip.visualEndBeat - clip.visualStartBeat;
+  return turns.map((entry, index) => {
+    const from = Math.round(entry.offsetPx);
+    const next = index + 1 < turns.length
+      ? Math.round(turns[index + 1].offsetPx)
+      : Math.round(right * pixelsPerBeat);
+    return { ...entry, offsetPx: from, widthPx: Math.max(1, next - from) };
+  });
+}

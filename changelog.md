@@ -12,6 +12,124 @@ wrote it. What changed, and what it means when you sit down to build a mix.
 
 ---
 
+## 1.7.0 — 2026-08-18
+
+### Added
+
+- **Duplicate a clip from the right-click menu.** It copies the clip exactly as
+  it is trimmed — cut four bars out of a six-minute track and you get four bars,
+  needing four bars of room. The copy never displaces anything. It looks for a
+  free track at the same beats first, since that costs the mix no space at all;
+  failing that it goes immediately to the right of the clip, then immediately to
+  the left, always landing on a bar line so you can still drag it. If none of
+  the four places is clear, it says so rather than pushing something aside.
+  What belongs to the clip comes along: its EQ, its trim, the voice it plays,
+  its separated stems and its bake. What belongs to the lane stays where it is —
+  volume, pan, filter curves and recorded effect passes were drawn at a place on
+  a track, not onto the clip, and carrying them would write over whatever is
+  already there.
+
+- **Loopable clips.** A new `∞` key on each clip, between `MUS` and the
+  sidechain. Turn it on and the clip's two edges stop trimming and start
+  repeating it — drag either one out and the pattern fills the space, on the
+  beat, for as long as you pull. It is a state, not an action: turning it off
+  leaves the clip exactly as it was, because the repeated pattern is still
+  described by the trim. The last turn at each end stops where you let go
+  rather than at the next repeat, and a thin line marks every seam so an
+  eight-bar loop does not read as one long clip. A loop refuses to run into the
+  clip after it, the same way moving one does — the room is there or it is not.
+- **Mute one clip.** A small `M` between `BAKE` and the close button, red while
+  it is on. The lane `MUTE` answers a different question — *I do not want to
+  hear this track* — and takes the clips beside it with it. This one silences
+  the clip you clicked and nothing else. It is not a deletion: the EQ, the
+  automation drawn over it and the bake all stay put and come back untouched,
+  which is what makes it a gesture you can afford mid-mix. A muted clip stays
+  out of the bounce too, and still counts towards the length of the project.
+
+### Fixed
+
+- **The Clip EQ window stops blinking on some graphics drivers.** Its backdrop
+  was blurred, which asks the compositor to re-read everything underneath on
+  every frame. It was the only blurred surface in the program sitting over
+  *moving* content — the Beatgrid Editor and the help window are read while
+  playback is stopped, while the EQ stays open as the timeline scrolls behind
+  it. On an older card in full-GPU mode that produced a one-frame blank; both
+  other render modes were clean. The blur is gone and the veil behind the
+  window is darker instead, which separates it just as well and asks nothing of
+  the compositor.
+- **The mastering limiter's default threshold catches up with `COMP`.**
+  Softening the compressor's smiling V took level out of the colour stage, so
+  the mix reached the limiter a little quieter than before for the same result.
+  Measured across the two curves weighted by a programme spectrum: 0.40 dB less
+  — 0.28 dB weighted as white noise. The default threshold moves from −3.7 to
+  −4.0 dB, which sits inside that band and stays a number you can read. The
+  ceiling does not move, so an armed bounce lifts 3.9 dB instead of 3.6.
+- **Looped waveforms stop dancing during playback.** A clip's waveform bitmap
+  was as many pixels wide as it had columns of data, which is right for a whole
+  clip — the pyramid level is picked to give one column per pixel. A short
+  slice breaks that: four beats taken from a six-minute track keep only
+  ninety-one columns, stretched by CSS across a hundred and sixty pixels. The
+  browser resamples the picture, and because the timeline scrolls by fractions
+  of a pixel while playing, the resampling phase changes every frame. One clip
+  shimmers unnoticeably; a row of loop turns, each at its own fraction,
+  shimmers independently — which reads as dancing. The bitmap is now made at
+  the size it will actually occupy, and each turn is placed on whole pixels,
+  with its width taken from the next turn's edge so no seam gains or loses a
+  pixel.
+- **Volume envelopes follow the ear instead of the ruler.** The lower half of
+  a lane spread forty decibels evenly down the travel. That is regular to the
+  eye and wrong to it: half way down was −20 dB — a tenth of the amplitude,
+  where you expect *about half as loud* — while a tenth of the travel already
+  cost four decibels, so fine adjustment near unity was impossible, and the
+  bottom quarter ran from −30 to −40 dB where nothing is audible in a mix
+  anyway. The travel is squared now, which is roughly what a console fader
+  does: half way down is −10 dB, three quarters down is −22.5, and a tenth of
+  the travel costs 0.4 dB instead of 4 — ten times finer where the work
+  actually happens. Only the drawing changes. The engine still receives
+  decibels, so a saved project sounds exactly the same; its nodes are simply
+  drawn higher up the lane than before.
+- **The Clip EQ stops stuttering, and stops eating the undo history.** Every
+  live save while dragging a slider went through the same path as a real edit:
+  it pushed a new timeline into React — re-rendering the whole timeline panel,
+  the heaviest thing in the program — and added an entry to the undo history.
+  Five times a second. The slider stuttered at exactly that rhythm, and three
+  seconds of tweaking burned fifteen of the fifty undo levels. Neither was
+  needed: the live save exists only so the engine hears the change, and the
+  window covers the timeline anyway. The timeline is now read once, when the
+  window closes, with the single undo entry that belongs to the whole
+  adjustment.
+- **A bar cut by hand now loops without a gap.** Splitting happened at the exact
+  position of the playhead, which is never on a round beat: what looked like one
+  bar was 4.0173 beats long. Clip anchors are whole beats and land on bar lines,
+  so no position on the grid could follow such a clip end to end — duplicating
+  it left four beats of silence, and dragging the copy back to close the gap was
+  refused because it overlapped the original by seventeen thousandths of a beat.
+  A split now lands on the nearest whole beat. The rule lives in the engine
+  rather than the interface, so the `B` key and the menu cut in the same place.
+- **The tempo box no longer opens off-screen.** Right-clicking the BPM of the
+  first clip in a mix put the box on the node it edits and centred it there,
+  which is right everywhere except a few pixels from the edge: half of it went
+  past the left of the window and the field could not be seen. It now slides
+  back inside, at either end.
+- **`+ MP3` stops claiming an import that is not happening.** The button read
+  *Importing…* whenever it was unavailable, and one of the reasons it becomes
+  unavailable is that the mix is playing. It keeps its name now and simply
+  greys out; hovering either it or `Add Folder` says which of the three reasons
+  it is — an import in progress, the Beatgrid Editor being open, or the mix
+  playing.
+
+### Changed
+
+- **The eraser pad is drawn again.** It was a school eraser tilted thirty-two
+  degrees, and at twelve pixels the block and its band collapsed into one
+  leaning smudge. It is a proper forty-five degrees now, resting on the sheet,
+  with the working corner worn flat — at exactly that angle the wear facet
+  comes out horizontal, so it reads as use rather than as a slip of the pen.
+  The line under it is intact ahead of the eraser and gone behind, which is the
+  only part of the drawing that says which way the gesture runs.
+
+---
+
 ## 1.6.0 — 2026-08-16
 
 ### Fixed

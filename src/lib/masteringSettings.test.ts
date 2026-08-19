@@ -47,7 +47,7 @@ describe("masteringGainDb", () => {
   /* Deux nombres négatifs ne disent pas qu'on demande du gain, et c'est
      exactement ce que la boîte doit montrer avant de lancer un rendu. */
   it("reads the lift the two thresholds are asking for", () => {
-    expect(masteringGainDb({ ...DEFAULT_MASTERING_SETTINGS })).toBeCloseTo(3.6, 10);
+    expect(masteringGainDb({ ...DEFAULT_MASTERING_SETTINGS })).toBeCloseTo(3.9, 10);
     expect(
       masteringGainDb({ ...DEFAULT_MASTERING_SETTINGS, thresholdDb: -12, ceilingDb: -1 }),
     ).toBeCloseTo(11, 10);

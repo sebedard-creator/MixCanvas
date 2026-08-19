@@ -43,6 +43,20 @@ export interface TimelineClip {
   trimStartBeats: number;
   trimEndBeats: number;
   isSidechainKey: boolean;
+  /**
+   * Coupé : le clip reste à sa place, avec son égalisation, son automation et
+   * sa cuisson, mais ne sort plus — ni à la lecture, ni au bounce.
+   */
+  muted: boolean;
+  /**
+   * Bouclable : tant que c'est vrai, les deux poignées du clip cessent de
+   * rogner et allongent la boucle. Le motif répété reste celui du rognage.
+   */
+  looping: boolean;
+  /** De combien la boucle déborde avant le motif, en temps. */
+  loopLeadBeats: number;
+  /** De combien elle déborde après. */
+  loopTailBeats: number;
   /** Laquelle des voix du morceau ce clip joue. */
   stem: "full" | "vocals" | "instrumental";
   /** Si le morceau a déjà été séparé : un clic instantané, ou deux minutes. */

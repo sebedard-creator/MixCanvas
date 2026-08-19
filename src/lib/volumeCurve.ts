@@ -65,13 +65,33 @@ const VOLUME_FLOOR_UNITS = LANE_PAIR_UNITS - NODE_MARGIN_UNITS;
  * Where 0 dB sits inside a lane pair, measured from the pair's top.
  *
  * Au milieu de la course : la moitié haute pour douze décibels de gain, la
- * moitié basse pour quarante de coupure. L'échelle n'est donc pas linéaire en
- * décibels, et c'est voulu — le travail d'automation se fait à quelques
- * décibels de l'unité, et c'est là que la résolution doit aller.
+ * moitié basse pour quarante de coupure.
  */
 const VOLUME_ZERO_UNITS = (VOLUME_TOP_UNITS + VOLUME_FLOOR_UNITS) / 2;
 /** Course d'une moitié, du zéro vers l'un ou l'autre bout. */
 const VOLUME_HALF_SPAN_UNITS = VOLUME_ZERO_UNITS - VOLUME_TOP_UNITS;
+
+/**
+ * La courbe de la moitié basse.
+ *
+ * Elle était linéaire en décibels : quarante décibels répartis également sous
+ * l'unité. À l'œil c'est régulier, à l'oreille non. Un dixième de course
+ * coûtait déjà quatre décibels — un mouvement de deux pixels s'entendait —
+ * tandis que le dernier quart courait de − 30 à − 40 dB, où il n'y a plus rien
+ * à entendre dans un mix. Le geste utile se faisait donc dans une bande
+ * étroite, et le reste de la course ne servait à rien.
+ *
+ * La position élevée au carré redistribue ça. Un fader de console suit une loi
+ * du même genre, et la comparaison est directe : à mi-course, cette courbe donne
+ * − 10 dB et un fader normalisé aussi; aux trois quarts, − 22,5 contre − 30
+ * environ. Près de l'unité la résolution devient dix fois plus fine — un
+ * dixième de course vaut 0,4 dB au lieu de 4.
+ *
+ * Seul le **dessin** change. Le moteur reçoit toujours des décibels, et un
+ * projet enregistré sonne exactement pareil : ses nœuds sont simplement
+ * redessinés plus haut dans la voie.
+ */
+const VOLUME_TAPER = 2;
 
 /** Vertical position of a gain, in viewBox units from the top of the SVG. */
 export function volumeNodeY(lane: number, gainDb: number | null): number {
@@ -80,7 +100,10 @@ export function volumeNodeY(lane: number, gainDb: number | null): number {
   const delta =
     gainDb >= 0
       ? (Math.min(gainDb, VOLUME_MAX_DB) / VOLUME_MAX_DB) * VOLUME_HALF_SPAN_UNITS
-      : (Math.max(gainDb, VOLUME_FLOOR_DB) / VOLUME_FLOOR_DB) * -VOLUME_HALF_SPAN_UNITS;
+      : -(
+        (Math.max(gainDb, VOLUME_FLOOR_DB) / VOLUME_FLOOR_DB) ** (1 / VOLUME_TAPER)
+        * VOLUME_HALF_SPAN_UNITS
+      );
   return base + VOLUME_ZERO_UNITS - delta;
 }
 
@@ -99,7 +122,8 @@ export function volumeNodeGainDb(lane: number, y: number): number | null {
     const db = (delta / VOLUME_HALF_SPAN_UNITS) * VOLUME_MAX_DB;
     return Math.round(Math.min(VOLUME_MAX_DB, db) * 10) / 10;
   }
-  const db = (delta / VOLUME_HALF_SPAN_UNITS) * -VOLUME_FLOOR_DB;
+  const travel = Math.min(1, -delta / VOLUME_HALF_SPAN_UNITS);
+  const db = VOLUME_FLOOR_DB * travel ** VOLUME_TAPER;
   if (db <= VOLUME_FLOOR_DB) return null;
   return Math.round(db * 10) / 10;
 }

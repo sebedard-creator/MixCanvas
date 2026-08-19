@@ -104,6 +104,16 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
                          CHECK (is_sidechain_key IN (0, 1)),
         stem             TEXT NOT NULL DEFAULT 'full'
                          CHECK (stem IN ('full', 'vocals', 'instrumental')),
+        -- Ce clip est-il coupé ? Une décision de mix qui appartient au clip et
+        -- non à la voie : couper la voie éteindrait les clips voisins avec lui.
+        muted            INTEGER NOT NULL DEFAULT 0 CHECK (muted IN (0, 1)),
+        -- Ce clip se répète-t-il ? Tant que c'est le cas, ses deux poignées
+        -- cessent de rogner et allongent la boucle, de part et d'autre du
+        -- motif. Le motif lui-même reste décrit par `trim_*` : éteindre la
+        -- boucle rend donc le clip exactement tel qu'il était.
+        looping          INTEGER NOT NULL DEFAULT 0 CHECK (looping IN (0, 1)),
+        loop_lead_beats  REAL NOT NULL DEFAULT 0.0 CHECK (loop_lead_beats >= 0.0),
+        loop_tail_beats  REAL NOT NULL DEFAULT 0.0 CHECK (loop_tail_beats >= 0.0),
         -- Le tempo que la courbe globale doit viser à l'ancre de ce clip.
         --
         -- `NULL` veut dire « le BPM du morceau », ce qui est le cas ordinaire :
@@ -294,14 +304,14 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
         created_at     INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
-    PRAGMA user_version = 34;
+    PRAGMA user_version = 36;
 "#;
 
 /// Schema version described by `CURRENT_DATABASE_SCHEMA`. The constant and the
 /// `PRAGMA user_version` above must move together: the schema is also replayed
 /// after a migration, so a stale value there would push the database back down
 /// and replay the last migrations on every start.
-const LATEST_SCHEMA_VERSION: i64 = 34;
+const LATEST_SCHEMA_VERSION: i64 = 36;
 
 const MIGRATE_VERSION_1_TO_2: &str = r#"
     BEGIN IMMEDIATE;
@@ -1833,6 +1843,43 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
                     )
                     .map_err(database_write_error)?;
                 version = 34;
+            }
+            34 => {
+                // `ensure_column` plutôt qu'un `ALTER TABLE` sec : une base
+                // neuve tient déjà la colonne de son schéma, et rejouer l'ajout
+                // échouerait.
+                ensure_column(
+                    connection,
+                    "timeline_clips",
+                    "muted",
+                    "INTEGER NOT NULL DEFAULT 0 CHECK (muted IN (0, 1))",
+                )?;
+                connection
+                    .execute_batch("PRAGMA user_version = 35;")
+                    .map_err(database_write_error)?;
+                version = 35;
+            }
+            35 => {
+                for (column, kind) in [
+                    (
+                        "looping",
+                        "INTEGER NOT NULL DEFAULT 0 CHECK (looping IN (0, 1))",
+                    ),
+                    (
+                        "loop_lead_beats",
+                        "REAL NOT NULL DEFAULT 0.0 CHECK (loop_lead_beats >= 0.0)",
+                    ),
+                    (
+                        "loop_tail_beats",
+                        "REAL NOT NULL DEFAULT 0.0 CHECK (loop_tail_beats >= 0.0)",
+                    ),
+                ] {
+                    ensure_column(connection, "timeline_clips", column, kind)?;
+                }
+                connection
+                    .execute_batch("PRAGMA user_version = 36;")
+                    .map_err(database_write_error)?;
+                version = 36;
             }
             _ => {
                 let (target_version, migration) = match version {
