@@ -61,7 +61,18 @@ PERFORMANCE_AUDIT_*.md
 
 # Le texte d'une release, écrit pour être collé dans GitHub puis oublié.
 # Le journal versionné, lui, garde la trace de ce que chaque version apporte.
+# Celui de la 1.0 avait été commité avant cette règle, et une règle ne rattrape
+# pas ce qui est déjà suivi : il a fallu le sortir de l'index à la main.
 RELEASE-NOTES-*.md
+
+# La configuration de l'atelier, pas celle du programme : comment l'outillage
+# démarre le serveur de développement, et les permissions locales d'un agent.
+# Rien là-dedans n'aide à compiler ni à faire tourner MixCanvas.
+#
+# `settings.local.json` était déjà couvert par le `.gitignore` **global** de la
+# machine. Une protection qui vit hors du dépôt ne voyage pas avec lui : sur
+# une autre machine, un `git add -A` embarquerait des chemins locaux.
+.claude/
 
 # Traces de l'inspecteur Chromium. Elles ont porté toute la campagne de
 # performances de fin juillet et sont précieuses le temps d'une comparaison —
