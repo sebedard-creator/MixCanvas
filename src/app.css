@@ -6341,3 +6341,25 @@ body,
   inset: 0;
   pointer-events: none;
 }
+
+/* Le champ de l'éditeur de grille n'a plus de flèches.
+
+   Celui du clic droit non plus, mais là il n'y a rien à masquer : c'est un
+   champ de texte, donc les flèches n'existent pas.
+
+   Un pas valait un millième de temps — le `step` du champ — donc il fallait
+   mille pressions pour un seul BPM, et personne n'a jamais réglé un tempo
+   ainsi. Elles ne servaient qu'à être cliquées par accident, et l'une d'elles
+   vidait la timeline.
+
+   Le clavier est bloqué dans les deux composants pour la même raison : garder
+   l'incrément en cachette ferait deux comportements pour un seul contrôle. */
+#source-bpm::-webkit-inner-spin-button,
+#source-bpm::-webkit-outer-spin-button{
+  appearance: none;
+  margin: 0;
+}
+
+#source-bpm{
+  appearance: textfield;
+}

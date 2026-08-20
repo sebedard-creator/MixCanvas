@@ -312,6 +312,14 @@ export function BeatgridEditor({
                 setSnapNote(null);
                 setTapAccuracyMs(null);
               }}
+              /* Pas d'incrément au clavier non plus : les flèches sont
+                 retirées du champ, et les laisser répondre en cachette ferait
+                 deux comportements pour un seul contrôle. */
+              onKeyDown={(event) => {
+                if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+                  event.preventDefault();
+                }
+              }}
             />
             <div className="tempo-assist">
               <button

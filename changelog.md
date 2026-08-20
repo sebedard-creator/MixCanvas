@@ -12,6 +12,23 @@ wrote it. What changed, and what it means when you sit down to build a mix.
 
 ---
 
+## 1.7.1 — 2026-08-20
+
+### Removed
+
+- **The tempo field's up and down arrows.** Right-clicking the ruler to type a
+  clip's tempo opened a number field, and a number field brings its own pair of
+  spinners. Their step was the field's own: one thousandth of a beat, so a
+  thousand presses moved the tempo by a single BPM. Nobody has ever set a tempo
+  that way; they existed to be clicked by accident, and clicking one could
+  blank the timeline. The field is plain text now, so there are no arrows to
+  hide and none left answering the keyboard in secret. The 40–300 range was
+  never enforced by the field anyway — it lives in the code that applies the
+  value, and still does. The same spinners are gone from the Beatgrid Editor's
+  Source BPM.
+
+---
+
 ## 1.7.0 — 2026-08-18
 
 ### Added

@@ -3067,12 +3067,19 @@ export function TimelinePanel({
                 onClick={(event) => event.stopPropagation()}
               >
                 <label htmlFor="tempo-edit-input">{tempoEdit.fileName}</label>
+                {/* Un champ de texte, et non un champ nombre.
+                    Le champ nombre apportait ses deux flèches, dont le pas
+                    valait un millième de temps : mille pressions pour un seul
+                    BPM. Elles ne servaient qu'à être cliquées par accident.
+                    Les masquer en CSS les aurait laissées répondre au clavier;
+                    il n'y a plus de flèches à masquer. Les bornes vivaient de
+                    toute façon dans `commitTempoEdit`, qui refuse tout ce qui
+                    n'est pas fini entre 40 et 300 — l'attribut `min` ne
+                    validait rien, il ne bornait qu'un incrément. */}
                 <input
                   id="tempo-edit-input"
-                  type="number"
-                  min="40"
-                  max="300"
-                  step="0.001"
+                  type="text"
+                  inputMode="decimal"
                   autoFocus
                   value={tempoEdit.value}
                   onChange={(event) =>
