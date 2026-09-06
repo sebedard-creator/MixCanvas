@@ -12,6 +12,87 @@ wrote it. What changed, and what it means when you sit down to build a mix.
 
 ---
 
+## 1.7.2 — Unreleased
+
+### Added
+
+- **Search the library.** A magnifier at the end of the sort row opens a filter
+  box beneath it. It matches everything the program knows about a track —
+  artist, title, file name and the folder it sits in — ignoring case, accents
+  and punctuation, so `gebrannt` finds *Gebrännt* and `kalk 2005` finds
+  `01-paul_kalkbrenner-gebrannt-2005.mp3`. Words are matched separately and in
+  any order: you type what you remember. Escape closes the box and restores the
+  whole list, and nothing is remembered between sessions — reopening the
+  program on a library that looks half empty, with no clue why, would be the
+  worst possible favour.
+- **A second parametric bell in the Clip EQ.** `EQ4`, in violet beside the
+  amber one, with its own frequency, gain and Q. Two bells in series simply add
+  their curves, so the order between them changes nothing audible. Projects
+  saved before this open unchanged: the clip's EQ is stored as JSON, so an
+  absent second bell reads as a neutral one and no database migration was
+  needed.
+
+### Fixed
+
+- **The EQ graph stops fighting the clip gain.** Raise a quiet clip by +5 dB
+  and the bell appeared to run out of room after a single decibel. The capacity
+  was never lost — gain and bell are limited separately, +12 and +6 dB, and the
+  engine adds them — but the graph drew the curve *with* the clip gain and
+  placed the bell's handle *without* it. Two references for one picture: the
+  curve started at +5, flattened against the top of the frame, and stopped
+  responding while the handle kept climbing. The clip gain is a level, not a
+  filter. The frame now shows what the EQ does, at full range whatever the gain
+  is, and the gain keeps its own number.
+
+- **A fresh portable folder starts with an empty library again.** Copying the
+  executable somewhere new resurrected an old library — tracks and timeline
+  both — no matter where it was put. The cause was a migration meant to run
+  once: when MixCanvas was renamed, Tauri started pointing at a different data
+  folder, so a routine carried the library across. Its only guard was *no
+  database at the destination*, which every new portable folder satisfies. What
+  was written as a one-time rescue therefore ran on every copy, restoring a
+  library the user thought they had left behind. It is now limited to the case
+  it was written for — a library that actually lives in the application data
+  folder — and never applies beside the executable. Copy the program into an
+  empty folder and you get an empty library, which is the whole point of a
+  portable build.
+- **The bounce dialog keeps what you set in it.** The limiter and format were
+  written to disk only when a render actually started. Open the dialog, adjust
+  the limiter, then cancel — or simply close the program without bouncing — and
+  the next launch showed the previous values again. These are chain settings,
+  not a decision about one render, and they get adjusted long before anything
+  is exported. Both ways out of the dialog now save them.
+
+### Changed
+
+- **`COMP` starts on.** The glue compressor and its console colour were off
+  until you found the button. A console bus has its glue and its colour all the
+  time; discovering them halfway through means mixing a while without, then
+  rebalancing everything once they come in. The switch only sets what a **new**
+  library starts with — an existing one keeps whatever it was left on, and a
+  saved project carries its own state, so nothing already mixed changes under
+  you.
+- **`COMP` gets its low end back.** Softening the smiling V in 1.6.0 cut both
+  ends at once: the low shelf from +2.0 to +1.5 dB, and the top from a +2.0
+  shelf to a +1.0 bell. Listening on other systems, the problem was only ever
+  the top — a shelf climbs to its full gain and stays there to Nyquist, so it
+  was lifting 18 kHz as hard as the air band. The low end never had that fault;
+  it was cut out of symmetry rather than diagnosis. It returns to +2.0 dB and
+  the top keeps its bell. Weighted as programme material, the colour stage
+  lands back on exactly the +1.57 dB it had before 1.6.0: the low end carries
+  most of that energy, so giving it back restores the level without returning
+  anything to the part of the spectrum that needed calming.
+- **The mastering limiter's default threshold goes back to −3.7 dB.** It had
+  moved to −4.0 in 1.7.0 to make up the level the softened colour stage was
+  losing. That level is back, so the compensation has nothing left to
+  compensate — and keeping it would have produced a mix three tenths louder
+  than anything heard so far, since the builds where −4.0 was judged by ear
+  also carried the reduced low end and the two cancelled out. A default should
+  stay traceable to something; this one was only traceable to a fault that has
+  since been fixed.
+
+---
+
 ## 1.7.1 — 2026-08-20
 
 ### Removed

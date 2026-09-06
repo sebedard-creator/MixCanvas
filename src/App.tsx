@@ -940,10 +940,25 @@ function App() {
     }).catch((preferenceError) => setError(errorMessage(preferenceError)));
   }, []);
 
-  const bounceMix = useCallback(async () => {
+  /**
+   * Referme la boîte de bounce en gardant ce qu'on y a réglé.
+   *
+   * L'écriture n'avait lieu qu'au moment de lancer un rendu. Ouvrir la boîte,
+   * régler le limiteur, puis annuler — ou fermer le programme sans bouncer —
+   * perdait tout : au lancement suivant les champs revenaient à la valeur
+   * précédente. Or ces réglages sont une **chaîne**, pas une décision de rendu;
+   * on les ajuste souvent bien avant d'exporter quoi que ce soit.
+   *
+   * Les deux sorties de la boîte passent donc par ici.
+   */
+  const closeBounceOptions = useCallback(() => {
     setBounceOptionsOpen(false);
     rememberMastering(masteringEnabled, mastering);
     rememberFormat(bounceFormat);
+  }, [bounceFormat, mastering, masteringEnabled, rememberFormat, rememberMastering]);
+
+  const bounceMix = useCallback(async () => {
+    closeBounceOptions();
     const path = await save({
       filters:
         bounceFormat === "mp3"
@@ -984,7 +999,7 @@ function App() {
       setBounceProgress(null);
       setTimelineBusy(false);
     }
-  }, [bounceFormat, mastering, masteringEnabled, rememberFormat, rememberMastering]);
+  }, [closeBounceOptions]);
 
   const saveProject = useCallback(async () => {
     const path = await save({ filters: [PROJECT_FILTER], defaultPath: "session.mixcanvas" });
@@ -2122,7 +2137,7 @@ function App() {
               <button
                 className="bounce-btn bounce-btn--wide"
                 type="button"
-                onClick={() => setBounceOptionsOpen(false)}
+                onClick={closeBounceOptions}
               >
                 <span>CANCEL</span>
               </button>

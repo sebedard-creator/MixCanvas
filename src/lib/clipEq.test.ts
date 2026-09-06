@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CLIP_EQ_GAIN_MAX_DB,
+  CLIP_EQ_MAX_FREQ_HZ,
   CLIP_EQ_PEAK_MAX_DB,
   CLIP_EQ_SILENCE_DB,
   DEFAULT_CLIP_EQ,
@@ -139,5 +140,30 @@ describe("graphPointToViewBox", () => {
   it("returns the origin rather than infinity for a collapsed element", () => {
     expect(graphPointToViewBox(10, 10, { left: 0, top: 0, width: 0, height: 0 }, 580, 220))
       .toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe("la seconde cloche", () => {
+  it("est bornée comme la première", () => {
+    const eq = sanitizeClipEq({ peak2Hz: 99_000, peak2GainDb: 40, peak2Q: 99 });
+    expect(eq.peak2Hz).toBe(CLIP_EQ_MAX_FREQ_HZ);
+    expect(eq.peak2GainDb).toBe(CLIP_EQ_PEAK_MAX_DB);
+    expect(eq.peak2Q).toBe(10);
+  });
+
+  /* Un projet d'avant ne la porte pas, et `eq_settings` est du JSON : la
+     relecture doit donc donner une cloche neutre plutôt que rien. */
+  it("naît neutre quand un ancien réglage l'ignore", () => {
+    const eq = sanitizeClipEq({ highPassHz: 80, peakGainDb: 3 });
+    expect(eq.peak2GainDb).toBe(0);
+    expect(eq.peak2Hz).toBe(3000);
+    expect(eq.peak2Q).toBe(1);
+  });
+
+  /* Le point marque un EQ actif : une pièce réglée uniquement sur la seconde
+     cloche ne doit pas passer pour intouchée. */
+  it("compte dans le témoin d'EQ actif", () => {
+    expect(isClipEqActive({ ...DEFAULT_CLIP_EQ, peak2GainDb: -4 })).toBe(true);
+    expect(isClipEqActive({ ...DEFAULT_CLIP_EQ })).toBe(false);
   });
 });

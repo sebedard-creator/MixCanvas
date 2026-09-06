@@ -74,7 +74,10 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
                         CHECK (project_bpm >= 40.0 AND project_bpm <= 300.0),
         limiter_enabled INTEGER NOT NULL DEFAULT 1
                         CHECK (limiter_enabled IN (0, 1)),
-        compressor_enabled INTEGER NOT NULL DEFAULT 0
+        -- Allumé d'entrée, comme le limiteur au-dessus. Un bus de console a sa
+        -- colle et sa couleur en permanence; les découvrir par un bouton éteint
+        -- veut dire mixer un moment sans, puis tout rééquilibrer en l'allumant.
+        compressor_enabled INTEGER NOT NULL DEFAULT 1
                         CHECK (compressor_enabled IN (0, 1))
     );
 

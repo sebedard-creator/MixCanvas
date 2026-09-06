@@ -58,6 +58,7 @@ handoff.md
 # travaille dessus, et il n'apprend rien à qui clone le programme. Ce qu'on en a
 # retenu est dans le changelog et dans l'architecture.
 PERFORMANCE_AUDIT_*.md
+TECHNICAL_AUDIT_*.md
 
 # Le texte d'une release, écrit pour être collé dans GitHub puis oublié.
 # Le journal versionné, lui, garde la trace de ce que chaque version apporte.

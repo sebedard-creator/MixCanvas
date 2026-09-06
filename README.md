@@ -45,6 +45,9 @@ all of it editable while it plays.*
 - Library display uses Artist – Track Title when metadata is available.
 - Sort by BPM, artist, title, or timeline use; used tracks receive a visual
   overlay to prevent accidental duplicate additions.
+- Filter the library from the magnifier beside the sort keys. It searches the
+  artist, the title, the file name and the folder at once, ignoring case,
+  accents and punctuation, and matches your words in any order.
 - Per-track preview player with seekable waveform/progress control.
 - Local automatic BPM, beat, downbeat, and waveform analysis.
 - Beatgrid Editor with preview playback, manual BPM, half/double tempo tools,
@@ -159,7 +162,10 @@ Nothing to open and nothing to put away.
 
 - High-definition stereo waveform display with peak and RMS detail, adapted to
   the current zoom level.
-- Three-band EQ on every clip, adjustable during playback.
+- Four-band EQ on every clip, adjustable during playback: high-pass, two
+  parametric bells, low-pass, and an output gain. The graph shows what the
+  filters do, so the bells keep their full range however far the clip's gain is
+  pushed.
 - Sidechain compression: make a clip the key and let it pump overlapping clips.
 - Master Glue Compressor with console colour/saturation.
 - Stereo-linked master limiter and a real post-limiter OL overload lamp. This
@@ -171,7 +177,7 @@ Nothing to open and nothing to put away.
 
 | Per-clip EQ | Reversible Bake |
 |---|---|
-| ![Three-band Clip EQ with high-pass, parametric bell, low-pass, and gain controls](assets/screenshots/clip-eq.png) | ![Bake progress dialog while rendering a clip and its effects](assets/screenshots/bake.png) |
+| ![Four-band Clip EQ with high-pass, two parametric bells, low-pass, and gain controls](assets/screenshots/clip-eq.png) | ![Bake progress dialog while rendering a clip and its effects](assets/screenshots/bake.png) |
 | Shape a clip while it plays. | Render a dense clip when you are ready, then undo it at any time. |
 
 ## Vocals, instrumentals, and baking

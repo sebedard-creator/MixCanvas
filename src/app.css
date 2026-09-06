@@ -5391,6 +5391,14 @@ body,
   border-left: 4px solid #f59e0b;
 }
 
+/* La seconde cloche, en violet.
+   Deux poignées de la même couleur à quelques centaines de hertz l'une de
+   l'autre ne se distinguent plus une fois qu'on les a déplacées — et la
+   couleur de la carte doit dire laquelle des deux on règle. */
+.clip-eq-param-card--peak2{
+  border-left: 4px solid #a855f7;
+}
+
 .clip-eq-param-card--lpf{
   border-left: 4px solid #ef4444;
 }
@@ -5419,6 +5427,7 @@ body,
 
 .clip-eq-indicator--hpf{ background: #0284c7; }
 .clip-eq-indicator--peak{ background: #f59e0b; }
+.clip-eq-indicator--peak2{ background: #a855f7; }
 .clip-eq-indicator--lpf{ background: #ef4444; }
 
 .clip-eq-field-row{
@@ -5457,6 +5466,10 @@ body,
 
 .clip-eq-range--peak::-webkit-slider-thumb{
   border-color: #f59e0b;
+}
+
+.clip-eq-range--peak2::-webkit-slider-thumb{
+  border-color: #a855f7;
 }
 
 .clip-eq-range--lpf::-webkit-slider-thumb{
@@ -6362,4 +6375,71 @@ body,
 
 #source-bpm{
   appearance: textfield;
+}
+
+/* La loupe, en bout de la rangée de tri.
+
+   Elle hérite de `.library-sort button` — même plaque, même relief — parce
+   qu'elle appartient à la même question : comment on retrouve un morceau dans
+   la liste. Seule la largeur diffère, un dessin n'ayant pas besoin des huit
+   pixels de marge que réclame un mot. */
+.library-search-btn{
+  width: 24px;
+  justify-content: center;
+  padding: 4px 0;
+}
+
+.library-search-btn .transport-glyph{
+  width: 11px;
+  height: 11px;
+  color: inherit;
+}
+
+/* La boîte de filtre, sous la rangée. Elle n'apparaît que tenue ouverte, et
+   son bord bleu la rattache à la loupe allumée plutôt qu'au reste du panneau. */
+.library-search{
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 5px;
+  padding: 3px 4px;
+  border: 1px solid #232733;
+  border-left: 2px solid #0284c7;
+  border-radius: 5px;
+  background: #0d0f13;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
+.library-search input{
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: #e2e8f0;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  outline: none;
+}
+
+.library-search input::placeholder{
+  color: #55607a;
+}
+
+.library-search-clear{
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #8b98ad;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.library-search-clear:hover{
+  background: #232733;
+  color: #f1f5f9;
 }

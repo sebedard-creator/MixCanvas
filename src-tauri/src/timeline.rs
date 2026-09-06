@@ -69,6 +69,12 @@ pub struct ClipEqSettings {
     pub peak_hz: Option<f64>,
     pub peak_gain_db: Option<f64>,
     pub peak_q: Option<f64>,
+    /// La seconde cloche. Absente d'un projet antérieur, et c'est tout ce
+    /// qu'il faut : `eq_settings` est du JSON, donc un champ de plus ne demande
+    /// aucune migration et un ancien réglage se relit sans y toucher.
+    pub peak2_hz: Option<f64>,
+    pub peak2_gain_db: Option<f64>,
+    pub peak2_q: Option<f64>,
     pub gain_db: Option<f64>,
     pub enabled: Option<bool>,
 }

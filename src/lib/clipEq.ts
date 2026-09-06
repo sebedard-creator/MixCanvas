@@ -22,6 +22,11 @@ export const DEFAULT_CLIP_EQ: ClipEqSettings = {
   peakHz: 1000,
   peakGainDb: 0,
   peakQ: 1.0,
+  // La seconde cloche naît plus haut que la première, pour qu'elles ne se
+  // superposent pas au premier coup d'œil quand on ouvre la fenêtre.
+  peak2Hz: 3000,
+  peak2GainDb: 0,
+  peak2Q: 1.0,
   gainDb: 0,
   enabled: true,
 };
@@ -101,6 +106,11 @@ export function sanitizeClipEq(settings?: Partial<ClipEqSettings> | null): ClipE
     peakQ: Number.isFinite(settings.peakQ)
       ? Math.max(0.1, Math.min(10, settings.peakQ as number))
       : 1.0,
+    peak2Hz: clampFrequency(settings.peak2Hz, 3000),
+    peak2GainDb: clampDb(settings.peak2GainDb, CLIP_EQ_PEAK_MAX_DB),
+    peak2Q: Number.isFinite(settings.peak2Q)
+      ? Math.max(0.1, Math.min(10, settings.peak2Q as number))
+      : 1.0,
     gainDb: clampDb(settings.gainDb, CLIP_EQ_GAIN_MAX_DB),
     enabled: settings.enabled ?? true,
   };
@@ -112,11 +122,13 @@ export function isClipEqActive(eqSettings?: Partial<ClipEqSettings> | null): boo
   const hp = eqSettings.highPassHz ?? CLIP_EQ_MIN_FREQ_HZ;
   const lp = eqSettings.lowPassHz ?? CLIP_EQ_MAX_FREQ_HZ;
   const peakGain = eqSettings.peakGainDb ?? 0;
+  const peak2Gain = eqSettings.peak2GainDb ?? 0;
   const clipGain = eqSettings.gainDb ?? 0;
   return (
     hp > CLIP_EQ_MIN_FREQ_HZ ||
     lp < CLIP_EQ_MAX_FREQ_HZ ||
     Math.abs(peakGain) > 0.01 ||
+    Math.abs(peak2Gain) > 0.01 ||
     Math.abs(clipGain) > 0.01
   );
 }

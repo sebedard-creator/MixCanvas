@@ -25,20 +25,22 @@ export interface MasteringSettings {
  */
 export const DEFAULT_MASTERING_SETTINGS: MasteringSettings = {
   /**
-   * Quatre décibels sous le plafond, et non trois virgule sept.
+   * Trois virgule sept décibels sous le plafond, comme le réglage d'usine d'un
+   * L1 dont ce limiteur est parti.
    *
-   * Le seuil venait des réglages d'usine d'un L1. Adoucir le « smiling V » du
-   * compresseur a ensuite retiré du niveau à l'étage de couleur : mesuré sur les
-   * deux courbes pondérées par un spectre de programme, 0,40 dB de moins —
-   * 0,28 dB si l'on pondère en bruit blanc. Le mix arrivait donc au limiteur un
-   * peu plus bas qu'avant pour un rendu identique.
+   * Il a valu −4,0 entre-temps, et l'aller-retour vaut d'être expliqué. Adoucir
+   * le « smiling V » du compresseur avait retiré 0,40 dB à l'étage de couleur;
+   * le seuil est descendu d'autant pour le rendre. Puis on a constaté que seul
+   * le haut du spectre posait problème et le grave est revenu à sa valeur
+   * d'origine — les 0,40 dB avec lui. La compensation n'avait donc plus d'objet.
    *
-   * Quatre tout rond tombe dans cette fourchette et reste un chiffre qu'on peut
-   * lire. La différence ne se rattrape que lorsque `COMP` est allumé; sans lui,
-   * le bounce gagne les mêmes trois dixièmes, ce qui est le sens où l'on se
-   * trompe le moins.
+   * Garder −4,0 aurait donné un mix trois dixièmes plus fort que tout ce qui a
+   * été écouté jusqu'ici : les betas où ce seuil a été validé à l'oreille
+   * portaient aussi le grave atténué, et les deux se compensaient. Un défaut
+   * doit rester rattachable à quelque chose; celui-là ne l'était plus qu'à un
+   * défait qu'on avait réparé.
    */
-  thresholdDb: -4.0,
+  thresholdDb: -3.7,
   ceilingDb: -0.1,
   releaseMs: 1.0,
   autoRelease: true,

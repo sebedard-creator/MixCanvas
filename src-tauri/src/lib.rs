@@ -2007,6 +2007,20 @@ fn adopt_legacy_library(data_directory: &Path, database_path: &Path) -> io::Resu
         return Ok(());
     };
 
+    // Seulement dans les données applicatives, jamais à côté de l'exécutable.
+    //
+    // Cette reprise vise une **installation** qui a survécu au changement de
+    // nom du programme, et son unique garde était « pas de base à l'arrivée ».
+    // Or un dossier portable neuf remplit toujours cette condition : la
+    // migration ne s'exécutait donc pas une fois, mais à chaque fois qu'on
+    // posait l'exécutable ailleurs, et elle y ressuscitait une bibliothèque
+    // qu'on croyait avoir laissée derrière. Copier le programme dans un
+    // dossier vide doit donner une bibliothèque vide — c'est toute la
+    // promesse du portable, et c'était exactement ce qu'elle ne tenait pas.
+    if target_directory != data_directory.join(media::MEDIA_ROOT_NAME) {
+        return Ok(());
+    }
+
     // Les endroits où une bibliothèque a pu être écrite, du plus récent au plus
     // ancien : le dossier de données de la version courante — celui d'où l'on
     // vient de déménager — puis ceux des deux noms précédents du programme.
@@ -2440,6 +2454,7 @@ mod render_mode_tests {
 #[cfg(test)]
 mod tests {
     use super::{DATABASE_FILES, LEGACY_IDENTIFIERS, adopt_legacy_library, snap_manual_downbeat};
+    use crate::media::MEDIA_ROOT_NAME;
     use std::fs;
 
     /// Two sibling folders under a scratch root, mirroring how the identifier
@@ -2455,6 +2470,49 @@ mod tests {
         fs::create_dir_all(&current).expect("current directory should be created");
         fs::create_dir_all(&legacy).expect("legacy directory should be created");
         (current, legacy)
+    }
+
+    /// Un dossier portable neuf n'hérite de rien.
+    ///
+    /// La reprise vise une installation qui a survécu au changement de nom, et
+    /// sa seule garde était « pas de base à l'arrivée » — ce que tout dossier
+    /// portable neuf remplit. Elle ne s'exécutait donc pas une fois mais à
+    /// chaque copie de l'exécutable, ressuscitant une bibliothèque qu'on
+    /// croyait avoir laissée derrière. Copier le programme dans un dossier vide
+    /// doit donner une bibliothèque vide : c'est la promesse du portable.
+    #[test]
+    fn a_fresh_portable_folder_inherits_nothing() {
+        let root = std::env::temp_dir().join(format!("mixcanvas-portable-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let data = root.join("ca.mixcanvas.app");
+        fs::create_dir_all(&data).expect("data directory should be created");
+        fs::write(data.join("library.sqlite3"), b"vieille bibliotheque")
+            .expect("legacy library should be written");
+
+        // Le cas réel : l'exécutable est posé ailleurs, donc la base va à côté
+        // de lui et non dans les données applicatives.
+        let beside = root.join("cle-usb").join(MEDIA_ROOT_NAME);
+        fs::create_dir_all(&beside).expect("portable folder should be created");
+        let database = beside.join("library.sqlite3");
+
+        adopt_legacy_library(&data, &database).expect("adoption should succeed");
+        assert!(
+            !database.exists(),
+            "un dossier portable neuf doit rester vide"
+        );
+
+        // Et la reprise fonctionne toujours là où elle a un sens : quand la base
+        // vit bien dans les données applicatives.
+        let fallback = data.join(MEDIA_ROOT_NAME);
+        fs::create_dir_all(&fallback).expect("fallback folder should be created");
+        let adopted = fallback.join("library.sqlite3");
+        adopt_legacy_library(&data, &adopted).expect("adoption should succeed");
+        assert_eq!(
+            fs::read(&adopted).expect("the adopted library should read"),
+            b"vieille bibliotheque"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// Deux renommages, deux dossiers possibles : c'est le plus récent qui
@@ -2482,7 +2540,16 @@ mod tests {
             fs::write(folder.join("library.sqlite3"), mark).expect("library should be written");
         }
 
-        let database = current.join("library.sqlite3");
+        let database = current
+            .join(crate::media::MEDIA_ROOT_NAME)
+            .join("library.sqlite3");
+        // Le vrai appel crée ce dossier avant l'adoption; la copie y compte.
+        fs::create_dir_all(
+            database
+                .parent()
+                .expect("the database sits in the media folder"),
+        )
+        .expect("media folder should be created");
         adopt_legacy_library(&current, &database).expect("adoption should succeed");
 
         assert_eq!(
@@ -2505,11 +2572,21 @@ mod tests {
         let (current, legacy) = data_directories("adopt");
         seed_legacy(&legacy);
 
-        let database = current.join("library.sqlite3");
+        let database = current
+            .join(crate::media::MEDIA_ROOT_NAME)
+            .join("library.sqlite3");
+        // Le vrai appel crée ce dossier avant l'adoption; la copie y compte.
+        fs::create_dir_all(
+            database
+                .parent()
+                .expect("the database sits in the media folder"),
+        )
+        .expect("media folder should be created");
         adopt_legacy_library(&current, &database).expect("adoption should succeed");
 
         for name in DATABASE_FILES {
-            let carried = fs::read(current.join(name)).expect("file should have been carried over");
+            let carried = fs::read(current.join(MEDIA_ROOT_NAME).join(name))
+                .expect("file should have been carried over");
             assert_eq!(carried, name.as_bytes(), "{name} should arrive intact");
         }
         // Nothing is destroyed: a failed launch must not cost the only copy.
@@ -2522,7 +2599,16 @@ mod tests {
     fn an_existing_library_is_never_overwritten() {
         let (current, legacy) = data_directories("keep");
         seed_legacy(&legacy);
-        let database = current.join("library.sqlite3");
+        let database = current
+            .join(crate::media::MEDIA_ROOT_NAME)
+            .join("library.sqlite3");
+        // Le vrai appel crée ce dossier avant l'adoption; la copie y compte.
+        fs::create_dir_all(
+            database
+                .parent()
+                .expect("the database sits in the media folder"),
+        )
+        .expect("media folder should be created");
         fs::write(&database, b"the library already here").expect("database should be written");
 
         adopt_legacy_library(&current, &database).expect("adoption should succeed");
@@ -2539,7 +2625,16 @@ mod tests {
     #[test]
     fn a_fresh_installation_finds_nothing_to_adopt_and_says_so_quietly() {
         let (current, _legacy) = data_directories("fresh");
-        let database = current.join("library.sqlite3");
+        let database = current
+            .join(crate::media::MEDIA_ROOT_NAME)
+            .join("library.sqlite3");
+        // Le vrai appel crée ce dossier avant l'adoption; la copie y compte.
+        fs::create_dir_all(
+            database
+                .parent()
+                .expect("the database sits in the media folder"),
+        )
+        .expect("media folder should be created");
 
         adopt_legacy_library(&current, &database).expect("adoption should succeed");
 

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 
 import { formatDuration } from "../lib/formatDuration";
 import { libraryDisplayName } from "../lib/libraryDisplayName";
+import { filterLibrary } from "../lib/librarySearch";
 import {
   sortLibraryTracks,
   type LibrarySort,
@@ -10,6 +11,7 @@ import {
 import { pointerMovedEnoughToDrag } from "../lib/timelinePointerDrag";
 import type { LibraryTrack } from "../library/types";
 import { MiniPreview } from "./MiniPreview";
+import { TransportGlyph } from "./TransportGlyph";
 
 interface PointerDragCandidate {
   pointerId: number;
@@ -120,10 +122,39 @@ export function LibraryPanel({
      raison d'en être la source, et l'y garder aurait fait vivre l'état à un
      endroit et sa persistance à un autre. */
   const [contextMenu, setContextMenu] = useState<LibraryContextMenu | null>(null);
+  /**
+   * La recherche par nom, et si sa boîte est ouverte.
+   *
+   * Rien n'en est retenu d'une session à l'autre : un filtre est un geste du
+   * moment, et rouvrir le programme sur une bibliothèque amputée sans savoir
+   * pourquoi serait la pire façon de rendre service.
+   */
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const searchField = useRef<HTMLInputElement | null>(null);
+
   const sortedTracks = useMemo(
     () => sortLibraryTracks(tracks, timelineTrackOrder, sort),
     [sort, timelineTrackOrder, tracks],
   );
+  /* Trier puis filtrer, et non l'inverse : le tri dépend de la place d'un
+     morceau dans la timeline, pas de la recherche. */
+  const visibleTracks = useMemo(
+    () => (searchOpen ? filterLibrary(sortedTracks, search) : sortedTracks),
+    [search, searchOpen, sortedTracks],
+  );
+
+  /** Ouvre la boîte et y met le curseur; la refermer efface ce qui reste. */
+  const toggleSearch = () => {
+    setSearchOpen((open) => {
+      if (open) setSearch("");
+      return !open;
+    });
+  };
+
+  useEffect(() => {
+    if (searchOpen) searchField.current?.focus();
+  }, [searchOpen]);
 
   const selectSort = (key: LibrarySortKey) => {
     onSortChange((current) => {
@@ -269,8 +300,55 @@ export function LibraryPanel({
                 </button>
               );
             })}
+            {/* La loupe ferme la rangée, après « In Use » : même plaque que les
+                touches de tri, parce qu'elle appartient à la même question —
+                comment on retrouve un morceau dans la liste. */}
+            <button
+              className={`library-search-btn${searchOpen ? " is-selected" : ""}`}
+              type="button"
+              aria-pressed={searchOpen}
+              aria-label="Search the library by name"
+              title="Filter the library by name"
+              onClick={toggleSearch}
+            >
+              <TransportGlyph name="search" />
+            </button>
           </div>
         </div>
+        {searchOpen && (
+          <div className="library-search">
+            <input
+              ref={searchField}
+              type="text"
+              value={search}
+              placeholder="Filter by artist, title, file or folder"
+              aria-label="Filter the library by name"
+              onChange={(event) => setSearch(event.currentTarget.value)}
+              /* Échap referme et efface : la sortie d'un filtre doit rendre la
+                 liste entière, sans avoir à vider le champ soi-même. */
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  toggleSearch();
+                }
+              }}
+            />
+            {search.length > 0 && (
+              <button
+                type="button"
+                className="library-search-clear"
+                aria-label="Clear the filter"
+                title="Clear the filter"
+                onClick={() => {
+                  setSearch("");
+                  searchField.current?.focus();
+                }}
+              >
+                ×
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <MiniPreview
@@ -293,6 +371,16 @@ export function LibraryPanel({
             <p>Add MP3 files or select a music folder.</p>
           </div>
         </div>
+      ) : visibleTracks.length === 0 ? (
+        /* La bibliothèque n'est pas vide, c'est le filtre qui l'est — et le
+           dire évite de croire qu'on a perdu ses morceaux. */
+        <div className="library-empty">
+          <span className="library-empty-icon" aria-hidden="true">♫</span>
+          <div>
+            <strong>Nothing matches “{search}”</strong>
+            <p>{tracks.length} track{tracks.length > 1 ? "s" : ""} in the library.</p>
+          </div>
+        </div>
       ) : (
         <div className="library-table" role="table" aria-label="MP3 Library">
           <div className="library-table-header" role="row">
@@ -300,7 +388,7 @@ export function LibraryPanel({
             <span role="columnheader">BPM</span>
           </div>
 
-          {sortedTracks.map((track) => {
+          {visibleTracks.map((track) => {
             const displayName = libraryDisplayName(track);
             const isInTimeline = timelineTrackOrder.has(track.id);
             const isActive = activePreviewPath === track.filePath;

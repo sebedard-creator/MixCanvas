@@ -101,6 +101,9 @@ export const ClipEqModal: React.FC<ClipEqModalProps> = ({ clip, onClose, onSave 
   const [peakHz, setPeakHz] = useState<number>(initialSettings.peakHz ?? 1000);
   const [peakGainDb, setPeakGainDb] = useState<number>(initialSettings.peakGainDb ?? 0);
   const [peakQ, setPeakQ] = useState<number>(initialSettings.peakQ ?? 1.0);
+  const [peak2Hz, setPeak2Hz] = useState<number>(initialSettings.peak2Hz ?? 3000);
+  const [peak2GainDb, setPeak2GainDb] = useState<number>(initialSettings.peak2GainDb ?? 0);
+  const [peak2Q, setPeak2Q] = useState<number>(initialSettings.peak2Q ?? 1.0);
   const [gainDb, setGainDb] = useState<number>(initialSettings.gainDb ?? 0);
   /**
    * Ce qui est écrit dans la case tant qu'on n'a pas validé.
@@ -121,7 +124,7 @@ export const ClipEqModal: React.FC<ClipEqModalProps> = ({ clip, onClose, onSave 
   };
   const [enabled, setEnabled] = useState<boolean>(initialSettings.enabled ?? true);
 
-  const [activeDrag, setActiveDrag] = useState<"hp" | "lp" | "peak" | null>(null);
+  const [activeDrag, setActiveDrag] = useState<"hp" | "lp" | "peak" | "peak2" | null>(null);
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const isFirstRender = useRef(true);
@@ -142,6 +145,9 @@ export const ClipEqModal: React.FC<ClipEqModalProps> = ({ clip, onClose, onSave 
     setPeakHz(s.peakHz ?? 1000);
     setPeakGainDb(s.peakGainDb ?? 0);
     setPeakQ(s.peakQ ?? 1.0);
+    setPeak2Hz(s.peak2Hz ?? 3000);
+    setPeak2GainDb(s.peak2GainDb ?? 0);
+    setPeak2Q(s.peak2Q ?? 1.0);
     setGainDb(s.gainDb ?? 0);
     setEnabled(s.enabled ?? true);
   }, [clip]);
@@ -162,13 +168,16 @@ export const ClipEqModal: React.FC<ClipEqModalProps> = ({ clip, onClose, onSave 
           peakHz,
           peakGainDb,
           peakQ,
+          peak2Hz,
+          peak2GainDb,
+          peak2Q,
           gainDb,
           enabled,
         }),
       );
     }, LIVE_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [clip.id, hpHz, lpHz, peakHz, peakGainDb, peakQ, gainDb, enabled]);
+  }, [clip.id, hpHz, lpHz, peakHz, peakGainDb, peakQ, peak2Hz, peak2GainDb, peak2Q, gainDb, enabled]);
 
   const handleReset = () => {
     setHpHz(DEFAULT_CLIP_EQ.highPassHz);
@@ -176,6 +185,9 @@ export const ClipEqModal: React.FC<ClipEqModalProps> = ({ clip, onClose, onSave 
     setPeakHz(DEFAULT_CLIP_EQ.peakHz ?? 1000);
     setPeakGainDb(DEFAULT_CLIP_EQ.peakGainDb ?? 0);
     setPeakQ(DEFAULT_CLIP_EQ.peakQ ?? 1.0);
+    setPeak2Hz(DEFAULT_CLIP_EQ.peak2Hz ?? 3000);
+    setPeak2GainDb(DEFAULT_CLIP_EQ.peak2GainDb ?? 0);
+    setPeak2Q(DEFAULT_CLIP_EQ.peak2Q ?? 1.0);
     setGainDb(DEFAULT_CLIP_EQ.gainDb ?? 0);
     setEnabled(DEFAULT_CLIP_EQ.enabled ?? true);
   };
@@ -189,8 +201,17 @@ export const ClipEqModal: React.FC<ClipEqModalProps> = ({ clip, onClose, onSave 
     const hpDb = enabled ? calcHpDb(f, hpHz) : 0;
     const lpDb = enabled ? calcLpDb(f, lpHz) : 0;
     const pkDb = enabled ? calcPeakDb(f, peakHz, peakGainDb, peakQ) : 0;
-    const clipGainOffset = enabled ? Math.max(MIN_DB, gainDb) : 0;
-    const totalDb = Math.max(MIN_DB, Math.min(MAX_DB, hpDb + lpDb + pkDb + clipGainOffset));
+    const pk2Db = enabled ? calcPeakDb(f, peak2Hz, peak2GainDb, peak2Q) : 0;
+    /* Le gain du clip n'est pas dans la courbe.
+       Il y était, et ça rendait le graphe faux dès qu'on s'en servait : la
+       courbe partait déjà à +5 pour un clip remonté de cinq décibels, plafonnait
+       au sommet du cadre dès que la cloche dépassait +1, et se dessinait plate
+       — pendant que la poignée, elle, était placée sans ce décalage et continuait
+       de monter. Deux références pour un même dessin, et une forme qui semblait
+       ne plus répondre alors que la valeur changeait toujours.
+       Le gain est un niveau, pas un filtre. Le cadre montre ce que fait l'EQ,
+       avec sa pleine amplitude quel que soit le gain. */
+    const totalDb = Math.max(MIN_DB, Math.min(MAX_DB, hpDb + lpDb + pkDb + pk2Db));
     const y = dbToY(totalDb);
     points.push(`${x.toFixed(1)},${y.toFixed(1)}`);
   }
@@ -200,9 +221,11 @@ export const ClipEqModal: React.FC<ClipEqModalProps> = ({ clip, onClose, onSave 
   const lpX = freqToX(lpHz, GRAPH_WIDTH);
   const peakX = freqToX(peakHz, GRAPH_WIDTH);
   const peakY = dbToY(enabled ? peakGainDb : 0);
+  const peak2X = freqToX(peak2Hz, GRAPH_WIDTH);
+  const peak2Y = dbToY(enabled ? peak2GainDb : 0);
 
   // Pointer drag for EQ handles on graph
-  const handlePointerDown = (type: "hp" | "lp" | "peak") => (e: React.PointerEvent) => {
+  const handlePointerDown = (type: "hp" | "lp" | "peak" | "peak2") => (e: React.PointerEvent) => {
     e.preventDefault();
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
     setActiveDrag(type);
@@ -230,6 +253,9 @@ export const ClipEqModal: React.FC<ClipEqModalProps> = ({ clip, onClose, onSave 
     } else if (activeDrag === "peak") {
       setPeakHz(freq);
       setPeakGainDb(yToDb(y));
+    } else if (activeDrag === "peak2") {
+      setPeak2Hz(freq);
+      setPeak2GainDb(yToDb(y));
     }
   };
 
@@ -351,6 +377,24 @@ export const ClipEqModal: React.FC<ClipEqModalProps> = ({ clip, onClose, onSave 
                 <circle cx={peakX} cy={peakY} r="8" fill="#F59E0B" stroke="#FFFFFF" strokeWidth="2" />
                 <text x={peakX} y={Math.max(28, peakY - 12)} fill="#FBBF24" fontSize="10" fontWeight="bold" textAnchor="middle" fontFamily="monospace">
                   EQ3 {peakHz >= 1000 ? `${(peakHz / 1000).toFixed(1)}k` : `${peakHz}`}Hz ({formatGainDisplay(peakGainDb)}dB)
+                </text>
+              </g>
+            )}
+
+            {/* Seconde cloche. Violette, et nommée EQ4 : deux poignées de la
+                même couleur à quelques centaines de hertz l'une de l'autre ne se
+                distinguent plus une fois qu'on les a bougées. */}
+            {enabled && (
+              <g
+                className="eq-handle"
+                style={{ cursor: "move" }}
+                onPointerDown={handlePointerDown("peak2")}
+              >
+                <title>{`Bell EQ (EQ4): ${peak2Hz} Hz, ${formatGainDisplay(peak2GainDb)} dB, Q ${peak2Q} (Drag to adjust frequency & gain)`}</title>
+                <line x1={peak2X} x2={peak2X} y1="0" y2={GRAPH_HEIGHT} stroke="#A855F7" strokeWidth="1.5" strokeDasharray="3,3" />
+                <circle cx={peak2X} cy={peak2Y} r="8" fill="#A855F7" stroke="#FFFFFF" strokeWidth="2" />
+                <text x={peak2X} y={Math.max(40, peak2Y - 12)} fill="#C084FC" fontSize="10" fontWeight="bold" textAnchor="middle" fontFamily="monospace">
+                  EQ4 {peak2Hz >= 1000 ? `${(peak2Hz / 1000).toFixed(1)}k` : `${peak2Hz}`}Hz ({formatGainDisplay(peak2GainDb)}dB)
                 </text>
               </g>
             )}
@@ -489,6 +533,95 @@ export const ClipEqModal: React.FC<ClipEqModalProps> = ({ clip, onClose, onSave 
                   value={peakQ}
                   disabled={!enabled}
                   onChange={(e) => setPeakQ(Math.max(0.1, Math.min(10.0, Number(e.target.value))))}
+                  className="clip-eq-num-input"
+                />
+                <span className="clip-eq-unit">Q</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Card 2b : la seconde cloche. Identique à la première et appliquée
+              après elle; deux cloches en série additionnent simplement leurs
+              courbes, donc l'ordre entre les deux ne s'entend pas. */}
+          <div className={`clip-eq-param-card ${enabled ? "clip-eq-param-card--peak2" : "clip-eq-param-card--disabled"}`}>
+            <div className="clip-eq-param-label">
+              <span className="clip-eq-indicator clip-eq-indicator--peak2" />
+              PARAMETRIC BELL (EQ4)
+            </div>
+
+            {/* Cutoff Frequency */}
+            <div className="clip-eq-field-row">
+              <span className="clip-eq-field-title">Frequency:</span>
+              <input
+                type="range"
+                min={20}
+                max={20000}
+                step={10}
+                value={peak2Hz}
+                disabled={!enabled}
+                title="Adjust Second Bell EQ Center Frequency (Hz)"
+                onChange={(e) => setPeak2Hz(Number(e.target.value))}
+                className="clip-eq-range clip-eq-range--peak2"
+              />
+              <div className="clip-eq-value-display" title="Second Bell EQ Center Frequency in Hertz">
+                <input
+                  type="number"
+                  min={20}
+                  max={20000}
+                  value={peak2Hz}
+                  disabled={!enabled}
+                  onChange={(e) => setPeak2Hz(Math.max(20, Math.min(20000, Number(e.target.value))))}
+                  className="clip-eq-num-input"
+                />
+                <span className="clip-eq-unit">Hz</span>
+              </div>
+            </div>
+
+            {/* Gain (-∞ dB to +6 dB) */}
+            <div className="clip-eq-field-row">
+              <span className="clip-eq-field-title">Gain (-∞/+6dB):</span>
+              <input
+                type="range"
+                min={SLIDER_MIN_DB}
+                max={CLIP_EQ_PEAK_MAX_DB}
+                step={0.5}
+                value={peak2GainDb}
+                disabled={!enabled}
+                title="Adjust Second Bell EQ Gain (-∞ dB to +6 dB)"
+                onChange={(e) => setPeak2GainDb(Number(e.target.value))}
+                className="clip-eq-range clip-eq-range--peak2"
+              />
+              <div className="clip-eq-value-display" title="Second Bell EQ Boost / Cut Gain in Decibels">
+                <span className="clip-eq-gain-text">
+                  {formatGainDisplay(peak2GainDb)}
+                </span>
+                <span className="clip-eq-unit">dB</span>
+              </div>
+            </div>
+
+            {/* Bandwidth Q (0.1 to 10.0) */}
+            <div className="clip-eq-field-row">
+              <span className="clip-eq-field-title">Q Factor:</span>
+              <input
+                type="range"
+                min={0.1}
+                max={10.0}
+                step={0.1}
+                value={peak2Q}
+                disabled={!enabled}
+                title="Adjust Second Bell EQ Bandwidth / Q Factor (0.1 to 10.0)"
+                onChange={(e) => setPeak2Q(Number(e.target.value))}
+                className="clip-eq-range clip-eq-range--peak2"
+              />
+              <div className="clip-eq-value-display" title="Second Bell EQ Resonance Quality Factor (Q)">
+                <input
+                  type="number"
+                  min={0.1}
+                  max={10.0}
+                  step={0.1}
+                  value={peak2Q}
+                  disabled={!enabled}
+                  onChange={(e) => setPeak2Q(Math.max(0.1, Math.min(10.0, Number(e.target.value))))}
                   className="clip-eq-num-input"
                 />
                 <span className="clip-eq-unit">Q</span>

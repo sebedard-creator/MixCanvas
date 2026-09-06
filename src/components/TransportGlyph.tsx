@@ -29,6 +29,7 @@ export type TransportGlyphName =
   | "draw-triangle"
   | "sidechain"
   | "loop"
+  | "search"
   | "autoplay"
   | "fx-reverb"
   | "fx-flanger"
@@ -219,6 +220,13 @@ export function TransportGlyph({ name }: { name: TransportGlyphName }) {
           strokeWidth={1.1}
           d="M6 6 7.6 4.3h2.2v3.4H7.6L4.4 4.3H2.2v3.4h2.2Z"
         />
+      )}
+      {/* La loupe. Manche à quarante-cinq degrés, comme on la tient. */}
+      {name === "search" && (
+        <>
+          <circle {...STROKE} strokeWidth={1.2} cx="5.2" cy="5.2" r="3.1" />
+          <path {...STROKE} strokeWidth={1.4} d="M7.5 7.5 10.3 10.3" />
+        </>
       )}
       {name === "busy" && (
         <>

@@ -208,7 +208,22 @@ const COMPRESSOR_DETECTOR_HZ: f32 = 120.0;
 /// +0.13 at 18 kHz, +0.03 at 20 kHz. A Q of 1.2 keeps it wide enough to read
 /// as air rather than as a resonance.
 const COLOUR_LOW_SHELF_HZ: f32 = 90.0;
-const COLOUR_LOW_SHELF_DB: f32 = 1.5;
+/// Le grave, rendu à sa valeur d'origine.
+///
+/// Il a fait un aller-retour qui vaut d'être raconté, parce que la conclusion
+/// est une leçon sur la méthode. En 1.6.0 le « smiling V » a été adouci des
+/// deux côtés à la fois : le grave de 2,0 à 1,5 dB, et le haut d'un plateau
+/// de +2,0 à une cloche de +1,0. À l'écoute, c'était le **haut** qui posait
+/// problème — un plateau monte à sa pleine valeur et y reste jusqu'à Nyquist,
+/// donc il levait 18 kHz autant que la bande d'air. Le grave, lui, n'avait
+/// jamais eu ce défaut : il a été coupé par symétrie, pas par diagnostic.
+///
+/// Il revient donc à +2,0 dB, et le haut garde sa cloche. Effet mesuré :
+/// pondéré en bruit rose, l'étage de couleur retrouve exactement le +1,57 dB
+/// qu'il avait avant 1.6.0 — le grave porte l'essentiel de cette énergie, si
+/// bien que le rendre suffit à ramener le niveau, sans rien redonner à la
+/// partie du spectre qu'on voulait calmer.
+const COLOUR_LOW_SHELF_DB: f32 = 2.0;
 const COLOUR_AIR_HZ: f32 = 13_000.0;
 const COLOUR_AIR_DB: f32 = 1.0;
 const COLOUR_AIR_Q: f32 = 1.2;
@@ -1072,6 +1087,7 @@ struct ClipEqState {
     high_pass: [BiquadState; 2],
     low_pass: [BiquadState; 2],
     peaking: [BiquadState; 2],
+    peaking2: [BiquadState; 2],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1538,6 +1554,30 @@ impl PlacedClip {
                     );
                 } else if peak_gain_db.abs() > 0.05 {
                     s = self.eq_state.peaking[ch].process_peaking(
+                        s,
+                        peak_hz as f32,
+                        peak_gain_db as f32,
+                        q,
+                        output_sample_rate,
+                    );
+                }
+            }
+
+            // 3b. Second parametric bell, identical to the first and applied
+            // after it. Two bells in series simply add their curves, so the
+            // order between them changes nothing audible; it is fixed only so
+            // the drawing and the sound agree on which is which.
+            if let (Some(peak_hz), Some(peak_gain_db)) = (eq.peak2_hz, eq.peak2_gain_db) {
+                let q = eq.peak2_q.unwrap_or(1.0) as f32;
+                if peak_gain_db <= CLIP_EQ_SILENCE_DB {
+                    s = self.eq_state.peaking2[ch].process_notch(
+                        s,
+                        peak_hz as f32,
+                        q,
+                        output_sample_rate,
+                    );
+                } else if peak_gain_db.abs() > 0.05 {
+                    s = self.eq_state.peaking2[ch].process_peaking(
                         s,
                         peak_hz as f32,
                         peak_gain_db as f32,
@@ -3062,6 +3102,9 @@ fn playback_signature(plan: &TimelineRenderPlan) -> u64 {
             eq.high_pass_hz.to_bits().hash(&mut hasher);
             eq.low_pass_hz.to_bits().hash(&mut hasher);
             eq.peak_hz.map(f64::to_bits).hash(&mut hasher);
+            eq.peak2_hz.map(f64::to_bits).hash(&mut hasher);
+            eq.peak2_gain_db.map(f64::to_bits).hash(&mut hasher);
+            eq.peak2_q.map(f64::to_bits).hash(&mut hasher);
             eq.peak_gain_db.map(f64::to_bits).hash(&mut hasher);
             eq.peak_q.map(f64::to_bits).hash(&mut hasher);
             eq.gain_db.map(f64::to_bits).hash(&mut hasher);

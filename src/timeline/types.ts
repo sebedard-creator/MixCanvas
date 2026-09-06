@@ -13,6 +13,11 @@ export interface ClipEqSettings {
   peakHz?: number;       // 20 Hz to 20000 Hz (default 1000 Hz)
   peakGainDb?: number;   // -18 dB to +6 dB (default 0 dB)
   peakQ?: number;        // 0.1 to 10.0 (default 1.0)
+  /* La seconde cloche. Facultative comme la première : `eq_settings` est du
+     JSON, donc un projet antérieur se relit sans elle et sans migration. */
+  peak2Hz?: number;      // 20 Hz to 20000 Hz (default 3000 Hz)
+  peak2GainDb?: number;  // same range as the first bell
+  peak2Q?: number;       // 0.1 to 10.0 (default 1.0)
   gainDb?: number;       // -Infinity / -48 dB to +12 dB (default 0 dB)
   enabled?: boolean;
 }
