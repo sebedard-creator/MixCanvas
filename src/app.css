@@ -6443,3 +6443,26 @@ body,
   background: #232733;
   color: #f1f5f9;
 }
+
+/* Le troisième état de la chaîne : ce clip plonge sous la clé.
+
+   Vert, parce que l'ambre est déjà la source et que les deux se lisent côte à
+   côte sur la même barre — un receveur et une clé doivent se distinguer d'un
+   coup d'œil, sinon le cycle à trois états devient un jeu de devinettes. */
+.clip-key-btn.is-ducked{
+  border-color: #047857;
+  border-top-color: #34d399;
+  border-bottom-color: #065f46;
+  color: #ffffff;
+  background: linear-gradient(180deg, #10b981 0%, #047857 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.35),
+    0 0 6px rgba(16, 185, 129, 0.5);
+}
+
+/* Et sur le clip lui-même, un liseré discret : la barre de titre disparaît
+   quand le clip est étroit, et c'est justement là qu'on cherche à savoir qui
+   pompe. */
+.timeline-clip--sidechain-ducked{
+  box-shadow: inset 3px 0 0 rgba(16, 185, 129, 0.75);
+}

@@ -11,6 +11,7 @@
 //! sur une clé. Tant que le projet n'a pas de nom, c'est `Scratch`.
 
 use std::{
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -126,12 +127,21 @@ pub fn relocate_project_media(
         return Ok(0);
     }
 
-    let mut moved = Vec::new();
+    // On raisonne par **fichier**, pas par ligne.
+    //
+    // Deux clips issus d'une scission ou d'une duplication désignent le même
+    // fichier : la scission et le duplicata recopient délibérément le chemin
+    // plutôt que le contenu. En traitant les lignes une à une, la première
+    // déplaçait le fichier et la suivante trouvait sa source disparue, donc
+    // repartait par `!source.is_file()` — en laissant son chemin pointer un
+    // emplacement désormais vide. La première sauvegarde cassait ainsi la
+    // moitié des références à un média partagé, silencieusement.
+    let mut rows = Vec::new();
     for (table, column) in [("clip_stems", "file_path"), ("clip_bakes", "file_path")] {
         let mut statement = connection
             .prepare(&format!("SELECT id, {column} FROM {table}"))
             .map_err(|error| format!("Could not read the media: {error}"))?;
-        let rows = statement
+        let found = statement
             .query_map([], |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
             })
@@ -139,37 +149,56 @@ pub fn relocate_project_media(
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("Could not read the media: {error}"))?;
         drop(statement);
+        rows.extend(found.into_iter().map(|(id, current)| (table, id, current)));
+    }
 
-        for (id, current) in rows {
-            let source = PathBuf::from(&current);
-            let Some(target) = retargeted(&source, root, from, to) else {
-                continue;
-            };
-            if !source.is_file() || source == target {
-                continue;
+    // Chaque source distincte n'est portée qu'une fois; sa destination sert
+    // ensuite à toutes les lignes qui la désignaient.
+    let mut carried: HashMap<PathBuf, String> = HashMap::new();
+    let mut refused: HashSet<PathBuf> = HashSet::new();
+    for (_, _, current) in &rows {
+        let source = PathBuf::from(current);
+        if carried.contains_key(&source) || refused.contains(&source) {
+            continue;
+        }
+        let Some(target) = retargeted(&source, root, from, to) else {
+            continue;
+        };
+        if !source.is_file() || source == target {
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("Could not prepare the media folder: {error}"))?;
+        }
+        let ok = match mode {
+            // `rename` échoue entre deux volumes, et un dossier de projet
+            // peut très bien vivre ailleurs que le dossier de données.
+            Relocation::Move => {
+                fs::rename(&source, &target).is_ok()
+                    || (fs::copy(&source, &target).is_ok() && {
+                        let _ = fs::remove_file(&source);
+                        true
+                    })
             }
-            if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|error| format!("Could not prepare the media folder: {error}"))?;
-            }
-            let carried = match mode {
-                // `rename` échoue entre deux volumes, et un dossier de projet
-                // peut très bien vivre ailleurs que le dossier de données.
-                Relocation::Move => {
-                    fs::rename(&source, &target).is_ok()
-                        || (fs::copy(&source, &target).is_ok() && {
-                            let _ = fs::remove_file(&source);
-                            true
-                        })
-                }
-                Relocation::Copy => fs::copy(&source, &target).is_ok(),
-                Relocation::None => false,
-            };
-            if carried {
-                moved.push((table, id, target.to_string_lossy().into_owned()));
-            }
+            Relocation::Copy => fs::copy(&source, &target).is_ok(),
+            Relocation::None => false,
+        };
+        if ok {
+            carried.insert(source, target.to_string_lossy().into_owned());
+        } else {
+            refused.insert(source);
         }
     }
+
+    let moved: Vec<(&str, i64, String)> = rows
+        .into_iter()
+        .filter_map(|(table, id, current)| {
+            carried
+                .get(&PathBuf::from(&current))
+                .map(|path| (table, id, path.clone()))
+        })
+        .collect();
 
     let transaction = connection
         .transaction()
@@ -196,7 +225,9 @@ pub fn relocate_project_media(
         let _ = fs::remove_dir(root.join(from));
     }
 
-    Ok(moved.len())
+    // Le nombre de **fichiers** portés, et non celui des lignes réécrites :
+    // un média partagé par deux clips reste un seul fichier déplacé.
+    Ok(carried.len())
 }
 
 /// Le chemin qu'un fichier prendrait dans l'autre projet.
@@ -233,8 +264,19 @@ pub fn sweep_orphans(connection: &Connection, root: &Path) -> Result<Vec<PathBuf
     if !root.is_dir() {
         return Ok(Vec::new());
     }
+    // Les tables d'attente comptent parmi les références.
+    //
+    // Elles gardent les médias d'un clip supprimé le temps qu'on puisse annuler.
+    // Les ignorer ferait effacer par ce balayage-ci le fichier que l'annulation
+    // s'apprête à rendre — le clip reviendrait avec sa ligne et sans son WAV,
+    // ce qui est le défaut qu'on vient de fermer, repris par l'autre bout.
     let mut referenced = std::collections::HashSet::new();
-    for table in ["clip_stems", "clip_bakes"] {
+    for table in [
+        "clip_stems",
+        "clip_bakes",
+        "removed_clip_stems",
+        "removed_clip_bakes",
+    ] {
         let mut statement = connection
             .prepare(&format!("SELECT file_path FROM {table}"))
             .map_err(|error| format!("Could not read the media: {error}"))?;
@@ -278,7 +320,7 @@ fn read_dir(folder: &Path) -> Vec<PathBuf> {
 /// Windows ne distingue pas la casse, et les séparateurs se mélangent dès qu'un
 /// chemin a transité par du JSON. Comparer les chaînes brutes ferait passer
 /// pour orphelin un fichier bel et bien référencé — donc l'effacerait.
-fn comparable(path: &Path) -> String {
+pub fn comparable(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/").to_lowercase()
 }
 
@@ -341,11 +383,106 @@ mod tests {
         let connection = Connection::open_in_memory().expect("database should open");
         connection
             .execute_batch(
+                // Les quatre tables que la balayeuse consulte : les vivantes
+                // et les deux d'attente, qui gardent les médias d'un clip
+                // supprimé tant qu'on peut annuler.
                 "CREATE TABLE clip_stems (id INTEGER PRIMARY KEY, file_path TEXT NOT NULL);
-                 CREATE TABLE clip_bakes (id INTEGER PRIMARY KEY, file_path TEXT NOT NULL);",
+                 CREATE TABLE clip_bakes (id INTEGER PRIMARY KEY, file_path TEXT NOT NULL);
+                 CREATE TABLE removed_clip_stems (id INTEGER PRIMARY KEY, file_path TEXT NOT NULL);
+                 CREATE TABLE removed_clip_bakes (id INTEGER PRIMARY KEY, file_path TEXT NOT NULL);",
             )
             .expect("tables should be created");
         connection
+    }
+
+    /// Le balayage ne prend pas ce que l'annulation s'apprête à rendre.
+    ///
+    /// Les tables d'attente gardent les médias d'un clip supprimé le temps qu'on
+    /// puisse annuler. Les ignorer ici ferait effacer le fichier que
+    /// l'annulation va réclamer — le clip reviendrait avec sa ligne et sans son
+    /// WAV, ce qui est le défaut qu'on vient de fermer, repris par l'autre bout.
+    #[test]
+    fn the_sweep_spares_media_an_undo_could_still_want() {
+        let root = scratch_root("held");
+        let folder = project_media_folder(&root, SCRATCH_PROJECT, "bakes").expect("folder");
+        let held = folder.join("waiting.wav");
+        let orphan = folder.join("nobody.wav");
+        fs::write(&held, b"audio").expect("held should be written");
+        fs::write(&orphan, b"audio").expect("orphan should be written");
+
+        let connection = memory_db();
+        connection
+            .execute(
+                "INSERT INTO removed_clip_bakes (file_path) VALUES (?1)",
+                params![held.to_string_lossy()],
+            )
+            .expect("the held row should be written");
+
+        let removed = sweep_orphans(&connection, &root).expect("the sweep should run");
+
+        assert!(held.is_file(), "un média en attente d'annulation reste");
+        assert!(!orphan.is_file(), "un vrai orphelin part");
+        assert_eq!(removed.len(), 1);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Un fichier partagé par deux clips garde ses deux références.
+    ///
+    /// La scission et la duplication recopient le **chemin** d'un stem ou d'une
+    /// cuisson, pas son contenu : deux lignes désignent alors le même fichier.
+    /// En traitant les lignes une à une, la première déplaçait le fichier et la
+    /// seconde repartait sans rien faire, sa source ayant disparu — elle
+    /// continuait donc de pointer un emplacement vide. La première sauvegarde
+    /// cassait ainsi la moitié des références, sans rien signaler.
+    #[test]
+    fn a_file_two_clips_share_keeps_both_references() {
+        let root = scratch_root("shared");
+        let folder = project_media_folder(&root, SCRATCH_PROJECT, "stems").expect("folder");
+        let shared = folder.join("shared.wav");
+        fs::write(&shared, b"audio").expect("the shared file should be written");
+
+        let mut connection = memory_db();
+        for _ in 0..2 {
+            connection
+                .execute(
+                    "INSERT INTO clip_stems (file_path) VALUES (?1)",
+                    params![shared.to_string_lossy()],
+                )
+                .expect("stem row");
+        }
+
+        let carried = relocate_project_media(&mut connection, &root, SCRATCH_PROJECT, "Saved")
+            .expect("the media should move");
+
+        // Un seul fichier porté, même si deux lignes le désignaient.
+        assert_eq!(
+            carried, 1,
+            "le compte porte sur les fichiers, pas les lignes"
+        );
+
+        let paths: Vec<String> = connection
+            .prepare("SELECT file_path FROM clip_stems ORDER BY id")
+            .expect("statement")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows");
+        assert_eq!(paths.len(), 2);
+        for path in &paths {
+            assert!(
+                Path::new(path).is_file(),
+                "chaque référence doit désigner un fichier qui existe : {path}"
+            );
+            assert!(
+                path.contains("Saved"),
+                "et pointer la nouvelle place : {path}"
+            );
+        }
+        assert_eq!(paths[0], paths[1], "les deux désignent toujours le même");
+        assert!(!shared.is_file(), "l'ancien emplacement est libéré");
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// Le premier enregistrement emmène les médias, et la base suit.

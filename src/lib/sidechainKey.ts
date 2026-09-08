@@ -1,4 +1,4 @@
-import type { TimelineClip } from "../timeline/types";
+import type { SidechainRole, TimelineClip } from "../timeline/types";
 
 /** Same tolerance the backend uses, so both agree on what touching means. */
 const OVERLAP_EPSILON_BEATS = 0.05;
@@ -28,4 +28,23 @@ export function canBeSidechainKey(clip: TimelineClip, clips: TimelineClip[]): bo
  */
 export function clipsCoveredByKey(key: TimelineClip, clips: TimelineClip[]): TimelineClip[] {
   return clips.filter((other) => other.id !== key.id && overlaps(key, other));
+}
+
+/**
+ * L'état suivant du bouton de sidechain, dans l'ordre où on les cherche.
+ *
+ * Rien, puis la source, puis un receveur. Poser la clé vient en premier parce
+ * que c'est le geste qui ouvre le sujet : désigner qui plonge n'a de sens
+ * qu'une fois qu'on sait sous quoi.
+ *
+ * Un clip ne peut pas être les deux — la source s'entendrait pomper elle-même —
+ * et c'est le moteur qui le garantit; ce cycle ne fait que ne jamais le
+ * demander.
+ */
+export function nextSidechainRole(
+  clip: Pick<TimelineClip, "isSidechainKey" | "ducksUnderKey">,
+): SidechainRole {
+  if (clip.isSidechainKey) return "ducked";
+  if (clip.ducksUnderKey) return "none";
+  return "key";
 }

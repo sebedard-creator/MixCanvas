@@ -1446,6 +1446,7 @@ struct PlacedClip {
     trim_start_beats: f64,
     trim_end_beats: f64,
     is_sidechain_key: bool,
+    ducks_under_key: bool,
     eq_settings: Option<crate::timeline::ClipEqSettings>,
     eq_state: ClipEqState,
     grain_cache: Option<GrainStartCache>,
@@ -1465,6 +1466,7 @@ impl Clone for PlacedClip {
             trim_start_beats: self.trim_start_beats,
             trim_end_beats: self.trim_end_beats,
             is_sidechain_key: self.is_sidechain_key,
+            ducks_under_key: self.ducks_under_key,
             eq_settings: self.eq_settings.clone(),
             eq_state: ClipEqState::default(),
             grain_cache: None,
@@ -2173,7 +2175,13 @@ impl TimelineMixSource {
                 .iter()
                 .filter(|index| {
                     let clip = &self.clips[**index];
-                    !clip.is_sidechain_key && audible & (1_u8 << clip.lane) != 0
+                    // Seuls les clips désignés plongent. La clé les prenait
+                    // tous, ce qui rendait impossible la configuration à trois
+                    // pistes : la source, un clip qui pompe, et un troisième
+                    // qu'on veut intact.
+                    clip.ducks_under_key
+                        && !clip.is_sidechain_key
+                        && audible & (1_u8 << clip.lane) != 0
                 })
                 .count()
                 > 0
@@ -2906,6 +2914,7 @@ pub(crate) fn prepare_timeline(
             trim_start_beats: clip.trim_start_beats,
             trim_end_beats: clip.trim_end_beats,
             is_sidechain_key: clip.is_sidechain_key,
+            ducks_under_key: clip.ducks_under_key,
             eq_settings: clip.eq_settings.clone(),
             eq_state: ClipEqState::default(),
             grain_cache: None,
@@ -3098,6 +3107,7 @@ fn playback_signature(plan: &TimelineRenderPlan) -> u64 {
         // engine renders. Leaving it out let a cached mix built without a key
         // survive being given one: nothing was muted and nothing pumped.
         clip.is_sidechain_key.hash(&mut hasher);
+        clip.ducks_under_key.hash(&mut hasher);
         if let Some(eq) = &clip.eq_settings {
             eq.high_pass_hz.to_bits().hash(&mut hasher);
             eq.low_pass_hz.to_bits().hash(&mut hasher);
@@ -3216,6 +3226,7 @@ mod tests {
             trim_start_beats: 0.0,
             trim_end_beats: 0.0,
             is_sidechain_key: false,
+            ducks_under_key: false,
             eq_settings: None,
             eq_state: ClipEqState::default(),
             grain_cache: None,
@@ -4210,6 +4221,7 @@ mod tests {
                     trim_start_beats: 0.0,
                     trim_end_beats: 0.0,
                     is_sidechain_key: false,
+                    ducks_under_key: false,
                     eq_settings: None,
                 }],
                 volume_nodes: Vec::new(),
@@ -4336,6 +4348,7 @@ mod tests {
                 trim_start_beats: 0.0,
                 trim_end_beats: 0.0,
                 is_sidechain_key: false,
+                ducks_under_key: false,
                 eq_settings: None,
             }],
             volume_nodes: Vec::new(),
@@ -5004,6 +5017,7 @@ mod tests {
                 trim_start_beats: 0.0,
                 trim_end_beats: 0.0,
                 is_sidechain_key: false,
+                ducks_under_key: false,
                 eq_settings: None,
             }],
             volume_nodes: Vec::new(),
@@ -5053,6 +5067,7 @@ mod tests {
                 trim_start_beats: 0.0,
                 trim_end_beats: 0.0,
                 is_sidechain_key: false,
+                ducks_under_key: false,
                 eq_settings: None,
             }],
             volume_nodes: vec![TimelineVolumeNode {

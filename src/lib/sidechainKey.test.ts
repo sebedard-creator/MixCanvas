@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canBeSidechainKey, clipsCoveredByKey } from "./sidechainKey";
+import { canBeSidechainKey, clipsCoveredByKey, nextSidechainRole } from "./sidechainKey";
 import type { TimelineClip } from "../timeline/types";
 
 function clip(id: number, lane: number, startBeat: number, endBeat: number): TimelineClip {
@@ -21,6 +21,7 @@ function clip(id: number, lane: number, startBeat: number, endBeat: number): Tim
     trimStartBeats: 0,
     trimEndBeats: 0,
     isSidechainKey: false,
+  ducksUnderKey: false,
   muted: false,
   looping: false,
   loopLeadBeats: 0,
@@ -76,5 +77,28 @@ describe("clipsCoveredByKey", () => {
   it("is empty when the key stands alone", () => {
     const key = clip(1, 0, 0, 32);
     expect(clipsCoveredByKey(key, [key])).toEqual([]);
+  });
+});
+
+describe("nextSidechainRole", () => {
+  /* Rien, puis la source, puis un receveur : poser la clé vient en premier
+     parce que désigner qui plonge n'a de sens qu'une fois qu'on sait sous
+     quoi. */
+  it("parcourt les trois états dans l'ordre où on les cherche", () => {
+    expect(nextSidechainRole({ isSidechainKey: false, ducksUnderKey: false })).toBe("key");
+    expect(nextSidechainRole({ isSidechainKey: true, ducksUnderKey: false })).toBe("ducked");
+    expect(nextSidechainRole({ isSidechainKey: false, ducksUnderKey: true })).toBe("none");
+  });
+
+  /* Un clip ne peut pas être les deux — la source s'entendrait pomper
+     elle-même. Le moteur le garantit; ce cycle ne le demande jamais. */
+  it("ne demande jamais les deux à la fois", () => {
+    for (const clip of [
+      { isSidechainKey: false, ducksUnderKey: false },
+      { isSidechainKey: true, ducksUnderKey: false },
+      { isSidechainKey: false, ducksUnderKey: true },
+    ]) {
+      expect(["none", "key", "ducked"]).toContain(nextSidechainRole(clip));
+    }
   });
 });

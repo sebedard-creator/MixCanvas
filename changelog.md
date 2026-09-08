@@ -12,10 +12,89 @@ wrote it. What changed, and what it means when you sit down to build a mix.
 
 ---
 
-## 1.7.2 — Unreleased
+## 1.8.0 — 2026-09-07
+
+### Fixed
+
+- **Deleting a clip and undoing gives its separated voices and its bake back.**
+  Those rows fall away with the clip, and the undo snapshot describes only what
+  is drawn, so it could not rebuild them: the clip came back playing its source
+  without the effects that had been baked into it, and without the automation
+  needed to unbake. They are now set aside before the delete — waveforms
+  included, since a list of paths would not restore the drawing — and taken
+  back when the clip returns, which works because a restored clip keeps its
+  original identifier. What is set aside is released when the window closes, at
+  the same moment as the history that could have claimed it, and the orphan
+  sweep leaves it alone until then.
+- **Saving no longer removes the old file before putting the new one in
+  place.** The first attempt at a safe save wrote a temporary file and then
+  deleted the destination before renaming, on the belief that Windows refuses
+  to rename over an existing file. It does not — measured, `rename` replaces it
+  without complaint — so the deletion was both unnecessary and the very thing
+  that opened the gap: from that moment the last good version existed nowhere,
+  and a failed rename did not bring it back. The rename now replaces the
+  destination directly, and the working file has a unique name so that saving
+  under a name already ending in the working extension cannot make it delete
+  its own source.
+- **Unbaking never deletes the file at all now.** Checking that no clip in the
+  current session still refers to it is not enough: a project saved earlier can
+  still need it. Bake, save, unbake, reopen that save, and the mix played its
+  source without the effects. Space is reclaimed by the sweep at closing time,
+  which only ever looks inside the scratch folder — a named project's media are
+  invisible to it by construction.
+- **A saved mix keeps the effects you played into it.** Reverb, flange, crush
+  and delay passes were never written to the project file, and the mistake ran
+  both ways: opening a project did not clear those tables either, so the passes
+  of whatever session the library held **stayed and played over the project you
+  had just opened**. Reopening a file straight away in the same library hid it,
+  the current passes still being the right ones. The four collections now
+  travel with the file, and loading clears them even for an older file that
+  carries none.
+- **A shared stem or bake survives the first save.** Splitting or duplicating a
+  clip copies the *path* of its separated voices and its bake, not their
+  contents — two clips point at one file. The first save moves media from
+  `Scratch` to the project's folder one row at a time, so the first reference
+  moved the file and the second found its source gone, skipped, and kept
+  pointing at an empty place. Files are now carried once each and every
+  reference to them is rewritten.
+- **Unbaking one copy no longer deletes the file the other still plays.** Same
+  shared path, opposite direction: undoing the bake on one half handed the file
+  to be deleted without asking who else referred to it. The file is now
+  released only when nothing points at it any more — and only if it sits inside
+  the folder the program owns, since that path travels through the project
+  file, which is editable JSON.
+- **Saving no longer overwrites the previous file in place.** The project was
+  truncated and then refilled; in between there was nothing, so a full disk or
+  an interruption cost the last good version — the very one being replaced. It
+  is written beside the destination, flushed to the disk, and only then put in
+  place.
+- **A saved mix keeps its muted clips, its loops and its tempo targets.** Five
+  clip settings never reached the project file: the clip's own mute, whether it
+  loops, how far its loop runs either side, and the tempo the curve aims for at
+  that clip. Save a mix with a looped bar and a silenced clip, reopen it, and
+  the loop was a plain clip again and the silenced one played. Four of the five
+  were added to the database, the engine and the interface in this same
+  release, and simply never carried into the file format. Projects written
+  before them still open: an absent field reads as the state it used to have.
+- **Undo gives those five settings back too.** The statement that restores a
+  clip lists its columns one by one, and the same five were missing from it, so
+  undoing a mute or a loop rewrote the row without touching them — the value
+  stayed put and nothing reported a failure. A round-trip test now sets every
+  clip field away from its default and compares the whole geometry back, which
+  is what the previous tests did not do: they counted clips and checked
+  positions.
 
 ### Added
 
+- **You choose which clips duck under the sidechain key.** The key pumped
+  *everything* it overlapped, which made the most useful three-track shape
+  impossible to express: a source, one clip pumping under it, and a third left
+  alone. Which one to spare is a mix decision and nothing can guess it, so the
+  chain key now cycles through three states — off, key in amber, ducking in
+  green — and a green edge marks a ducking clip on the timeline itself, where
+  the title bar disappears on a narrow clip. Existing mixes keep their sound:
+  clips already placed are marked as ducking, since that is what they were
+  doing. New clips start neutral.
 - **Search the library.** A magnifier at the end of the sort row opens a filter
   box beneath it. It matches everything the program knows about a track —
   artist, title, file name and the folder it sits in — ignoring case, accents

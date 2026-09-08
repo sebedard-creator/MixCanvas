@@ -602,9 +602,21 @@ async fn bake_clip(
 
 /// Défait une cuisson : l'automation revient, le fichier part.
 ///
-/// Le fichier est effacé **après** que la base a validé. Dans l'autre ordre, un
-/// échec d'écriture laisserait un enregistrement pointant vers un fichier
-/// disparu — un clip qui joue sans ses effets sans qu'on sache pourquoi.
+/// Décuit un clip : l'automation revient, la cuisson se détache.
+///
+/// **Le fichier n'est plus effacé ici.** Il l'était dès que plus aucun clip de
+/// la session ne le désignait, ce qui paraît suffisant et ne l'est pas : un
+/// `.mixcanvas` enregistré plus tôt peut encore le référencer. Le scénario tient
+/// en quatre gestes — cuire, enregistrer, décuire, rouvrir la sauvegarde — et
+/// le projet rouvert se retrouvait à jouer la source sans les effets qu'on y
+/// avait cuits. Prouver qu'un chemin est dans notre dossier ne prouve pas que
+/// plus personne n'en a besoin.
+///
+/// La récupération de la place passe donc par le balayage des orphelins, qui
+/// s'exécute à la fermeture et ne touche **que** le dossier `Scratch` : les
+/// médias d'un projet nommé lui sont invisibles par construction. Une cuisson
+/// abandonnée survit ainsi jusqu'à la fermeture au lieu de disparaître à
+/// l'instant où quelqu'un pourrait encore en avoir besoin.
 #[tauri::command]
 fn unbake_clip(
     clip_id: i64,
@@ -613,13 +625,7 @@ fn unbake_clip(
     let mut library = library_state
         .lock()
         .map_err(|_| "The library is in an invalid state.".to_owned())?;
-    let (snapshot, file_path) = timeline::unbake_clip(&mut library.connection, clip_id)?;
-    if let Some(path) = file_path {
-        // Un fichier qu'on n'arrive pas à effacer — encore ouvert par le
-        // moteur, disque en lecture seule — ne doit pas faire échouer une
-        // opération que la base a déjà validée. Il ne coûte que sa place.
-        let _ = fs::remove_file(path);
-    }
+    let (snapshot, _) = timeline::unbake_clip(&mut library.connection, clip_id)?;
     Ok(snapshot)
 }
 
@@ -993,16 +999,16 @@ fn set_timeline_compressor_enabled(
 /// Naming the key changes which clip is heard, so unlike the master switches
 /// it rebuilds the playback plan rather than flipping an atomic.
 #[tauri::command]
-fn set_timeline_sidechain_key(
+fn set_timeline_sidechain_role(
     clip_id: i64,
-    is_key: bool,
+    role: timeline::SidechainRole,
     library_state: State<'_, LibraryState>,
     playback_state: State<'_, TimelinePlaybackState>,
     transport_state: State<'_, TimelineTransportState>,
 ) -> Result<TimelineSnapshot, String> {
     let previous_timing = timeline_timing(&library_state)?;
     let snapshot = with_timeline(&library_state, |connection| {
-        timeline::set_sidechain_key(connection, clip_id, is_key)
+        timeline::set_sidechain_role(connection, clip_id, role)
     })?;
     refresh_live_timeline_after_edit(
         &library_state,
@@ -2197,6 +2203,16 @@ pub fn run() {
             };
             let Ok(library) = library.lock() else { return };
             let Ok(media) = media.lock() else { return };
+            // L'attente se vide **avant** le balayage, et dans cet ordre.
+            //
+            // Elle garde les médias des clips supprimés le temps qu'on puisse
+            // annuler; or cet historique vit dans l'interface et meurt avec la
+            // fenêtre qu'on est en train de fermer. Plus rien ne pourra les
+            // réclamer, donc les libérer ici est exactement le bon moment — et
+            // le balayage qui suit récupère la place dans la foulée.
+            let _ = library
+                .connection
+                .execute_batch("DELETE FROM removed_clip_stems; DELETE FROM removed_clip_bakes;");
             let _ = media::sweep_orphans(&library.connection, &media.root);
         })
         .manage(Arc::new(Mutex::new(PreviewEngine::default())))
@@ -2285,7 +2301,7 @@ pub fn run() {
             set_timeline_lane_solo,
             set_timeline_limiter_enabled,
             set_timeline_compressor_enabled,
-            set_timeline_sidechain_key,
+            set_timeline_sidechain_role,
             add_timeline_volume_node,
             move_timeline_volume_node,
             delete_timeline_volume_node,

@@ -253,6 +253,14 @@ pub struct TimelineClip {
     /// la longueur du projet, sans quoi la carte de tempo du transport et celle
     /// du rendu cesseraient de concorder.
     pub muted: bool,
+    /// Ce clip plonge-t-il sous la clé de sidechain ?
+    ///
+    /// La clé faisait plonger **tout** ce qu'elle recouvrait, ce qui rendait
+    /// inexprimable la configuration la plus utile à trois pistes : la source,
+    /// un clip qui pompe, et un troisième qu'on veut intact. Lequel épargner
+    /// est une décision de mix, que rien ne permet de deviner — on désigne donc
+    /// les receveurs un par un.
+    pub ducks_under_key: bool,
     /// Ce clip se répète-t-il ?
     ///
     /// Tant que c'est le cas, ses deux poignées cessent de rogner et allongent
@@ -337,6 +345,8 @@ pub(crate) struct TimelineRenderClip {
     pub trim_start_beats: f64,
     pub trim_end_beats: f64,
     pub is_sidechain_key: bool,
+    /// Ce clip plonge-t-il quand la clé joue ?
+    pub ducks_under_key: bool,
     pub eq_settings: Option<ClipEqSettings>,
 }
 
@@ -398,7 +408,8 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
                     clips.muted,
                     clips.looping,
                     clips.loop_lead_beats,
-                    clips.loop_tail_beats
+                    clips.loop_tail_beats,
+                    clips.ducks_under_key
              FROM timeline_clips AS clips
              JOIN library_tracks AS tracks ON tracks.id = clips.library_track_id
              LEFT JOIN track_waveforms AS waveforms ON waveforms.track_id = tracks.id
@@ -441,6 +452,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
                 row.get::<_, i64>(27)? != 0,
                 row.get::<_, f64>(28)?,
                 row.get::<_, f64>(29)?,
+                row.get::<_, i64>(30)? != 0,
             ))
         })
         .map_err(database_read_error)?;
@@ -478,6 +490,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
             looping,
             loop_lead_beats,
             loop_tail_beats,
+            ducks_under_key,
         ) = row.map_err(database_read_error)?;
         let geometry = clip_geometry(
             duration_ms,
@@ -526,6 +539,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
             trim_end_beats,
             is_sidechain_key,
             muted,
+            ducks_under_key,
             looping,
             loop_lead_beats,
             loop_tail_beats,
@@ -612,25 +626,55 @@ pub fn set_limiter_enabled(
 /// Exactly one clip can hold the key: naming a new one releases the previous,
 /// in the same transaction, so the project is never briefly keyed by two clips
 /// at once â€” which would duck twice as deep for a moment.
-pub fn set_sidechain_key(
+/// Ce qu'un clip est vis-à-vis du sidechain.
+///
+/// Trois états et non deux : la clé faisait plonger **tout** ce qu'elle
+/// recouvrait, ce qui rendait inexprimable la configuration la plus utile à
+/// trois pistes — la source, un clip qui pompe, et un troisième qu'on veut
+/// intact. Lequel épargner est une décision de mix, que rien ne permet de
+/// deviner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidechainRole {
+    /// Ni source ni receveur : la clé passe au-dessus de lui sans le toucher.
+    None,
+    /// La source. Un seul clip à la fois, poser la clé ailleurs la déplace.
+    Key,
+    /// Plonge quand la clé joue.
+    Ducked,
+}
+
+/// Donne à un clip son rôle dans le sidechain.
+///
+/// La clé est exclusive et les receveurs ne le sont pas : désigner une nouvelle
+/// source retire la précédente, alors qu'on peut faire plonger autant de clips
+/// qu'on veut. Un clip ne peut pas être les deux — la source s'entendrait
+/// pomper elle-même.
+pub fn set_sidechain_role(
     connection: &mut Connection,
     clip_id: i64,
-    is_key: bool,
+    role: SidechainRole,
 ) -> Result<TimelineSnapshot, String> {
     let transaction = connection.transaction().map_err(database_write_error)?;
-    transaction
-        .execute("UPDATE timeline_clips SET is_sidechain_key = 0", [])
-        .map_err(database_write_error)?;
-    if is_key {
-        let changed = transaction
-            .execute(
-                "UPDATE timeline_clips SET is_sidechain_key = 1 WHERE id = ?1",
-                [clip_id],
-            )
+    if role == SidechainRole::Key {
+        transaction
+            .execute("UPDATE timeline_clips SET is_sidechain_key = 0", [])
             .map_err(database_write_error)?;
-        if changed == 0 {
-            return Err("This clip no longer exists in the timeline.".to_owned());
-        }
+    }
+    let changed = transaction
+        .execute(
+            "UPDATE timeline_clips
+             SET is_sidechain_key = ?2, ducks_under_key = ?3
+             WHERE id = ?1",
+            params![
+                clip_id,
+                i64::from(role == SidechainRole::Key),
+                i64::from(role == SidechainRole::Ducked),
+            ],
+        )
+        .map_err(database_write_error)?;
+    if changed == 0 {
+        return Err("This clip no longer exists in the timeline.".to_owned());
     }
     transaction.commit().map_err(database_write_error)?;
     snapshot(connection)
@@ -991,6 +1035,7 @@ pub(crate) fn render_plan(connection: &Connection) -> Result<TimelineRenderPlan,
                 trim_start_beats: tile.trim_start_beats,
                 trim_end_beats: tile.trim_end_beats,
                 is_sidechain_key: clip.is_sidechain_key,
+                ducks_under_key: clip.ducks_under_key,
                 eq_settings: clip.eq_settings.clone(),
             });
         }
@@ -2120,6 +2165,72 @@ pub fn clear_effect_range(
     snapshot(connection)
 }
 
+/// Les colonnes que les tables d'attente reprennent, sans `id` ni `created_at`.
+///
+/// L'identifiant est réattribué, et la date de création n'a de sens que pour la
+/// ligne vivante. Tout le reste voyage, waveforms comprises : c'est ce qui
+/// distingue cette conservation d'un simple relevé de chemins.
+const STEM_COLUMNS: &str = "clip_id, kind, file_path, source_from_ms, bucket_count, \
+                            left_min, left_max, left_rms, right_min, right_max, right_rms";
+const BAKE_COLUMNS: &str = "clip_id, file_path, source_from_ms, removed, bucket_count, \
+                            left_min, left_max, left_rms, right_min, right_max, right_rms";
+
+/// Met de côté les médias d'un clip qu'on s'apprête à supprimer.
+///
+/// Ils tomberaient par cascade avec lui, et l'instantané d'annulation ne porte
+/// pas de quoi les reconstruire — il ne décrit que ce qui se dessine. Un clip
+/// ressuscité sans eux rejoue sa source, sans les effets qu'on y avait cuits.
+///
+/// `INSERT OR REPLACE` : supprimer deux fois le même clip, en refaisant puis
+/// annulant, ne doit pas buter sur la ligne laissée au tour précédent.
+fn hold_clip_media(transaction: &Transaction<'_>, clip_id: i64) -> Result<(), String> {
+    for (holding, live, columns) in [
+        ("removed_clip_stems", "clip_stems", STEM_COLUMNS),
+        ("removed_clip_bakes", "clip_bakes", BAKE_COLUMNS),
+    ] {
+        transaction
+            .execute(
+                &format!(
+                    "INSERT OR REPLACE INTO {holding} ({columns})
+                     SELECT {columns} FROM {live} WHERE clip_id = ?1"
+                ),
+                [clip_id],
+            )
+            .map_err(database_write_error)?;
+    }
+    Ok(())
+}
+
+/// Rend à un clip réinséré les médias qu'on avait mis de côté.
+///
+/// La restauration réinsère le clip avec **son identifiant d'origine**, donc le
+/// rattachement se fait par ce seul numéro. Les lignes reprises quittent
+/// l'attente : les y laisser ferait revenir une cuisson périmée le jour où on
+/// supprimerait le clip une seconde fois après l'avoir décuit.
+fn return_clip_media(transaction: &Transaction<'_>, clip_id: i64) -> Result<(), String> {
+    for (holding, live, columns) in [
+        ("removed_clip_stems", "clip_stems", STEM_COLUMNS),
+        ("removed_clip_bakes", "clip_bakes", BAKE_COLUMNS),
+    ] {
+        transaction
+            .execute(
+                &format!(
+                    "INSERT OR IGNORE INTO {live} ({columns})
+                     SELECT {columns} FROM {holding} WHERE clip_id = ?1"
+                ),
+                [clip_id],
+            )
+            .map_err(database_write_error)?;
+        transaction
+            .execute(
+                &format!("DELETE FROM {holding} WHERE clip_id = ?1"),
+                [clip_id],
+            )
+            .map_err(database_write_error)?;
+    }
+    Ok(())
+}
+
 pub fn remove_clip(connection: &mut Connection, clip_id: i64) -> Result<TimelineSnapshot, String> {
     let Some((lane, span_start, span_end)) = connection
         .query_row(
@@ -2155,6 +2266,8 @@ pub fn remove_clip(connection: &mut Connection, clip_id: i64) -> Result<Timeline
     };
 
     let transaction = connection.transaction().map_err(database_write_error)?;
+    // Avant la suppression, sans quoi la cascade les emporte.
+    hold_clip_media(&transaction, clip_id)?;
     transaction
         .execute("DELETE FROM timeline_clips WHERE id = ?1", [clip_id])
         .map_err(database_write_error)?;
@@ -2868,8 +2981,12 @@ pub fn restore_snapshot(
             .map_err(|error| format!("This clip's EQ settings are not valid: {error}"))?;
         transaction
             .execute(
-                "INSERT INTO timeline_clips (id, library_track_id, lane, anchor_beat, tempo_anchor_beat, trim_start_beats, trim_end_beats, is_sidechain_key, eq_settings, stem)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                // Les cinq dernières colonnes ont été ajoutées après coup, et
+                // leur absence ici rendait l'annulation muette : défaire une
+                // coupure, une boucle ou un tempo cible laissait la valeur
+                // courante en place, puisque l'UPSERT ne la touchait pas.
+                "INSERT INTO timeline_clips (id, library_track_id, lane, anchor_beat, tempo_anchor_beat, trim_start_beats, trim_end_beats, is_sidechain_key, eq_settings, stem, tempo_target_bpm, muted, looping, loop_lead_beats, loop_tail_beats, ducks_under_key)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
                  ON CONFLICT(id) DO UPDATE SET
                      library_track_id = excluded.library_track_id,
                      lane = excluded.lane,
@@ -2879,7 +2996,13 @@ pub fn restore_snapshot(
                      trim_end_beats = excluded.trim_end_beats,
                      is_sidechain_key = excluded.is_sidechain_key,
                      eq_settings = excluded.eq_settings,
-                     stem = excluded.stem",
+                     stem = excluded.stem,
+                     tempo_target_bpm = excluded.tempo_target_bpm,
+                     muted = excluded.muted,
+                     looping = excluded.looping,
+                     loop_lead_beats = excluded.loop_lead_beats,
+                     loop_tail_beats = excluded.loop_tail_beats,
+                     ducks_under_key = excluded.ducks_under_key",
                 params![
                     clip.id,
                     clip.library_track_id,
@@ -2891,9 +3014,19 @@ pub fn restore_snapshot(
                     clip.is_sidechain_key,
                     eq_json,
                     clip.stem,
+                    clip.tempo_target_bpm,
+                    i64::from(clip.muted),
+                    i64::from(clip.looping),
+                    clip.loop_lead_beats,
+                    clip.loop_tail_beats,
+                    i64::from(clip.ducks_under_key),
                 ],
             )
             .map_err(database_write_error)?;
+        // Un clip qui revient reprend ses médias, s'il en avait. Sans cela, il
+        // rejouerait sa source — sans les voix séparées qu'on avait rendues, ni
+        // les effets qu'on y avait cuits.
+        return_clip_media(&transaction, clip.id)?;
     }
 
     transaction
@@ -3249,9 +3382,10 @@ pub fn split_timeline_clip(
         .map_err(database_write_error)?;
     transaction
         .execute(
-            "INSERT INTO timeline_clips (library_track_id, lane, anchor_beat, tempo_anchor_beat, eq_settings, trim_start_beats, trim_end_beats, stem)
+            "INSERT INTO timeline_clips (library_track_id, lane, anchor_beat, tempo_anchor_beat, eq_settings, trim_start_beats, trim_end_beats, stem, ducks_under_key)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
-                     (SELECT stem FROM timeline_clips WHERE id = ?8))",
+                     (SELECT stem FROM timeline_clips WHERE id = ?8),
+                     (SELECT ducks_under_key FROM timeline_clips WHERE id = ?8))",
             params![
                 library_track_id,
                 lane,
@@ -3437,9 +3571,10 @@ pub fn duplicate_clip(
     let transaction = connection.transaction().map_err(database_write_error)?;
     transaction
         .execute(
-            "INSERT INTO timeline_clips (library_track_id, lane, anchor_beat, tempo_anchor_beat, eq_settings, trim_start_beats, trim_end_beats, stem)
+            "INSERT INTO timeline_clips (library_track_id, lane, anchor_beat, tempo_anchor_beat, eq_settings, trim_start_beats, trim_end_beats, stem, ducks_under_key)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
-                     (SELECT stem FROM timeline_clips WHERE id = ?8))",
+                     (SELECT stem FROM timeline_clips WHERE id = ?8),
+                     (SELECT ducks_under_key FROM timeline_clips WHERE id = ?8))",
             params![
                 library_track_id,
                 new_lane,
@@ -3986,6 +4121,7 @@ pub(crate) fn prepare_bake(connection: &Connection, clip_id: i64) -> Result<Bake
             trim_start_beats: (baked_trim_start - stem_trim_beats).max(0.0),
             trim_end_beats: baked_trim_end,
             is_sidechain_key: false,
+            ducks_under_key: false,
             eq_settings: clip.eq_settings.clone(),
         }],
         volume_nodes: timeline.volume_nodes.clone(),
@@ -4215,9 +4351,39 @@ pub fn unbake_clip(
             params![clip_id],
         )
         .map_err(database_write_error)?;
+
+    // Le fichier n'est rendu à l'effacement que si plus rien ne le désigne.
+    //
+    // Une scission et une duplication recopient le **chemin** de la cuisson, pas
+    // son contenu : décuire l'une des copies retirait donc le WAV dont l'autre
+    // avait encore besoin, et ce clip-là se retrouvait à jouer sa source sans
+    // les effets qu'on y avait cuits. La comparaison est normalisée, la casse
+    // et les séparateurs se mélangeant dès qu'un chemin passe par du JSON.
+    let wanted = crate::media::comparable(std::path::Path::new(&file_path));
+    let mut still_used = false;
+    for table in ["clip_bakes", "clip_stems"] {
+        let mut statement = transaction
+            .prepare(&format!("SELECT file_path FROM {table}"))
+            .map_err(database_read_error)?;
+        let paths = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(database_read_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(database_read_error)?;
+        drop(statement);
+        still_used = paths
+            .iter()
+            .any(|path| crate::media::comparable(std::path::Path::new(path)) == wanted);
+        if still_used {
+            break;
+        }
+    }
     transaction.commit().map_err(database_write_error)?;
 
-    Ok((snapshot(connection)?, Some(file_path)))
+    Ok((
+        snapshot(connection)?,
+        if still_used { None } else { Some(file_path) },
+    ))
 }
 
 fn rounded_bpm(bpm: f64) -> f64 {
@@ -4236,14 +4402,15 @@ fn database_write_error(error: rusqlite::Error) -> String {
 mod tests {
     use super::{
         ClipGeometry, DEFAULT_TRACK_GAIN_DB, FILTER_BUBBLE_MAX_SAMPLES,
-        FILTER_BUBBLE_MAX_WIDTH_BEATS, FILTER_BUBBLE_STEP_BEATS, MAX_LANE, TimelineClip,
-        TimelineLane, TimelineSnapshot, add_clip, add_filter_node, add_pan_node, add_volume_node,
-        audible_lane_mask, clear_filter_range, clear_timeline, clip_geometry, clips_overlap,
-        draw_filter_bubble, duplicate_clip, duplicate_placements, filter_bubble_step_beats,
-        loop_tiles, minimum_anchor_beat, move_clip, move_tempo_point, move_volume_node,
-        project_timing, remove_clip, restore_snapshot, set_clip_trim, set_lane_muted,
-        set_lane_solo, set_sidechain_key, snap_anchor_beat, snap_tempo_anchor_beat, snapshot,
-        split_timeline_clip,
+        FILTER_BUBBLE_MAX_WIDTH_BEATS, FILTER_BUBBLE_STEP_BEATS, MAX_LANE, SidechainRole,
+        TimelineClip, TimelineLane, TimelineSnapshot, add_clip, add_filter_node, add_pan_node,
+        add_volume_node, audible_lane_mask, clear_filter_range, clear_timeline, clip_geometry,
+        clips_overlap, draw_filter_bubble, duplicate_clip, duplicate_placements,
+        filter_bubble_step_beats, loop_tiles, minimum_anchor_beat, move_clip, move_tempo_point,
+        move_volume_node, project_timing, remove_clip, restore_snapshot, set_clip_loop_extent,
+        set_clip_looping, set_clip_muted, set_clip_trim, set_lane_muted, set_lane_solo,
+        set_sidechain_role, snap_anchor_beat, snap_tempo_anchor_beat, snapshot,
+        split_timeline_clip, unbake_clip,
     };
     use crate::library::LibraryStore;
     use rusqlite::params;
@@ -5684,7 +5851,7 @@ mod tests {
                 .find(|id| *id != first)
                 .expect("a second clip should exist");
 
-            let keyed = set_sidechain_key(&mut store.connection, first, true)
+            let keyed = set_sidechain_role(&mut store.connection, first, SidechainRole::Key)
                 .expect("the key should be set");
             assert!(
                 keyed
@@ -5694,7 +5861,7 @@ mod tests {
             );
 
             // Naming another key releases the first, in the same write.
-            let moved = set_sidechain_key(&mut store.connection, second, true)
+            let moved = set_sidechain_role(&mut store.connection, second, SidechainRole::Key)
                 .expect("the key should move");
             assert_eq!(
                 moved
@@ -5706,11 +5873,11 @@ mod tests {
                 vec![second]
             );
 
-            let cleared = set_sidechain_key(&mut store.connection, second, false)
+            let cleared = set_sidechain_role(&mut store.connection, second, SidechainRole::None)
                 .expect("the key should clear");
             assert!(!cleared.clips.iter().any(|clip| clip.is_sidechain_key));
 
-            assert!(set_sidechain_key(&mut store.connection, 9_999, true).is_err());
+            assert!(set_sidechain_role(&mut store.connection, 9_999, SidechainRole::Key).is_err());
         }
 
         fs::remove_file(&fake_mp3).expect("fake MP3 should be removed");
@@ -6561,6 +6728,7 @@ mod tests {
             trim_end_beats: 0.0,
             is_sidechain_key: false,
             muted: false,
+            ducks_under_key: false,
             looping: true,
             loop_lead_beats: 0.0,
             loop_tail_beats: 0.0,
@@ -6644,6 +6812,391 @@ mod tests {
         assert_eq!(tiles.len(), 2);
         assert!((tiles[0].trim_start_beats - 7.5).abs() < 1.0e-9);
         assert!((tiles[1].trim_start_beats - 7.5).abs() < 1.0e-9);
+    }
+
+    /// Supprimer un clip cuit puis annuler doit rendre sa cuisson.
+    ///
+    /// Les lignes `clip_stems` et `clip_bakes` tombent par cascade avec le clip,
+    /// et l'instantané d'annulation ne porte pas de quoi les reconstruire — il
+    /// ne décrit que ce qui se dessine. Le clip revenait donc **sans** elles :
+    /// il rejouait sa source, sans les effets qu'on y avait cuits, et sans
+    /// l'automation qu'il fallait pour décuire. Rien ne le signalait.
+    ///
+    /// Elles sont désormais versées dans une table d'attente avant la
+    /// suppression, waveforms comprises, et reprises quand le clip revient avec
+    /// son identifiant d'origine.
+    #[test]
+    fn deleting_a_baked_clip_and_undoing_gives_its_bake_back() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-undo-media-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+        let fake_mp3 = database_path.with_extension("mp3");
+        fs::write(&fake_mp3, []).expect("fake MP3 should be created");
+
+        {
+            let mut store = LibraryStore::open(&database_path).expect("database should open");
+            store
+                .connection
+                .execute(
+                    "INSERT INTO library_tracks
+                     (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                      bpm, first_beat_ms, beat_count, analysis_status)
+                     VALUES (?1, ?2, 'undo-media.mp3', 60000, 44100, 2,
+                             120.0, 500, 120, 'analyzed')",
+                    params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+                )
+                .expect("track should be inserted");
+            let track_id = store.connection.last_insert_rowid();
+            let added = add_clip(&mut store.connection, track_id, Some(4.0), Some(0))
+                .expect("clip should be added");
+            let clip_id = added.clips[0].id;
+
+            // Une cuisson et une voix séparée, avec leurs waveforms : c'est
+            // précisément ce qu'un relévé de chemins ne saurait pas rendre.
+            store
+                .connection
+                .execute(
+                    "INSERT INTO clip_bakes
+                     (clip_id, file_path, source_from_ms, removed, bucket_count, left_min)
+                     VALUES (?1, 'C:/mix/bakes/cooked.wav', 250, '{\"lane\":0,\"fromBeat\":1.0,\"toBeat\":0.0,\"volume\":[],\"pan\":[],\"filter\":[]}', 4, X'01020304')",
+                    params![clip_id],
+                )
+                .expect("the bake should be written");
+            store
+                .connection
+                .execute(
+                    "INSERT INTO clip_stems
+                     (clip_id, kind, file_path, source_from_ms, bucket_count, left_min)
+                     VALUES (?1, 'vocals', 'C:/mix/stems/vox.wav', 500, 4, X'05060708')",
+                    params![clip_id],
+                )
+                .expect("the stem should be written");
+
+            let before = snapshot(&store.connection).expect("the timeline should read");
+            assert!(before.clips[0].is_baked && before.clips[0].has_stems);
+
+            remove_clip(&mut store.connection, clip_id).expect("the clip should be removed");
+            let gone: i64 = store
+                .connection
+                .query_row("SELECT COUNT(*) FROM clip_bakes", [], |row| row.get(0))
+                .expect("count");
+            assert_eq!(gone, 0, "la cascade emporte bien la cuisson");
+
+            restore_snapshot(&mut store.connection, &before).expect("undo should restore");
+
+            let (path, from_ms, removed, bucket, blob): (String, i64, String, i64, Vec<u8>) = store
+                .connection
+                .query_row(
+                    "SELECT file_path, source_from_ms, removed, bucket_count, left_min
+                     FROM clip_bakes WHERE clip_id = ?1",
+                    params![clip_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .expect("la cuisson doit être revenue");
+            assert_eq!(path, "C:/mix/bakes/cooked.wav", "son fichier");
+            assert_eq!(from_ms, 250, "son origine dans la source");
+            assert!(
+                removed.contains("lane"),
+                "et l'automation qu'elle a emportée"
+            );
+            assert_eq!(bucket, 4, "sa waveform aussi");
+            assert_eq!(blob, vec![1u8, 2, 3, 4]);
+
+            let stem: String = store
+                .connection
+                .query_row(
+                    "SELECT file_path FROM clip_stems WHERE clip_id = ?1",
+                    params![clip_id],
+                    |row| row.get(0),
+                )
+                .expect("la voix séparée doit être revenue");
+            assert_eq!(stem, "C:/mix/stems/vox.wav");
+
+            // L'attente est vidée de ce qu'elle a rendu : une seconde
+            // suppression, après un décuissonnage, ne doit pas faire revenir une
+            // cuisson périmée.
+            let held: i64 = store
+                .connection
+                .query_row("SELECT COUNT(*) FROM removed_clip_bakes", [], |row| {
+                    row.get(0)
+                })
+                .expect("count");
+            assert_eq!(held, 0, "l'attente ne garde pas ce qu'elle a rendu");
+        }
+
+        let _ = fs::remove_file(&database_path);
+        let _ = fs::remove_file(&fake_mp3);
+    }
+
+    /// Trois rôles, et la clé seule reste exclusive.
+    ///
+    /// La clé faisait plonger **tout** ce qu'elle recouvrait, ce qui rendait
+    /// inexprimable la configuration à trois pistes : la source, un clip qui
+    /// pompe, et un troisième intact. On désigne donc les receveurs un par un;
+    /// ils peuvent être plusieurs, là où la source est unique.
+    #[test]
+    fn a_clip_is_the_key_or_a_receiver_but_never_both() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-duck-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+        let fake_mp3 = database_path.with_extension("mp3");
+        fs::write(&fake_mp3, []).expect("fake MP3 should be created");
+
+        {
+            let mut store = LibraryStore::open(&database_path).expect("database should open");
+            store
+                .connection
+                .execute(
+                    "INSERT INTO library_tracks
+                     (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                      bpm, first_beat_ms, beat_count, analysis_status)
+                     VALUES (?1, ?2, 'duck.mp3', 60000, 44100, 2,
+                             120.0, 500, 120, 'analyzed')",
+                    params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+                )
+                .expect("track should be inserted");
+            let track_id = store.connection.last_insert_rowid();
+
+            let mut ids = Vec::new();
+            for lane in 0..=MAX_LANE {
+                let added = add_clip(&mut store.connection, track_id, Some(4.0), Some(lane))
+                    .expect("clip should be added");
+                ids.push(
+                    added
+                        .clips
+                        .iter()
+                        .filter(|clip| clip.lane == lane)
+                        .map(|clip| clip.id)
+                        .next_back()
+                        .expect("the new clip is on its lane"),
+                );
+            }
+
+            // Un clip neuf ne plonge pas : c'est le point de la désignation.
+            let start = snapshot(&store.connection).expect("the timeline should read");
+            assert!(
+                start.clips.iter().all(|clip| !clip.ducks_under_key),
+                "un clip neuf est neutre"
+            );
+
+            // La source, puis **un seul** receveur : le troisième reste intact.
+            set_sidechain_role(&mut store.connection, ids[0], SidechainRole::Key)
+                .expect("the key should be set");
+            let after = set_sidechain_role(&mut store.connection, ids[1], SidechainRole::Ducked)
+                .expect("the receiver should be set");
+
+            let role = |id: i64| {
+                let clip = after
+                    .clips
+                    .iter()
+                    .find(|clip| clip.id == id)
+                    .expect("the clip is there");
+                (clip.is_sidechain_key, clip.ducks_under_key)
+            };
+            assert_eq!(role(ids[0]), (true, false), "la source ne plonge pas");
+            assert_eq!(role(ids[1]), (false, true), "le receveur plonge");
+            assert_eq!(role(ids[2]), (false, false), "le troisième reste intact");
+
+            // Faire du receveur la source retire la clé à l'autre et cesse de
+            // le faire plonger : une source qui pompe s'entendrait elle-même.
+            let moved = set_sidechain_role(&mut store.connection, ids[1], SidechainRole::Key)
+                .expect("the key should move");
+            let role = |id: i64| {
+                let clip = moved
+                    .clips
+                    .iter()
+                    .find(|clip| clip.id == id)
+                    .expect("the clip is there");
+                (clip.is_sidechain_key, clip.ducks_under_key)
+            };
+            assert_eq!(role(ids[1]), (true, false));
+            assert_eq!(role(ids[0]), (false, false), "l'ancienne source se retire");
+        }
+
+        let _ = fs::remove_file(&database_path);
+        let _ = fs::remove_file(&fake_mp3);
+    }
+
+    /// Décuire une copie ne rend pas le fichier que l'autre utilise encore.
+    ///
+    /// Une scission et une duplication recopient le **chemin** de la cuisson,
+    /// pas son contenu. `unbake_clip` retournait ce chemin sans regarder qui
+    /// d'autre le désignait, et l'appelant l'effaçait : le clip resté cuit se
+    /// retrouvait à jouer sa source sans les effets qu'on y avait cuits, sans
+    /// que rien ne le signale.
+    #[test]
+    fn unbaking_one_copy_spares_the_file_the_other_still_uses() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-shared-bake-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+        let fake_mp3 = database_path.with_extension("mp3");
+        fs::write(&fake_mp3, []).expect("fake MP3 should be created");
+
+        {
+            let mut store = LibraryStore::open(&database_path).expect("database should open");
+            store
+                .connection
+                .execute(
+                    "INSERT INTO library_tracks
+                     (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                      bpm, first_beat_ms, beat_count, analysis_status)
+                     VALUES (?1, ?2, 'bake.mp3', 60000, 44100, 2,
+                             120.0, 500, 120, 'analyzed')",
+                    params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+                )
+                .expect("track should be inserted");
+            let track_id = store.connection.last_insert_rowid();
+            let added = add_clip(&mut store.connection, track_id, Some(4.0), Some(0))
+                .expect("clip should be added");
+            let clip_id = added.clips[0].id;
+
+            // Une cuisson, puis une scission : les deux moitiés partagent le
+            // fichier, comme le fait le programme.
+            let baked = database_path.with_extension("baked.wav");
+            store
+                .connection
+                .execute(
+                    "INSERT INTO clip_bakes (clip_id, file_path, source_from_ms, removed)
+                     VALUES (?1, ?2, 0.0, '{\"lane\":0,\"fromBeat\":1.0,\"toBeat\":0.0,\"volume\":[],\"pan\":[],\"filter\":[]}')",
+                    params![clip_id, baked.to_string_lossy()],
+                )
+                .expect("the bake row should be written");
+
+            let split = split_timeline_clip(&mut store.connection, clip_id, 40.0)
+                .expect("the clip should split");
+            let other = split
+                .clips
+                .iter()
+                .find(|clip| clip.id != clip_id)
+                .expect("the split makes a second clip")
+                .id;
+
+            // Le partage doit bien exister, sinon le test ne prouve rien.
+            let sharing: i64 = store
+                .connection
+                .query_row(
+                    "SELECT COUNT(*) FROM clip_bakes WHERE file_path = ?1",
+                    params![baked.to_string_lossy()],
+                    |row| row.get(0),
+                )
+                .expect("the count should read");
+            assert_eq!(sharing, 2, "les deux moitiés partagent le fichier cuit");
+
+            // La première copie décuite ne rend rien à effacer.
+            let (_, path) =
+                unbake_clip(&mut store.connection, clip_id).expect("the first copy should unbake");
+            assert!(
+                path.is_none(),
+                "l'autre moitié s'en sert encore : rien à effacer"
+            );
+
+            // La seconde, si : plus personne ne le désigne.
+            let (_, path) =
+                unbake_clip(&mut store.connection, other).expect("the second copy should unbake");
+            assert_eq!(
+                path.as_deref(),
+                Some(baked.to_string_lossy().as_ref()),
+                "le dernier à lâcher rend le fichier"
+            );
+        }
+
+        let _ = fs::remove_file(&database_path);
+        let _ = fs::remove_file(&fake_mp3);
+    }
+
+    /// Annuler une coupure ou une boucle doit rendre l'état précédent.
+    ///
+    /// L'UPSERT de `restore_snapshot` énumère ses colonnes une à une, et les
+    /// cinq dernières y ont été ajoutées après coup. Tant qu'elles manquaient,
+    /// l'annulation était **muette** sur elles : la ligne était bien réécrite,
+    /// mais sans toucher à la coupure ni à la boucle, qui gardaient donc leur
+    /// valeur courante. Rien ne le signalait — l'opération réussissait.
+    #[test]
+    fn undoing_a_mute_or_a_loop_gives_the_previous_state_back() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-undo-fields-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+        let fake_mp3 = database_path.with_extension("mp3");
+        fs::write(&fake_mp3, []).expect("fake MP3 should be created");
+
+        {
+            let mut store = LibraryStore::open(&database_path).expect("database should open");
+            store
+                .connection
+                .execute(
+                    "INSERT INTO library_tracks
+                     (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                      bpm, first_beat_ms, beat_count, analysis_status)
+                     VALUES (?1, ?2, 'undo.mp3', 60000, 44100, 2,
+                             120.0, 500, 120, 'analyzed')",
+                    params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+                )
+                .expect("track should be inserted");
+            let track_id = store.connection.last_insert_rowid();
+            let added = add_clip(&mut store.connection, track_id, Some(4.0), Some(0))
+                .expect("clip should be added");
+            let clip_id = added.clips[0].id;
+
+            // L'état d'avant, tel que l'historique le retiendrait.
+            let before = snapshot(&store.connection).expect("the timeline should read");
+
+            set_clip_muted(&store.connection, clip_id, true).expect("the clip should mute");
+            set_clip_looping(&store.connection, clip_id, true).expect("the clip should loop");
+            set_clip_loop_extent(&store.connection, clip_id, 0.0, 8.0)
+                .expect("the loop should stretch");
+
+            let changed = snapshot(&store.connection).expect("the timeline should read");
+            assert!(changed.clips[0].muted && changed.clips[0].looping);
+
+            // Annuler, c'est restaurer l'instantané d'avant.
+            let undone =
+                restore_snapshot(&mut store.connection, &before).expect("undo should restore");
+            let clip = &undone.clips[0];
+            assert!(!clip.muted, "la coupure doit être annulée");
+            assert!(!clip.looping, "la boucle doit être annulée");
+            assert!(
+                clip.loop_tail_beats.abs() < 1.0e-9,
+                "et son débordement avec"
+            );
+
+            // Et refaire doit retrouver le résultat, pas un entre-deux.
+            let redone =
+                restore_snapshot(&mut store.connection, &changed).expect("redo should restore");
+            let clip = &redone.clips[0];
+            assert!(clip.muted && clip.looping);
+            assert!((clip.loop_tail_beats - 8.0).abs() < 1.0e-9);
+        }
+
+        let _ = fs::remove_file(&database_path);
+        let _ = fs::remove_file(&fake_mp3);
     }
 
     /// Boucler une mesure prise à la main, sans trou.

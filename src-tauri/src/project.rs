@@ -47,6 +47,25 @@ pub struct ProjectFile {
     #[serde(default)]
     draw_groups: Vec<ProjectDrawGroup>,
     filter_nodes: Vec<ProjectFilterNode>,
+    /// Les passes d'effets jouées à la main, une collection par effet.
+    ///
+    /// Elles manquaient au fichier, et l'oubli allait dans les deux sens. Un
+    /// projet enregistré les perdait — mais surtout, comme le chargement
+    /// n'effaçait pas ces tables, **les passes de la session précédente
+    /// restaient en place** et jouaient sur le projet qu'on venait d'ouvrir.
+    /// Rouvrir aussitôt dans la même base masquait le défaut, les passes
+    /// courantes étant encore les bonnes.
+    ///
+    /// `serde(default)` sur les quatre : un fichier écrit avant elles n'en a
+    /// pas, et son état historique est bien la collection vide.
+    #[serde(default)]
+    reverb_nodes: Vec<ProjectEffectNode>,
+    #[serde(default)]
+    flanger_nodes: Vec<ProjectEffectNode>,
+    #[serde(default)]
+    bitcrush_nodes: Vec<ProjectEffectNode>,
+    #[serde(default)]
+    delay_nodes: Vec<ProjectEffectNode>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -122,6 +141,35 @@ struct ProjectClip {
     /// La cuisson de ce clip, s'il en a une.
     #[serde(default)]
     bake: Option<ProjectClipBake>,
+    /// Le tempo que la courbe vise à l'ancre de ce clip, s'il en impose un.
+    ///
+    /// Les cinq champs qui suivent portent tous `serde(default)` pour la même
+    /// raison : un projet écrit avant eux doit se relire, et son état
+    /// historique est justement la valeur par défaut — pas de tempo imposé,
+    /// pas de coupure, pas de boucle. Sans ça, ouvrir un ancien fichier
+    /// échouerait sur un champ manquant.
+    #[serde(default)]
+    tempo_target_bpm: Option<f64>,
+    /// Ce clip est-il coupé ? Le mute **du clip**, distinct de celui de la voie.
+    #[serde(default)]
+    muted: bool,
+    /// Ce clip plonge-t-il sous la clé de sidechain ?
+    ///
+    /// `serde(default)` comme les autres, mais son état historique n'est pas
+    /// `false` : avant cette désignation, la clé faisait plonger tout ce
+    /// qu'elle recouvrait. Un projet ancien est donc relu avec **tous** ses
+    /// clips receveurs, faute de quoi il perdrait son pompage en s'ouvrant.
+    /// C'est `apply` qui pose cette valeur, le champ ne pouvant pas savoir seul
+    /// s'il est absent ou faux.
+    #[serde(default)]
+    ducks_under_key: Option<bool>,
+    /// Ce clip se répète-t-il, et de combien sa boucle déborde du motif.
+    #[serde(default)]
+    looping: bool,
+    #[serde(default)]
+    loop_lead_beats: f64,
+    #[serde(default)]
+    loop_tail_beats: f64,
 }
 
 fn full_stem() -> String {
@@ -192,6 +240,16 @@ struct ProjectDrawGroup {
     end_beat: f64,
     shape: String,
     period: f64,
+}
+
+/// Un point d'une passe d'effet : les quatre tables ont la même forme, donc
+/// un seul type les décrit toutes.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectEffectNode {
+    lane: i64,
+    beat: f64,
+    value: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -305,7 +363,8 @@ pub fn collect(connection: &Connection) -> Result<ProjectFile, String> {
         .prepare(
             "SELECT library_track_id, lane, anchor_beat, tempo_anchor_beat,
                     trim_start_beats, trim_end_beats, is_sidechain_key, eq_settings,
-                    stem, id
+                    stem, id, tempo_target_bpm, muted, looping,
+                    loop_lead_beats, loop_tail_beats, ducks_under_key
              FROM timeline_clips ORDER BY lane, anchor_beat",
         )
         .map_err(database_read_error)?;
@@ -326,6 +385,12 @@ pub fn collect(connection: &Connection) -> Result<ProjectFile, String> {
                     stem: row.get(8)?,
                     stems: Vec::new(),
                     bake: None,
+                    tempo_target_bpm: row.get(10)?,
+                    muted: row.get::<_, i64>(11)? != 0,
+                    ducks_under_key: Some(row.get::<_, i64>(15)? != 0),
+                    looping: row.get::<_, i64>(12)? != 0,
+                    loop_lead_beats: row.get(13)?,
+                    loop_tail_beats: row.get(14)?,
                 },
             ))
         })
@@ -432,6 +497,10 @@ pub fn collect(connection: &Connection) -> Result<ProjectFile, String> {
         pan_nodes,
         draw_groups,
         filter_nodes,
+        reverb_nodes: effect_nodes(connection, "timeline_reverb_nodes")?,
+        flanger_nodes: effect_nodes(connection, "timeline_flanger_nodes")?,
+        bitcrush_nodes: effect_nodes(connection, "timeline_bitcrush_nodes")?,
+        delay_nodes: effect_nodes(connection, "timeline_delay_nodes")?,
     })
 }
 
@@ -507,11 +576,87 @@ fn read_waveform(
         .map_err(database_read_error)
 }
 
+/// Écrit le projet, sans jamais laisser la destination à moitié écrite.
+///
+/// `fs::write` tronque le fichier puis le remplit. Entre les deux, il ne reste
+/// rien : un disque plein, une coupure, une erreur d'écriture, et la dernière
+/// version valide du projet a disparu — celle-là même qu'on cherchait à
+/// remplacer. Le coût d'un tel accident est une soirée de travail.
+///
+/// On écrit donc à côté, on force le contenu sur le disque, puis on renomme
+/// **par-dessus** la destination. Trois détails portent la garantie, et chacun
+/// a déjà été raté ici :
+///
+/// - `sync_all` avant le renommage. Sans lui, le nom peut devenir visible avant
+///   les octets, et une coupure laisserait un fichier au bon nom au contenu
+///   tronqué — pire qu'un ancien perdu, puisqu'il a l'air bon.
+/// - **Aucune suppression préalable de la destination.** Une première version de
+///   ce code retirait l'ancien fichier avant de renommer, au motif que Windows
+///   refuserait un renommage sur une destination existante. C'est faux :
+///   `std::fs::rename` s'appuie sur `MoveFileEx` avec remplacement et écrase
+///   sans se plaindre. La suppression était donc inutile, et elle ouvrait
+///   exactement le trou qu'on voulait fermer : si le renommage échouait
+///   ensuite, l'ancienne sauvegarde n'existait plus nulle part.
+/// - Un temporaire **unique**, créé en exclusivité. Le dériver de la
+///   destination par `with_extension` faisait que sauvegarder sous un nom
+///   déjà terminé par l'extension de travail visait le même fichier des deux
+///   côtés, et l'opération effaçait sa propre source.
+///
+/// Ce n'est pas une garantie contre toutes les pannes de stockage : c'est la
+/// garantie qu'un échec laisse l'ancien fichier en place.
 pub fn write_to(connection: &Connection, path: &Path) -> Result<(), String> {
+    use std::io::Write;
+
     let project = collect(connection)?;
     let text = serde_json::to_string_pretty(&project)
         .map_err(|error| format!("This project could not be written: {error}"))?;
-    std::fs::write(path, text).map_err(|error| format!("This project could not be saved: {error}"))
+
+    let temporary = writing_path(path)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| format!("This project could not be saved: {error}"))?;
+    let written = file
+        .write_all(text.as_bytes())
+        .and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(format!("This project could not be saved: {error}"));
+    }
+
+    // Le renommage remplace la destination en une opération. S'il échoue, la
+    // destination n'a pas été touchée et l'ancienne version est intacte.
+    if let Err(error) = std::fs::rename(&temporary, path) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(format!("This project could not be saved: {error}"));
+    }
+    Ok(())
+}
+
+/// Un voisin de la destination qui n'existe pas encore.
+///
+/// Voisin, parce qu'un renommage ne traverse pas les volumes et qu'un dossier
+/// temporaire système peut parfaitement vivre sur un autre disque. Unique,
+/// parce que dériver le nom de la destination seule finissait par la désigner
+/// elle-même.
+fn writing_path(destination: &Path) -> Result<std::path::PathBuf, String> {
+    let folder = destination.parent().unwrap_or_else(|| Path::new("."));
+    let stem = destination
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "project".to_owned());
+    for attempt in 0..64 {
+        let candidate = folder.join(format!(
+            ".{stem}.{}-{attempt}.mixcanvas-writing",
+            std::process::id()
+        ));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err("This project could not be saved: no free temporary name.".to_owned())
 }
 
 pub fn read_from(path: &Path) -> Result<ProjectFile, String> {
@@ -610,11 +755,19 @@ pub fn apply(connection: &mut Connection, project: &ProjectFile) -> Result<(), S
 
     transaction
         .execute_batch(
+            // Les quatre tables d'effets sont vidées **inconditionnellement**,
+            // y compris pour un fichier ancien qui n'en porte aucune. C'est le
+            // cœur du défaut : sans cette purge, ouvrir un projet laissait
+            // jouer les passes de la session d'avant.
             "DELETE FROM timeline_clips;
              DELETE FROM timeline_volume_nodes;
              DELETE FROM timeline_pan_nodes;
              DELETE FROM timeline_draw_groups;
-             DELETE FROM timeline_filter_nodes;",
+             DELETE FROM timeline_filter_nodes;
+             DELETE FROM timeline_reverb_nodes;
+             DELETE FROM timeline_flanger_nodes;
+             DELETE FROM timeline_bitcrush_nodes;
+             DELETE FROM timeline_delay_nodes;",
         )
         .map_err(database_write_error)?;
 
@@ -670,8 +823,11 @@ pub fn apply(connection: &mut Connection, project: &ProjectFile) -> Result<(), S
             .execute(
                 "INSERT INTO timeline_clips
                  (library_track_id, lane, anchor_beat, created_at, tempo_anchor_beat,
-                  eq_settings, trim_start_beats, trim_end_beats, is_sidechain_key, stem)
-                 VALUES (?1, ?2, ?3, strftime('%s','now'), ?4, ?5, ?6, ?7, ?8, ?9)",
+                  eq_settings, trim_start_beats, trim_end_beats, is_sidechain_key, stem,
+                  tempo_target_bpm, muted, looping, loop_lead_beats, loop_tail_beats,
+                  ducks_under_key)
+                 VALUES (?1, ?2, ?3, strftime('%s','now'), ?4, ?5, ?6, ?7, ?8, ?9,
+                         ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     track_id,
                     clip.lane,
@@ -682,6 +838,14 @@ pub fn apply(connection: &mut Connection, project: &ProjectFile) -> Result<(), S
                     clip.trim_end_beats,
                     i64::from(clip.is_sidechain_key),
                     clip.stem,
+                    clip.tempo_target_bpm,
+                    i64::from(clip.muted),
+                    i64::from(clip.looping),
+                    clip.loop_lead_beats,
+                    clip.loop_tail_beats,
+                    // Absent d'un fichier ancien : il plongeait alors, puisque
+                    // la clé ne faisait pas le tri.
+                    i64::from(clip.ducks_under_key.unwrap_or(true)),
                 ],
             )
             .map_err(database_write_error)?;
@@ -759,7 +923,44 @@ pub fn apply(connection: &mut Connection, project: &ProjectFile) -> Result<(), S
             .map_err(database_write_error)?;
     }
 
+    for (table, nodes) in [
+        ("timeline_reverb_nodes", &project.reverb_nodes),
+        ("timeline_flanger_nodes", &project.flanger_nodes),
+        ("timeline_bitcrush_nodes", &project.bitcrush_nodes),
+        ("timeline_delay_nodes", &project.delay_nodes),
+    ] {
+        for node in nodes {
+            transaction
+                .execute(
+                    &format!("INSERT INTO {table} (lane, beat, value) VALUES (?1, ?2, ?3)"),
+                    params![node.lane, node.beat, node.value],
+                )
+                .map_err(database_write_error)?;
+        }
+    }
+
     transaction.commit().map_err(database_write_error)
+}
+
+/// Les points d'une table d'effet, dans l'ordre où ils se jouent.
+fn effect_nodes(connection: &Connection, table: &str) -> Result<Vec<ProjectEffectNode>, String> {
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT lane, beat, value FROM {table} ORDER BY lane, beat"
+        ))
+        .map_err(database_read_error)?;
+    let nodes = statement
+        .query_map([], |row| {
+            Ok(ProjectEffectNode {
+                lane: row.get(0)?,
+                beat: row.get(1)?,
+                value: row.get(2)?,
+            })
+        })
+        .map_err(database_read_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(database_read_error)?;
+    Ok(nodes)
 }
 
 fn store_waveform(
@@ -958,6 +1159,437 @@ mod tests {
         for file in media {
             let _ = std::fs::remove_file(file);
         }
+    }
+
+    /// Un renommage qui échoue doit laisser l'ancienne sauvegarde intacte.
+    ///
+    /// C'est la garantie entière de cette fonction, et une première version la
+    /// perdait : elle retirait la destination avant de renommer, au motif faux
+    /// que Windows refuserait d'écraser. Dès cette suppression, la dernière
+    /// version valide n'existait plus nulle part, et un échec du renommage ne
+    /// la rendait pas.
+    ///
+    /// Le verrou posé ici empêche le renommage sans empêcher l'écriture, ce qui
+    /// reproduit exactement cette fenêtre.
+    #[test]
+    fn a_failed_replacement_leaves_the_previous_save_alone() {
+        let (mut store, store_path, fake_mp3) = scratch_store("atomic-fail");
+        store
+            .connection
+            .execute(
+                "INSERT INTO library_tracks
+                 (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                  bpm, first_beat_ms, beat_count, analysis_status)
+                 VALUES (?1, ?2, 'fail.mp3', 60000, 44100, 2, 120.0, 500, 120,
+                         'analyzed')",
+                params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+            )
+            .expect("track should be inserted");
+        let track_id = store.connection.last_insert_rowid();
+        crate::timeline::add_clip(&mut store.connection, track_id, Some(8.0), Some(0))
+            .expect("a clip should be added");
+
+        let project_path = store_path.with_extension("mixcanvas");
+        std::fs::write(&project_path, b"la version precedente").expect("an older file exists");
+
+        // Un dossier à la place de la destination : le renommage échoue, mais
+        // l'écriture du temporaire, elle, réussit. C'est la fenêtre qu'on veut.
+        let blocked = store_path.with_extension("blocked.mixcanvas");
+        std::fs::create_dir_all(&blocked).expect("the blocking folder should exist");
+
+        let outcome = write_to(&store.connection, &blocked);
+        assert!(outcome.is_err(), "un remplacement impossible doit échouer");
+
+        // Rien ne traîne, et surtout : l'autre sauvegarde n'a pas été touchée.
+        assert_eq!(
+            std::fs::read_to_string(&project_path).expect("the older file should read"),
+            "la version precedente",
+            "une sauvegarde étrangère à l'opération reste intacte"
+        );
+        let debris: Vec<_> =
+            std::fs::read_dir(project_path.parent().expect("the folder should exist"))
+                .expect("the folder should list")
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .ends_with("mixcanvas-writing")
+                })
+                .collect();
+        assert!(debris.is_empty(), "aucun temporaire ne doit rester");
+
+        let _ = std::fs::remove_dir_all(&blocked);
+        let _ = std::fs::remove_file(&project_path);
+        scrub(&[store_path]);
+    }
+
+    /// Le temporaire ne peut jamais désigner la destination elle-même.
+    ///
+    /// Le dériver par `with_extension` faisait qu'enregistrer sous un nom déjà
+    /// terminé par l'extension de travail visait le même fichier des deux
+    /// côtés : l'opération effaçait sa propre source.
+    #[test]
+    fn the_working_file_is_never_the_destination() {
+        for name in [
+            "C:/mix/session.mixcanvas",
+            "C:/mix/session.mixcanvas-writing",
+            "C:/mix/session",
+        ] {
+            let destination = std::path::PathBuf::from(name);
+            let working = writing_path(&destination).expect("a free name should exist");
+            assert_ne!(working, destination);
+            assert_eq!(
+                working.parent(),
+                destination.parent(),
+                "le temporaire reste voisin, un renommage ne traversant pas les volumes"
+            );
+        }
+    }
+
+    /// Enregistrer par-dessus un projet existant ne le détruit pas en chemin.
+    ///
+    /// L'écriture tronquait la destination puis la remplissait; entre les deux,
+    /// il ne restait rien. Une coupure à cet instant coûtait la dernière
+    /// version valide — celle qu'on remplaçait. Ce test vérifie le résultat
+    /// visible du nouveau chemin : le contenu remplacé, et aucun fichier
+    /// intermédiaire laissé derrière.
+    #[test]
+    fn saving_over_a_project_leaves_no_debris() {
+        let (mut store, store_path, fake_mp3) = scratch_store("atomic");
+        store
+            .connection
+            .execute(
+                "INSERT INTO library_tracks
+                 (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                  bpm, first_beat_ms, beat_count, analysis_status)
+                 VALUES (?1, ?2, 'atomic.mp3', 60000, 44100, 2, 120.0, 500, 120,
+                         'analyzed')",
+                params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+            )
+            .expect("track should be inserted");
+        let track_id = store.connection.last_insert_rowid();
+        crate::timeline::add_clip(&mut store.connection, track_id, Some(8.0), Some(0))
+            .expect("a clip should be added");
+
+        let project_path = store_path.with_extension("mixcanvas");
+        std::fs::write(&project_path, b"ancienne version").expect("an older file should exist");
+
+        write_to(&store.connection, &project_path).expect("the project should be written");
+
+        let text = std::fs::read_to_string(&project_path).expect("the project should read");
+        assert!(
+            text.contains("\"clips\""),
+            "le contenu doit avoir été remplacé"
+        );
+        assert!(
+            !project_path.with_extension("mixcanvas-writing").exists(),
+            "aucun fichier intermédiaire ne doit rester"
+        );
+
+        // Et le fichier se relit : écrire n'a pas produit un JSON tronqué.
+        read_from(&project_path).expect("the project should read back");
+
+        let _ = std::fs::remove_file(&project_path);
+        scrub(&[store_path]);
+    }
+
+    /// Les passes d'effets voyagent, et n'héritent de rien.
+    ///
+    /// L'oubli allait dans les deux sens. Un projet enregistré perdait ses
+    /// passes de reverb, flange, crush et delay — mais surtout, le chargement
+    /// n'effaçant pas ces tables, **celles de la session précédente restaient
+    /// en place** et jouaient sur le projet qu'on venait d'ouvrir. Ce test
+    /// vérifie les deux moitiés : ce qui doit arriver, et ce qui doit partir.
+    #[test]
+    fn effect_passes_travel_and_do_not_inherit() {
+        let (mut origin, origin_path, fake_mp3) = scratch_store("effects");
+        origin
+            .connection
+            .execute(
+                "INSERT INTO library_tracks
+                 (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                  bpm, first_beat_ms, beat_count, analysis_status)
+                 VALUES (?1, ?2, 'effects.mp3', 60000, 44100, 2, 120.0, 500, 120,
+                         'analyzed')",
+                params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+            )
+            .expect("track should be inserted");
+        let track_id = origin.connection.last_insert_rowid();
+        crate::timeline::add_clip(&mut origin.connection, track_id, Some(8.0), Some(0))
+            .expect("a clip should be added");
+
+        // Une passe par effet, à des valeurs qu'on reconnaîtra.
+        for (table, beat, value) in [
+            ("timeline_reverb_nodes", 16.0, 0.8),
+            ("timeline_flanger_nodes", 20.0, 0.6),
+            ("timeline_bitcrush_nodes", 24.0, 0.4),
+            ("timeline_delay_nodes", 28.0, 0.2),
+        ] {
+            origin
+                .connection
+                .execute(
+                    &format!("INSERT INTO {table} (lane, beat, value) VALUES (0, ?1, ?2)"),
+                    params![beat, value],
+                )
+                .expect("the effect pass should be recorded");
+        }
+
+        let file = collect(&origin.connection).expect("the session should be collected");
+        let text = serde_json::to_string(&file).expect("the project should serialize");
+
+        // La base d'arrivée porte déjà **une autre** session, avec ses propres
+        // passes : c'est la situation qui révélait le défaut.
+        let (mut target, target_path, _) = scratch_store("effects-target");
+        for table in [
+            "timeline_reverb_nodes",
+            "timeline_flanger_nodes",
+            "timeline_bitcrush_nodes",
+            "timeline_delay_nodes",
+        ] {
+            target
+                .connection
+                .execute(
+                    &format!("INSERT INTO {table} (lane, beat, value) VALUES (2, 99.0, 1.0)"),
+                    [],
+                )
+                .expect("the stale pass should be recorded");
+        }
+
+        let reread: ProjectFile = serde_json::from_str(&text).expect("it should read back");
+        apply(&mut target.connection, &reread).expect("the project should apply");
+
+        for (table, beat, value) in [
+            ("timeline_reverb_nodes", 16.0, 0.8),
+            ("timeline_flanger_nodes", 20.0, 0.6),
+            ("timeline_bitcrush_nodes", 24.0, 0.4),
+            ("timeline_delay_nodes", 28.0, 0.2),
+        ] {
+            let rows: Vec<(i64, f64, f64)> = target
+                .connection
+                .prepare(&format!(
+                    "SELECT lane, beat, value FROM {table} ORDER BY beat"
+                ))
+                .expect("statement")
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .expect("query")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("rows");
+            assert_eq!(
+                rows.len(),
+                1,
+                "{table} ne doit garder que la passe du projet"
+            );
+            assert_eq!(rows[0].0, 0, "{table} : la voie du projet");
+            assert!((rows[0].1 - beat).abs() < 1.0e-9, "{table} : le temps");
+            assert!((rows[0].2 - value).abs() < 1.0e-9, "{table} : la valeur");
+        }
+
+        scrub(&[origin_path, target_path]);
+    }
+
+    /// Ouvrir un fichier antérieur aux effets doit quand même purger la base.
+    ///
+    /// C'est la moitié la plus facile à rater : un ancien projet n'a pas de
+    /// collections à restaurer, mais la session précédente, elle, a bien des
+    /// passes à effacer.
+    #[test]
+    fn an_older_project_still_clears_the_effects_that_were_there() {
+        let (mut origin, origin_path, fake_mp3) = scratch_store("effects-older");
+        origin
+            .connection
+            .execute(
+                "INSERT INTO library_tracks
+                 (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                  bpm, first_beat_ms, beat_count, analysis_status)
+                 VALUES (?1, ?2, 'older.mp3', 60000, 44100, 2, 120.0, 500, 120,
+                         'analyzed')",
+                params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+            )
+            .expect("track should be inserted");
+        let track_id = origin.connection.last_insert_rowid();
+        crate::timeline::add_clip(&mut origin.connection, track_id, Some(8.0), Some(0))
+            .expect("a clip should be added");
+
+        let file = collect(&origin.connection).expect("the session should be collected");
+        let mut text = serde_json::to_value(&file).expect("the project should serialize");
+        for name in ["reverbNodes", "flangerNodes", "bitcrushNodes", "delayNodes"] {
+            text.as_object_mut()
+                .expect("the project should be an object")
+                .remove(name);
+        }
+
+        let (mut target, target_path, _) = scratch_store("effects-older-target");
+        target
+            .connection
+            .execute(
+                "INSERT INTO timeline_reverb_nodes (lane, beat, value) VALUES (1, 50.0, 0.9)",
+                [],
+            )
+            .expect("the stale pass should be recorded");
+
+        let reread: ProjectFile =
+            serde_json::from_value(text).expect("an older project should still read");
+        apply(&mut target.connection, &reread).expect("the project should apply");
+
+        let left: i64 = target
+            .connection
+            .query_row("SELECT COUNT(*) FROM timeline_reverb_nodes", [], |row| {
+                row.get(0)
+            })
+            .expect("the count should read");
+        assert_eq!(left, 0, "la passe de la session d'avant doit partir");
+
+        scrub(&[origin_path, target_path]);
+    }
+
+    /// Chaque réglage de clip doit traverser le fichier de projet.
+    ///
+    /// Ce test existe à cause d'un défaut précis : le mute du clip, la boucle,
+    /// ses deux extensions et le tempo cible avaient été ajoutés au schéma, au
+    /// moteur et à l'interface, mais pas au format de projet. Enregistrer un
+    /// mix puis le rouvrir rendait donc un clip non coupé, sans boucle et à sa
+    /// vitesse native — et tous les tests passaient, parce qu'aucun ne
+    /// comparait autre chose que le nombre de clips et leur position.
+    ///
+    /// Il vérifie donc chaque champ avec une valeur **non par défaut** : un
+    /// champ oublié dans la collecte ou dans la restauration revient à sa
+    /// valeur d'origine, et l'assertion le voit.
+    #[test]
+    fn every_clip_setting_survives_the_round_trip() {
+        let (mut origin, origin_path, fake_mp3) = scratch_store("clip-fields");
+        origin
+            .connection
+            .execute(
+                "INSERT INTO library_tracks
+                 (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                  bpm, first_beat_ms, beat_count, analysis_status)
+                 VALUES (?1, ?2, 'fields.mp3', 60000, 44100, 2, 120.0, 500, 120,
+                         'analyzed')",
+                params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+            )
+            .expect("track should be inserted");
+        let track_id = origin.connection.last_insert_rowid();
+        crate::timeline::add_clip(&mut origin.connection, track_id, Some(8.0), Some(1))
+            .expect("a clip should be added");
+        let clip_id = crate::timeline::snapshot(&origin.connection)
+            .expect("the timeline should read")
+            .clips[0]
+            .id;
+
+        // Tout ce qu'un clip porte, réglé loin de sa valeur d'usine.
+        crate::timeline::set_clip_muted(&origin.connection, clip_id, true)
+            .expect("the clip should mute");
+        crate::timeline::set_clip_looping(&origin.connection, clip_id, true)
+            .expect("the clip should loop");
+        crate::timeline::set_clip_loop_extent(&origin.connection, clip_id, 4.0, 12.0)
+            .expect("the loop should stretch");
+        origin
+            .connection
+            .execute(
+                "UPDATE timeline_clips SET tempo_target_bpm = 128.25 WHERE id = ?1",
+                params![clip_id],
+            )
+            .expect("a tempo target should be set");
+
+        let before = crate::timeline::snapshot(&origin.connection)
+            .expect("the timeline should read")
+            .clips[0]
+            .clone();
+        assert!(before.muted && before.looping, "the fixture must be set up");
+
+        let file = collect(&origin.connection).expect("the session should be collected");
+        let text = serde_json::to_string(&file).expect("the project should serialize");
+
+        let (mut target, target_path, _) = scratch_store("clip-fields-target");
+        let reread: ProjectFile = serde_json::from_str(&text).expect("it should read back");
+        apply(&mut target.connection, &reread).expect("the project should apply");
+
+        let after = crate::timeline::snapshot(&target.connection)
+            .expect("the rebuilt timeline should read")
+            .clips[0]
+            .clone();
+
+        assert_eq!(after.muted, before.muted, "le mute du clip doit traverser");
+        assert_eq!(after.looping, before.looping, "la boucle doit traverser");
+        assert!(
+            (after.loop_lead_beats - before.loop_lead_beats).abs() < 1.0e-9,
+            "le débordement de gauche doit traverser"
+        );
+        assert!(
+            (after.loop_tail_beats - before.loop_tail_beats).abs() < 1.0e-9,
+            "le débordement de droite doit traverser"
+        );
+        assert_eq!(
+            after.tempo_target_bpm, before.tempo_target_bpm,
+            "le tempo cible doit traverser"
+        );
+        // Et la géométrie qui en découle, pas seulement les champs bruts : une
+        // boucle rouverte sans ses extensions occuperait la mauvaise place.
+        assert!((after.visual_start_beat - before.visual_start_beat).abs() < 1.0e-9);
+        assert!((after.visual_end_beat - before.visual_end_beat).abs() < 1.0e-9);
+
+        scrub(&[origin_path, target_path]);
+    }
+
+    /// Un projet écrit avant ces cinq champs doit encore s'ouvrir.
+    ///
+    /// C'est la contrepartie du test précédent : les valeurs par défaut ne sont
+    /// pas un ornement, elles sont ce qui permet à un fichier d'hier de se
+    /// relire sans être refusé pour un champ manquant.
+    #[test]
+    fn a_project_written_before_these_fields_still_opens() {
+        let (mut origin, origin_path, fake_mp3) = scratch_store("older-file");
+        origin
+            .connection
+            .execute(
+                "INSERT INTO library_tracks
+                 (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                  bpm, first_beat_ms, beat_count, analysis_status)
+                 VALUES (?1, ?2, 'older.mp3', 60000, 44100, 2, 120.0, 500, 120,
+                         'analyzed')",
+                params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+            )
+            .expect("track should be inserted");
+        let track_id = origin.connection.last_insert_rowid();
+        crate::timeline::add_clip(&mut origin.connection, track_id, Some(8.0), Some(0))
+            .expect("a clip should be added");
+
+        let file = collect(&origin.connection).expect("the session should be collected");
+        let mut text = serde_json::to_value(&file).expect("the project should serialize");
+        // On retire les cinq champs du JSON, comme le ferait un fichier écrit
+        // avant qu'ils n'existent.
+        for clip in text["clips"]
+            .as_array_mut()
+            .expect("clips should be an array")
+        {
+            for name in [
+                "tempoTargetBpm",
+                "muted",
+                "looping",
+                "loopLeadBeats",
+                "loopTailBeats",
+            ] {
+                clip.as_object_mut()
+                    .expect("a clip should be an object")
+                    .remove(name);
+            }
+        }
+
+        let (mut target, target_path, _) = scratch_store("older-file-target");
+        let reread: ProjectFile =
+            serde_json::from_value(text).expect("an older project should still read");
+        apply(&mut target.connection, &reread).expect("the project should apply");
+
+        let clip = crate::timeline::snapshot(&target.connection)
+            .expect("the rebuilt timeline should read")
+            .clips[0]
+            .clone();
+        assert!(!clip.muted, "un ancien clip n'était pas coupé");
+        assert!(!clip.looping, "ni bouclé");
+        assert_eq!(clip.tempo_target_bpm, None, "ni à une vitesse imposée");
+
+        scrub(&[origin_path, target_path]);
     }
 
     #[test]

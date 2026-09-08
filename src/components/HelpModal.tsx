@@ -102,6 +102,7 @@ const SHORTCUTS: ShortcutItem[] = [
   { surface: "control", group: "On a clip", keys: ["VOX", "MUS"], description: "Play the vocals or the instrumental alone — the first click separates this clip" },
   { surface: "control", group: "On a clip", keys: [<TransportGlyph name="sidechain" />], description: "Make it the sidechain key: it goes silent where it overlaps, and pumps what it covers" },
   { surface: "control", group: "Library", keys: ["Search"], description: "Filter the library by name. Searches artist, title, file name and folder at once, ignores accents and punctuation, and matches your words in any order. Escape closes it and brings the whole list back" },
+  { surface: "control", group: "On a clip", keys: ["⛓"], description: "Cycles the clip's part in the sidechain: nothing, the key in amber, then ducking in green. The key pumps only the clips you mark as ducking, so a third track can stay untouched" },
   { surface: "control", group: "On a clip", keys: ["EQ"], description: "Open its four-band equaliser — high-pass, two parametric bells, low-pass — and its gain trim. The graph shows the filters only, so the bells keep their full range however far the gain is pushed" },
   { surface: "control", group: "On a clip", keys: ["BAKE"], description: "Render its EQ and this lane's automation into a file of its own, then flatten the lane under it — draw freely on top" },
   { surface: "control", group: "On a clip", keys: ["BAKE"], description: "Click a baked clip again to undo it: the automation comes back, replacing anything drawn since" },

@@ -110,6 +110,18 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
         -- Ce clip est-il coupé ? Une décision de mix qui appartient au clip et
         -- non à la voie : couper la voie éteindrait les clips voisins avec lui.
         muted            INTEGER NOT NULL DEFAULT 0 CHECK (muted IN (0, 1)),
+        -- Ce clip plonge-t-il sous la clé de sidechain ?
+        --
+        -- La clé faisait plonger **tout** ce qu'elle recouvrait, ce qui rend
+        -- inexprimable la configuration la plus utile à trois pistes : la
+        -- source, un clip qui pompe, et un troisième qu'on veut intact. Lequel
+        -- épargner est une décision de mix, que rien ne permet de deviner —
+        -- d'où une désignation explicite plutôt qu'une règle.
+        --
+        -- Neutre par défaut pour un clip neuf; la migration met les clips
+        -- existants à 1, pour qu'un mix déjà fait garde son pompage.
+        ducks_under_key  INTEGER NOT NULL DEFAULT 0
+                         CHECK (ducks_under_key IN (0, 1)),
         -- Ce clip se répète-t-il ? Tant que c'est le cas, ses deux poignées
         -- cessent de rogner et allongent la boucle, de part et d'autre du
         -- motif. Le motif lui-même reste décrit par `trim_*` : éteindre la
@@ -307,14 +319,62 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
         created_at     INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
-    PRAGMA user_version = 36;
+    -- Ce qu'un clip supprimé laisse derrière lui, en attendant qu'on annule.
+    --
+    -- Les voix séparées et la cuisson d'un clip tombent par cascade avec lui.
+    -- Annuler la suppression rendait donc le clip **sans** elles : il rejouait
+    -- sa source, sans les effets qu'on y avait cuits. L'instantané d'annulation
+    -- ne pouvait pas les reconstruire, puisqu'il ne porte que ce qui se dessine.
+    --
+    -- Les lignes sont donc versées ici avant la suppression, avec leurs
+    -- waveforms : c'est la seule copie qui rende le clip exactement tel qu'il
+    -- était. `clip_id` garde sa valeur d'origine et **n'a pas de clé
+    -- étrangère** — il désigne un clip qui n'existe plus, c'est tout le point.
+    -- La restauration réinsère le clip avec son id, donc le rattachement se
+    -- fait tout seul.
+    --
+    -- Le cycle de vie se règle à la fermeture, où le balayage des orphelins
+    -- vide ces tables : l'historique qui les référençait vit dans l'interface
+    -- et meurt au même instant.
+    CREATE TABLE IF NOT EXISTS removed_clip_stems (
+        id             INTEGER PRIMARY KEY,
+        clip_id        INTEGER NOT NULL,
+        kind           TEXT NOT NULL,
+        file_path      TEXT NOT NULL,
+        source_from_ms INTEGER NOT NULL DEFAULT 0,
+        bucket_count   INTEGER,
+        left_min       BLOB,
+        left_max       BLOB,
+        left_rms       BLOB,
+        right_min      BLOB,
+        right_max      BLOB,
+        right_rms      BLOB,
+        UNIQUE (clip_id, kind)
+    );
+
+    CREATE TABLE IF NOT EXISTS removed_clip_bakes (
+        id             INTEGER PRIMARY KEY,
+        clip_id        INTEGER NOT NULL UNIQUE,
+        file_path      TEXT NOT NULL,
+        source_from_ms INTEGER NOT NULL DEFAULT 0,
+        removed        TEXT NOT NULL,
+        bucket_count   INTEGER,
+        left_min       BLOB,
+        left_max       BLOB,
+        left_rms       BLOB,
+        right_min      BLOB,
+        right_max      BLOB,
+        right_rms      BLOB
+    );
+
+    PRAGMA user_version = 38;
 "#;
 
 /// Schema version described by `CURRENT_DATABASE_SCHEMA`. The constant and the
 /// `PRAGMA user_version` above must move together: the schema is also replayed
 /// after a migration, so a stale value there would push the database back down
 /// and replay the last migrations on every start.
-const LATEST_SCHEMA_VERSION: i64 = 36;
+const LATEST_SCHEMA_VERSION: i64 = 38;
 
 const MIGRATE_VERSION_1_TO_2: &str = r#"
     BEGIN IMMEDIATE;
@@ -1883,6 +1943,63 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
                     .execute_batch("PRAGMA user_version = 36;")
                     .map_err(database_write_error)?;
                 version = 36;
+            }
+            36 => {
+                connection
+                    .execute_batch(
+                        "CREATE TABLE IF NOT EXISTS removed_clip_stems (
+                            id             INTEGER PRIMARY KEY,
+                            clip_id        INTEGER NOT NULL,
+                            kind           TEXT NOT NULL,
+                            file_path      TEXT NOT NULL,
+                            source_from_ms INTEGER NOT NULL DEFAULT 0,
+                            bucket_count   INTEGER,
+                            left_min       BLOB,
+                            left_max       BLOB,
+                            left_rms       BLOB,
+                            right_min      BLOB,
+                            right_max      BLOB,
+                            right_rms      BLOB,
+                            UNIQUE (clip_id, kind)
+                        );
+                        CREATE TABLE IF NOT EXISTS removed_clip_bakes (
+                            id             INTEGER PRIMARY KEY,
+                            clip_id        INTEGER NOT NULL UNIQUE,
+                            file_path      TEXT NOT NULL,
+                            source_from_ms INTEGER NOT NULL DEFAULT 0,
+                            removed        TEXT NOT NULL,
+                            bucket_count   INTEGER,
+                            left_min       BLOB,
+                            left_max       BLOB,
+                            left_rms       BLOB,
+                            right_min      BLOB,
+                            right_max      BLOB,
+                            right_rms      BLOB
+                        );
+                        PRAGMA user_version = 37;",
+                    )
+                    .map_err(database_write_error)?;
+                version = 37;
+            }
+            37 => {
+                ensure_column(
+                    connection,
+                    "timeline_clips",
+                    "ducks_under_key",
+                    "INTEGER NOT NULL DEFAULT 0 CHECK (ducks_under_key IN (0, 1))",
+                )?;
+                // Les clips déjà posés plongeaient tous : la clé ne faisait pas
+                // le tri. Les marquer receveurs garde le son d'un mix existant
+                // exactement tel qu'il était — un changement de règle ne doit pas
+                // réécrire ce qui est déjà fait.
+                connection
+                    .execute_batch(
+                        "UPDATE timeline_clips SET ducks_under_key = 1
+                         WHERE is_sidechain_key = 0;
+                         PRAGMA user_version = 38;",
+                    )
+                    .map_err(database_write_error)?;
+                version = 38;
             }
             _ => {
                 let (target_version, migration) = match version {

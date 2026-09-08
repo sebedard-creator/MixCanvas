@@ -22,6 +22,14 @@ export interface ClipEqSettings {
   enabled?: boolean;
 }
 
+/**
+ * Ce qu'un clip est vis-à-vis du sidechain : rien, la source, ou un receveur.
+ *
+ * Trois états et non deux, parce que la clé faisait plonger tout ce qu'elle
+ * recouvrait — impossible alors de garder une troisième piste intacte.
+ */
+export type SidechainRole = "none" | "key" | "ducked";
+
 export interface TimelineClip {
   id: number;
   libraryTrackId: number;
@@ -48,6 +56,11 @@ export interface TimelineClip {
   trimStartBeats: number;
   trimEndBeats: number;
   isSidechainKey: boolean;
+  /**
+   * Ce clip plonge-t-il sous la clé de sidechain ? La clé faisait plonger tout
+   * ce qu'elle recouvrait; on désigne désormais les receveurs un par un.
+   */
+  ducksUnderKey: boolean;
   /**
    * Coupé : le clip reste à sa place, avec son égalisation, son automation et
    * sa cuisson, mais ne sort plus — ni à la lecture, ni au bounce.

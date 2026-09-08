@@ -51,7 +51,13 @@ import type {
   LibraryImportResult,
   LibraryTrack,
 } from "./library/types";
-import type { ClipEqSettings, TimelineClip, TimelineSnapshot, TimelineTransportSnapshot } from "./timeline/types";
+import type {
+  ClipEqSettings,
+  SidechainRole,
+  TimelineClip,
+  TimelineSnapshot,
+  TimelineTransportSnapshot,
+} from "./timeline/types";
 
 type PreviewStatus = "empty" | "paused" | "playing" | "ended";
 
@@ -1385,11 +1391,14 @@ function App() {
     );
   }, [runTimelineEdit]);
 
-  const setTimelineSidechainKey = useCallback(async (clipId: number, isKey: boolean) => {
-    await runTimelineEdit(
-      () => invoke<TimelineSnapshot>("set_timeline_sidechain_key", { clipId, isKey }),
-    );
-  }, [runTimelineEdit]);
+  const setTimelineSidechainRole = useCallback(
+    async (clipId: number, role: SidechainRole) => {
+      await runTimelineEdit(
+        () => invoke<TimelineSnapshot>("set_timeline_sidechain_role", { clipId, role }),
+      );
+    },
+    [runTimelineEdit],
+  );
 
   /**
    * Efface la bibliothèque et la timeline d'un seul geste.
@@ -1857,7 +1866,7 @@ function App() {
             onSetCompressorEnabled={setTimelineCompressorEnabled}
             autoplay={autoplay}
             onSetAutoplay={setAutoplay}
-            onSetSidechainKey={setTimelineSidechainKey}
+            onSetSidechainRole={setTimelineSidechainRole}
             onSetClipStem={setTimelineClipStem}
             onSeparateStems={separateAndSelectStem}
             onSetClipBaked={setClipBaked}

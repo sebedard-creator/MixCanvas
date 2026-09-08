@@ -39,7 +39,7 @@ import { AboutModal } from "./AboutModal";
 import { HelpModal } from "./HelpModal";
 import { libraryDisplayName } from "../lib/libraryDisplayName";
 import { isClipEqActive } from "../lib/clipEq";
-import { canBeSidechainKey, clipsCoveredByKey } from "../lib/sidechainKey";
+import { canBeSidechainKey, clipsCoveredByKey, nextSidechainRole } from "../lib/sidechainKey";
 import {
   clipTrimLimits,
   clipWithLoop,
@@ -106,6 +106,7 @@ import type {
   TimelineDrawGroup,
   TimelineSnapshot,
   TimelineTransportSnapshot,
+  SidechainRole,
 } from "../timeline/types";
 
 /** Si la feuille de style ne répond pas, la valeur qu'elle porte aujourd'hui. */
@@ -290,7 +291,7 @@ interface TimelinePanelProps {
   /** Vrai quand un clic dans la timeline doit aussi lancer la lecture. */
   autoplay: boolean;
   onSetAutoplay: (autoplay: boolean) => void;
-  onSetSidechainKey: (clipId: number, isKey: boolean) => Promise<void>;
+  onSetSidechainRole: (clipId: number, role: SidechainRole) => Promise<void>;
   onSetClipStem: (clipId: number, stem: "full" | "vocals" | "instrumental") => Promise<void>;
   onSeparateStems: (clipId: number, stem: "vocals" | "instrumental") => Promise<void>;
   /** Cuire ce clip, ou défaire la cuisson. */
@@ -477,7 +478,7 @@ export function TimelinePanel({
   onSetCompressorEnabled,
   autoplay,
   onSetAutoplay,
-  onSetSidechainKey,
+  onSetSidechainRole,
   onSetClipStem,
   onSeparateStems,
   onSetClipBaked,
@@ -3553,14 +3554,23 @@ export function TimelinePanel({
               const clipLabel = `${trackDisplayName} - #${seqIndex}`;
               const canBeKey = canBeSidechainKey(clip, timeline.clips);
               const coveredCount = canBeKey ? clipsCoveredByKey(clip, timeline.clips).length : 0;
+              // Le libellé nomme l'état **et** ce que le prochain clic fera :
+              // trois états sur un bouton se devinent mal, et l'infobulle est
+              // le seul endroit où le cycle peut s'expliquer.
+              const duckedCount = timeline.clips.filter(
+                (other) => other.ducksUnderKey && other.id !== clip.id,
+              ).length;
               const keyTitle = !canBeKey
-                ? "Sidechain key — available once this clip overlaps another"
+                ? "Sidechain — available once this clip overlaps another"
                 : clip.isSidechainKey
-                  ? `Sidechain key: this clip is silent here and pumps ${coveredCount} clip${coveredCount > 1 ? "s" : ""}`
-                  : `Use as sidechain key — pumps ${coveredCount} clip${coveredCount > 1 ? "s" : ""} it overlaps`;
+                  ? `Sidechain key: silent here, and pumps the ${duckedCount} clip${duckedCount === 1 ? "" : "s"} marked to duck. Click to make this one duck instead`
+                  : clip.ducksUnderKey
+                    ? "Ducks under the sidechain key. Click to leave it untouched"
+                    : `Use as sidechain key — it can then pump the clips you mark. Overlaps ${coveredCount} clip${coveredCount === 1 ? "" : "s"}`;
               const classNames = [
                 "timeline-clip",
                 clip.isSidechainKey ? "timeline-clip--sidechain-key" : "",
+                clip.ducksUnderKey ? "timeline-clip--sidechain-ducked" : "",
                 clip.isMissing ? "timeline-clip--missing" : "",
                 clip.needsAnalysis ? "timeline-clip--invalid" : "",
                 isAudible ? "" : "timeline-clip--inaudible",
@@ -3726,14 +3736,24 @@ export function TimelinePanel({
                       >
                         <TransportGlyph name="loop" />
                       </button>
+                      {/* Trois états, dans l'ordre où on les cherche : rien,
+                          la source, puis un receveur. Poser la clé vient en
+                          premier parce que c'est le geste qui ouvre le sujet —
+                          désigner qui plonge n'a de sens qu'ensuite. */}
                       <button
                         type="button"
-                        className={`clip-key-btn${clip.isSidechainKey ? " is-active" : ""}`}
+                        className={`clip-key-btn${
+                          clip.isSidechainKey
+                            ? " is-active"
+                            : clip.ducksUnderKey
+                              ? " is-ducked"
+                              : ""
+                        }`}
                         disabled={busy || !canBeKey}
-                        aria-pressed={clip.isSidechainKey}
+                        aria-pressed={clip.isSidechainKey || clip.ducksUnderKey}
                         onClick={(event) => {
                           event.stopPropagation();
-                          void onSetSidechainKey(clip.id, !clip.isSidechainKey);
+                          void onSetSidechainRole(clip.id, nextSidechainRole(clip));
                         }}
                         title={keyTitle}
                       >

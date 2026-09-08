@@ -20,8 +20,12 @@ you want, and keep editing while the timeline plays.
 - Automatic BPM and downbeat analysis, with practical manual correction.
 - Pitch-preserving time-stretching and a global tempo curve for beatmatched
   transitions.
+- Clips you can loop, duplicate and mute one at a time, without disturbing what
+  is already placed.
 - Four effects you play by hand while the mix runs, recorded onto the timeline.
 - Local audio processing in 32-bit floating point.
+- A saved project carries the whole session, and saving cannot cost you the
+  previous version of the file.
 - No subscriptions, no telemetry, and no network connection required.
 
 ![MixCanvas: the console with transport, VU meters and Mix FX pads above three stereo tracks carrying clips, waveforms, tempo targets and automation, with the Library on the right](assets/screenshots/timeline.png)
@@ -68,7 +72,8 @@ audible, guided, and repeatable.*
 - Continuous zoom, full-project zoom-out, centered playhead follow, click-to-seek,
   and a horizontal navigator.
 - Drag clips, trim either edge, split a clip, remove it, or undo/redo up to
-  fifty edits.
+  fifty edits. Undo restores a clip whole, its separated voices and its bake
+  included — deleting one and changing your mind costs nothing.
 - Make a clip loopable with its `∞` key. Its two edges then repeat it instead
   of trimming it: drag either one out and the pattern fills the space, on the
   beat, as many times as it takes. The last turn stops where you let go rather
@@ -166,8 +171,12 @@ Nothing to open and nothing to put away.
   parametric bells, low-pass, and an output gain. The graph shows what the
   filters do, so the bells keep their full range however far the clip's gain is
   pushed.
-- Sidechain compression: make a clip the key and let it pump overlapping clips.
-- Master Glue Compressor with console colour/saturation.
+- Sidechain compression on three tracks: the chain key cycles through off, key
+  and ducking, so you pick which clip pumps under the source and which one
+  stays untouched. The key pumps only the clips you mark.
+- Master Glue Compressor with console colour and saturation, on from the start.
+  A console bus has its glue and its colour all the time; finding them behind a
+  switch means mixing a while without, then rebalancing once they come in.
 - Stereo-linked master limiter and a real post-limiter OL overload lamp. This
   one is a safeguard for listening, and it stays out of the way of the
   mastering limiter on the bounce.
@@ -199,7 +208,11 @@ Nothing to open and nothing to put away.
   what it is about to do before it does it.</em>
 </p>
 
-- Save and load portable .mixcanvas projects.
+- Save and load portable .mixcanvas projects. A saved file carries the whole
+  session — clips and their trims, EQ, separated voices and bakes, every
+  automation curve, and the effect passes you played by hand. Saving writes
+  beside the old file and swaps it in, so an interrupted save cannot cost you
+  the previous version.
 - Bounce the complete mix to 16-bit / 44.1 kHz stereo WAV with dither, or to
   44.1 kHz CBR 320 kbps stereo MP3 encoded with LAME at its most thorough
   setting. The mix reaches the encoder in floating point, so an MP3 is never

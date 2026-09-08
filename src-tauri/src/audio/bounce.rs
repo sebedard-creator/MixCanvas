@@ -731,6 +731,7 @@ mod tests {
                 trim_start_beats: 0.0,
                 trim_end_beats: 0.0,
                 is_sidechain_key: false,
+                ducks_under_key: false,
                 eq_settings: None,
             }],
             volume_nodes: Vec::new(),
