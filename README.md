@@ -52,7 +52,8 @@ all of it editable while it plays.*
 - Filter the library from the magnifier beside the sort keys. It searches the
   artist, the title, the file name and the folder at once, ignoring case,
   accents and punctuation, and matches your words in any order.
-- Per-track preview player with seekable waveform/progress control.
+- Click a track name to hear it. The player above the list has a seekable
+  waveform and progress control.
 - Local automatic BPM, beat, downbeat, and waveform analysis.
 - Beatgrid Editor with preview playback, manual BPM, half/double tempo tools,
   Tap 1 downbeat capture, Snap to Beat, and restoration of the automatic result.
@@ -195,6 +196,8 @@ Nothing to open and nothing to put away.
 - Choose full track, vocals only, or instrumental only per clip.
 - Separation only processes the part of the source used by the clip, not an
   entire song unnecessarily.
+- A baked clip separates too, and it is the baked file that gets separated, so
+  the voice you get carries the effects you baked in.
 - BAKE renders a clip and its effects into a reusable audio file to lighten a
   dense mix. Baking is reversible and restores the automation it replaced.
 

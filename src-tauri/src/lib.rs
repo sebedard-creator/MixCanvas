@@ -451,10 +451,17 @@ async fn separate_clip_stems(
     library_state: State<'_, LibraryState>,
     media_state: State<'_, MediaState>,
 ) -> Result<TimelineSnapshot, String> {
-    // La fenêtre du clip, en millisecondes de la source : c'est tout ce qui sera
-    // séparé. Elle est lue sous le verrou, puis relâchée — le rendu dure des
-    // minutes.
-    let (source, window) = {
+    // Ce qu'on sépare : le fichier cuit du clip s'il en a un, sinon la fenêtre
+    // que le clip découpe dans son morceau. Lu sous le verrou, puis relâché — le
+    // rendu dure des minutes.
+    //
+    // Séparer la source d'un clip cuit donnerait une voix sans les effets qu'on
+    // vient d'y cuire, et le moteur ne la jouerait pas : sur un clip cuit, c'est
+    // le WAV cuit qu'on entend. Le fichier cuit ne contient déjà que la fenêtre
+    // du clip, d'où l'absence de fenêtre à découper — mais il garde son décalage
+    // dans le morceau d'origine, et le stem doit reprendre exactement celui-là
+    // pour que le rognage et la grille du clip restent valables.
+    let (source, window, baked_from_ms) = {
         let library = library_state
             .lock()
             .map_err(|_| "The library is in an invalid state.".to_owned())?;
@@ -464,10 +471,16 @@ async fn separate_clip_stems(
             .iter()
             .find(|clip| clip.id == clip_id)
             .ok_or_else(|| "This clip is no longer on the timeline.".to_owned())?;
-        let window = timeline::clip_source_window_ms(clip)
-            .ok_or_else(|| "This track needs its BPM analyzed first.".to_owned())?;
-        (clip.file_path.clone(), window)
+        match timeline::baked_audio_source(&library.connection, clip_id) {
+            Some((path, from_ms)) => (path, None, Some(from_ms)),
+            None => {
+                let window = timeline::clip_source_window_ms(clip)
+                    .ok_or_else(|| "This track needs its BPM analyzed first.".to_owned())?;
+                (clip.file_path.clone(), Some(window), None)
+            }
+        }
     };
+    let from_bake = baked_from_ms.is_some();
 
     let (runtime, model) = separation_resources(&app)?;
     let output_dir = media_folder(&media_state, "stems")?;
@@ -484,8 +497,14 @@ async fn separate_clip_stems(
             &runtime,
             &model,
             &output_dir,
-            Some(window),
-            &format!("clip-{clip_id}"),
+            window,
+            // Un nom distinct par origine : les deux jeux coexistent en base, et
+            // un nom partagé les ferait s'écraser sur le disque.
+            &if from_bake {
+                format!("clip-{clip_id}-baked")
+            } else {
+                format!("clip-{clip_id}")
+            },
             &mut report,
         )
     })
@@ -508,9 +527,10 @@ async fn separate_clip_stems(
             .execute(
                 "INSERT INTO clip_stems
                  (clip_id, kind, file_path, source_from_ms, bucket_count,
-                  left_min, left_max, left_rms, right_min, right_max, right_rms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-                 ON CONFLICT(clip_id, kind) DO UPDATE SET
+                  left_min, left_max, left_rms, right_min, right_max, right_rms,
+                  from_bake)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                 ON CONFLICT(clip_id, kind, from_bake) DO UPDATE SET
                      file_path = excluded.file_path,
                      source_from_ms = excluded.source_from_ms,
                      bucket_count = excluded.bucket_count,
@@ -524,7 +544,9 @@ async fn separate_clip_stems(
                     clip_id,
                     kind,
                     path.to_string_lossy(),
-                    files.source_from_ms.round() as i64,
+                    // Le stem d'un fichier cuit reprend le décalage de ce
+                    // fichier : il couvre exactement la même étendue.
+                    baked_from_ms.unwrap_or(files.source_from_ms).round() as i64,
                     peaks.left_min.len() as i64,
                     library::encode_waveform_values(&peaks.left_min),
                     library::encode_waveform_values(&peaks.left_max),
@@ -532,6 +554,7 @@ async fn separate_clip_stems(
                     library::encode_waveform_values(&peaks.right_min),
                     library::encode_waveform_values(&peaks.right_max),
                     library::encode_waveform_values(&peaks.right_rms),
+                    i64::from(from_bake),
                 ],
             )
             .map_err(|error| format!("Could not record the stem: {error}"))?;

@@ -28,6 +28,7 @@ function clip(id: number, lane: number, startBeat: number, endBeat: number): Tim
   loopTailBeats: 0,
     stem: "full",
     hasStems: false,
+    hasBakeStems: false,
   isBaked: false,
   bakeIsMissing: false,
     isMissing: false,

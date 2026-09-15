@@ -12,6 +12,34 @@ wrote it. What changed, and what it means when you sit down to build a mix.
 
 ---
 
+## 1.8.1 — 2026-09-15
+
+### Fixed
+
+- **The low-pass filter distorted near the bottom of its sweep.** The filter
+  turns the volume up as it closes, so the sweep doesn't sound like a fade-out.
+  It went up to 6 dB, which was far too much on a bass-heavy track. Once the
+  cutoff is down around 200 Hz, only bass is left. You barely hear the level
+  drop there, but the extra 6 dB pushed that bass into the limiter, and the
+  limiter made it crackle. The boost now peaks at 2.4 dB in the middle of the
+  sweep and drops back to 0.8 dB when the filter is fully closed. The high-pass
+  is unchanged.
+- **VOX and MUS did nothing on a baked clip.** The button lit up, but you kept
+  hearing the whole track, because the baked audio always played first. On a
+  clip that had never been separated, you also waited through a separation
+  that was never used. Now the baked audio is what gets separated, so the
+  vocals keep the effects you baked in. Un-baking removes those stems. Stems
+  you made before baking are kept.
+
+### Changed
+
+- **No more play arrow next to library tracks.** Clicking the track name
+  already played it. The name gets the space.
+- The library database is upgraded the first time 1.8.1 opens it. Older
+  versions can't open it after that.
+
+---
+
 ## 1.8.0 — 2026-09-07
 
 ### Fixed

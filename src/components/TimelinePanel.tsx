@@ -3696,7 +3696,9 @@ export function TimelinePanel({
                               event.stopPropagation();
                               if (isOn) {
                                 void onSetClipStem(clip.id, "full");
-                              } else if (clip.hasStems) {
+                              } else if (
+                                clip.isBaked ? clip.hasBakeStems : clip.hasStems
+                              ) {
                                 void onSetClipStem(clip.id, stem);
                               } else {
                                 // Premier clic sur un clip jamais séparé : le
@@ -3707,9 +3709,11 @@ export function TimelinePanel({
                             title={
                               isOn
                                 ? `Playing ${stem} only — click for the whole track`
-                                : clip.hasStems
+                                : (clip.isBaked ? clip.hasBakeStems : clip.hasStems)
                                   ? `Play the ${stem} of this track`
-                                  : `Separate this track, then play its ${stem}`
+                                  : clip.isBaked
+                                    ? `Separate this baked clip, then play its ${stem}`
+                                    : `Separate this track, then play its ${stem}`
                             }
                           >
                             {label}

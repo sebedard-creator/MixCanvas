@@ -279,6 +279,13 @@ pub struct TimelineClip {
     /// instantanÃ© d'un rendu de deux minutes, et l'interface doit le savoir
     /// **avant** de cliquer pour ouvrir la bonne fenÃªtre.
     pub has_stems: bool,
+    /// Si le **fichier cuit** de ce clip a déjà été séparé.
+    ///
+    /// Séparé de `has_stems` parce que ce sont deux fichiers différents : un
+    /// clip cuit joue son WAV, effets compris, et la voix de sa source ne
+    /// ressemble donc pas à ce qu'on entend. L'interface a besoin des deux pour
+    /// savoir si `VOX` bascule en un clic ou lance un rendu de deux minutes.
+    pub has_bake_stems: bool,
     /// Si le fichier cuit a disparu du disque.
     ///
     /// Le clip reste Â« cuit Â» â€” son automation retirÃ©e vit dans
@@ -382,23 +389,34 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
                     COALESCE(tracks.manual_bpm, tracks.bpm),
                     COALESCE(tracks.manual_first_beat_ms, tracks.first_beat_ms),
                     tracks.duration_ms,
-                    -- Trois ondes possibles, dans l'ordre oÃ¹ le moteur choisit
-                    -- sa source : le fichier cuit d'abord â€” c'est lui qu'on
-                    -- entend, filtre compris â€”, puis le stem quand le clip en
-                    -- joue un, puis le morceau entier.
-                    COALESCE(bakes.bucket_count, stems.bucket_count, waveforms.bucket_count),
-                    COALESCE(bakes.left_min, stems.left_min, waveforms.left_min),
-                    COALESCE(bakes.left_max, stems.left_max, waveforms.left_max),
-                    COALESCE(bakes.left_rms, stems.left_rms, waveforms.left_rms),
-                    COALESCE(bakes.right_min, stems.right_min, waveforms.right_min),
-                    COALESCE(bakes.right_max, stems.right_max, waveforms.right_max),
-                    COALESCE(bakes.right_rms, stems.right_rms, waveforms.right_rms),
+                    -- Quatre ondes possibles, dans l'ordre où le moteur
+                    -- choisit sa source : le stem tiré du fichier cuit
+                    -- d'abord, puis le fichier cuit lui-même, puis le stem
+                    -- tiré de la source, puis le morceau entier. Le stem du
+                    -- bake passe avant le bake parce qu'il en descend : c'est
+                    -- le même son, une voix plus loin.
+                    COALESCE(bake_stems.bucket_count, bakes.bucket_count,
+                             stems.bucket_count, waveforms.bucket_count),
+                    COALESCE(bake_stems.left_min, bakes.left_min,
+                             stems.left_min, waveforms.left_min),
+                    COALESCE(bake_stems.left_max, bakes.left_max,
+                             stems.left_max, waveforms.left_max),
+                    COALESCE(bake_stems.left_rms, bakes.left_rms,
+                             stems.left_rms, waveforms.left_rms),
+                    COALESCE(bake_stems.right_min, bakes.right_min,
+                             stems.right_min, waveforms.right_min),
+                    COALESCE(bake_stems.right_max, bakes.right_max,
+                             stems.right_max, waveforms.right_max),
+                    COALESCE(bake_stems.right_rms, bakes.right_rms,
+                             stems.right_rms, waveforms.right_rms),
                     clips.eq_settings,
                     clips.trim_start_beats,
                     clips.trim_end_beats,
                     clips.is_sidechain_key,
                     clips.stem,
-                    EXISTS(SELECT 1 FROM clip_stems WHERE clip_stems.clip_id = clips.id),
+                    EXISTS(SELECT 1 FROM clip_stems
+                           WHERE clip_stems.clip_id = clips.id
+                             AND clip_stems.from_bake = 0),
                     bakes.id IS NOT NULL,
                     bakes.file_path,
                     -- En derniÃ¨re colonne, et non Ã  sa place logique : le
@@ -409,13 +427,25 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
                     clips.looping,
                     clips.loop_lead_beats,
                     clips.loop_tail_beats,
-                    clips.ducks_under_key
+                    clips.ducks_under_key,
+                    -- Ajoutée ici pour la même raison que `tempo_target_bpm` :
+                    -- le mapping est positionnel.
+                    EXISTS(SELECT 1 FROM clip_stems
+                           WHERE clip_stems.clip_id = clips.id
+                             AND clip_stems.from_bake = 1)
              FROM timeline_clips AS clips
              JOIN library_tracks AS tracks ON tracks.id = clips.library_track_id
              LEFT JOIN track_waveforms AS waveforms ON waveforms.track_id = tracks.id
-             LEFT JOIN clip_stems AS stems
-                    ON stems.clip_id = clips.id AND stems.kind = clips.stem
              LEFT JOIN clip_bakes AS bakes ON bakes.clip_id = clips.id
+             LEFT JOIN clip_stems AS bake_stems
+                    ON bake_stems.clip_id = clips.id
+                   AND bake_stems.kind = clips.stem
+                   AND bake_stems.from_bake = 1
+                   AND bakes.id IS NOT NULL
+             LEFT JOIN clip_stems AS stems
+                    ON stems.clip_id = clips.id
+                   AND stems.kind = clips.stem
+                   AND stems.from_bake = 0
              ORDER BY clips.lane, clips.anchor_beat, clips.id",
         )
         .map_err(database_read_error)?;
@@ -453,6 +483,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
                 row.get::<_, f64>(28)?,
                 row.get::<_, f64>(29)?,
                 row.get::<_, i64>(30)? != 0,
+                row.get::<_, i64>(31)? != 0,
             ))
         })
         .map_err(database_read_error)?;
@@ -491,6 +522,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
             loop_lead_beats,
             loop_tail_beats,
             ducks_under_key,
+            has_bake_stems,
         ) = row.map_err(database_read_error)?;
         let geometry = clip_geometry(
             duration_ms,
@@ -545,6 +577,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
             loop_tail_beats,
             stem,
             has_stems,
+            has_bake_stems,
             is_baked,
             bake_is_missing: bake_file_path
                 .as_deref()
@@ -1690,10 +1723,14 @@ pub fn set_clip_stem(
     }
 
     if stem != "full" {
+        // Sur un clip cuit, seul un stem tiré du fichier cuit compte : celui
+        // de la source existe peut-être, mais le moteur ne le jouerait pas.
+        let from_bake = i64::from(baked_audio_source(connection, clip_id).is_some());
         let path: Option<String> = connection
             .query_row(
-                "SELECT file_path FROM clip_stems WHERE clip_id = ?1 AND kind = ?2",
-                params![clip_id, stem],
+                "SELECT file_path FROM clip_stems
+                 WHERE clip_id = ?1 AND kind = ?2 AND from_bake = ?3",
+                params![clip_id, stem, from_bake],
                 |row| row.get(0),
             )
             .optional()
@@ -1729,19 +1766,45 @@ pub(crate) fn clip_audio_source(
     stem: &str,
     original: &str,
 ) -> (String, f64) {
-    // Le bake passe avant tout le reste : le fichier cuit contient dÃ©jÃ  le stem
-    // qui jouait au moment de la cuisson, ainsi que l'Ã©galisation et
-    // l'automation. Le relire Ã  travers un stem reviendrait Ã  choisir deux fois.
+    // Un clip cuit joue son fichier cuit, qui porte déjà son égalisation, son
+    // automation et le stem qui tournait au moment de la cuisson — sauf si on
+    // a séparé **ce fichier-là** depuis. Ce stem descend du bake : c'est le
+    // même son, une voix plus loin, et c'est donc lui qu'on veut.
+    //
+    // L'ordre a longtemps été le bake d'abord, sans condition. `VOX` sur un
+    // clip cuit allumait alors sa touche sans rien changer à ce qu'on entend,
+    // et pouvait lancer deux minutes de séparation dont le résultat n'était
+    // jamais lu. Un stem tiré de la source ne réparerait rien ici : il n'a pas
+    // les effets cuits.
     if let Some(baked) = baked_audio_source(connection, clip_id) {
-        return baked;
+        if stem == "full" {
+            return baked;
+        }
+        return stem_audio_source(connection, clip_id, stem, true).unwrap_or(baked);
     }
     if stem == "full" {
         return (original.to_owned(), 0.0);
     }
+    stem_audio_source(connection, clip_id, stem, false)
+        .unwrap_or_else(|| (original.to_owned(), 0.0))
+}
+
+/// Le fichier d'un stem de ce clip, s'il existe et qu'il est toujours là.
+///
+/// `from_bake` choisit lequel des deux jeux on interroge : celui tiré du
+/// fichier cuit, ou celui tiré du morceau d'origine. Ils coexistent, et les
+/// confondre ferait jouer une voix sans les effets qu'on venait de cuire.
+fn stem_audio_source(
+    connection: &Connection,
+    clip_id: i64,
+    stem: &str,
+    from_bake: bool,
+) -> Option<(String, f64)> {
     connection
         .query_row(
-            "SELECT file_path, source_from_ms FROM clip_stems WHERE clip_id = ?1 AND kind = ?2",
-            params![clip_id, stem],
+            "SELECT file_path, source_from_ms FROM clip_stems
+             WHERE clip_id = ?1 AND kind = ?2 AND from_bake = ?3",
+            params![clip_id, stem, i64::from(from_bake)],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
         )
         .optional()
@@ -1749,7 +1812,6 @@ pub(crate) fn clip_audio_source(
         .flatten()
         .filter(|(path, _)| Path::new(path).is_file())
         .map(|(path, from_ms)| (path, from_ms as f64))
-        .unwrap_or_else(|| (original.to_owned(), 0.0))
 }
 
 /// Le fichier cuit d'un clip, s'il en a un et qu'il est toujours lÃ .
@@ -1758,7 +1820,7 @@ pub(crate) fn clip_audio_source(
 /// externe absent â€” ne doit pas rendre le clip muet : on retombe sur la source,
 /// donc sur le clip sans ses effets. C'est faux Ã  l'oreille, mais audible et
 /// rÃ©parable d'un clic sur `BAKE`; un silence, lui, ne se diagnostique pas.
-fn baked_audio_source(connection: &Connection, clip_id: i64) -> Option<(String, f64)> {
+pub(crate) fn baked_audio_source(connection: &Connection, clip_id: i64) -> Option<(String, f64)> {
     connection
         .query_row(
             "SELECT file_path, source_from_ms FROM clip_bakes WHERE clip_id = ?1",
@@ -2171,7 +2233,7 @@ pub fn clear_effect_range(
 /// ligne vivante. Tout le reste voyage, waveforms comprises : c'est ce qui
 /// distingue cette conservation d'un simple relevé de chemins.
 const STEM_COLUMNS: &str = "clip_id, kind, file_path, source_from_ms, bucket_count, \
-                            left_min, left_max, left_rms, right_min, right_max, right_rms";
+                            left_min, left_max, left_rms, right_min, right_max, right_rms, from_bake";
 const BAKE_COLUMNS: &str = "clip_id, file_path, source_from_ms, removed, bucket_count, \
                             left_min, left_max, left_rms, right_min, right_max, right_rms";
 
@@ -3411,9 +3473,9 @@ pub fn split_timeline_clip(
         .execute(
             "INSERT INTO clip_stems
              (clip_id, kind, file_path, source_from_ms, bucket_count,
-              left_min, left_max, left_rms, right_min, right_max, right_rms)
+              left_min, left_max, left_rms, right_min, right_max, right_rms, from_bake)
              SELECT ?1, kind, file_path, source_from_ms, bucket_count,
-                    left_min, left_max, left_rms, right_min, right_max, right_rms
+                    left_min, left_max, left_rms, right_min, right_max, right_rms, from_bake
              FROM clip_stems WHERE clip_id = ?2",
             params![right_id, clip_id],
         )
@@ -3592,9 +3654,9 @@ pub fn duplicate_clip(
         .execute(
             "INSERT INTO clip_stems
              (clip_id, kind, file_path, source_from_ms, bucket_count,
-              left_min, left_max, left_rms, right_min, right_max, right_rms)
+              left_min, left_max, left_rms, right_min, right_max, right_rms, from_bake)
              SELECT ?1, kind, file_path, source_from_ms, bucket_count,
-                    left_min, left_max, left_rms, right_min, right_max, right_rms
+                    left_min, left_max, left_rms, right_min, right_max, right_rms, from_bake
              FROM clip_stems WHERE clip_id = ?2",
             params![new_id, clip_id],
         )
@@ -4352,6 +4414,35 @@ pub fn unbake_clip(
         )
         .map_err(database_write_error)?;
 
+    // Les stems tirés du fichier cuit s'en vont avec lui.
+    //
+    // Ils décrivent un fichier que le clip ne joue plus : les garder ferait
+    // entendre les effets qu'on vient justement de retirer. Ceux tirés de la
+    // source restent, eux, intacts — c'est toute la raison de la clef à trois
+    // colonnes. Les fichiers ne sont pas effacés ici, comme pour la cuisson :
+    // le balayage des orphelins s'en charge quand plus rien ne les désigne.
+    transaction
+        .execute(
+            "DELETE FROM clip_stems WHERE clip_id = ?1 AND from_bake = 1",
+            params![clip_id],
+        )
+        .map_err(database_write_error)?;
+
+    // Une touche allumée doit décrire ce qu'on entend. Si le clip jouait la
+    // voix du fichier cuit et que la source n'a pas la sienne, il n'y a plus de
+    // voix à jouer : le clip revient au morceau entier plutôt que de garder un
+    // `VOX` qui ne veut plus rien dire.
+    transaction
+        .execute(
+            "UPDATE timeline_clips SET stem = 'full'
+             WHERE id = ?1 AND stem <> 'full'
+               AND NOT EXISTS (SELECT 1 FROM clip_stems
+                               WHERE clip_id = ?1 AND kind = timeline_clips.stem
+                                 AND from_bake = 0)",
+            params![clip_id],
+        )
+        .map_err(database_write_error)?;
+
     // Le fichier n'est rendu à l'effacement que si plus rien ne le désigne.
     //
     // Une scission et une duplication recopient le **chemin** de la cuisson, pas
@@ -4404,12 +4495,12 @@ mod tests {
         ClipGeometry, DEFAULT_TRACK_GAIN_DB, FILTER_BUBBLE_MAX_SAMPLES,
         FILTER_BUBBLE_MAX_WIDTH_BEATS, FILTER_BUBBLE_STEP_BEATS, MAX_LANE, SidechainRole,
         TimelineClip, TimelineLane, TimelineSnapshot, add_clip, add_filter_node, add_pan_node,
-        add_volume_node, audible_lane_mask, clear_filter_range, clear_timeline, clip_geometry,
-        clips_overlap, draw_filter_bubble, duplicate_clip, duplicate_placements,
+        add_volume_node, audible_lane_mask, clear_filter_range, clear_timeline, clip_audio_source,
+        clip_geometry, clips_overlap, draw_filter_bubble, duplicate_clip, duplicate_placements,
         filter_bubble_step_beats, loop_tiles, minimum_anchor_beat, move_clip, move_tempo_point,
         move_volume_node, project_timing, remove_clip, restore_snapshot, set_clip_loop_extent,
-        set_clip_looping, set_clip_muted, set_clip_trim, set_lane_muted, set_lane_solo,
-        set_sidechain_role, snap_anchor_beat, snap_tempo_anchor_beat, snapshot,
+        set_clip_looping, set_clip_muted, set_clip_stem, set_clip_trim, set_lane_muted,
+        set_lane_solo, set_sidechain_role, snap_anchor_beat, snap_tempo_anchor_beat, snapshot,
         split_timeline_clip, unbake_clip,
     };
     use crate::library::LibraryStore;
@@ -6734,6 +6825,7 @@ mod tests {
             loop_tail_beats: 0.0,
             stem: "full".to_owned(),
             has_stems: false,
+            has_bake_stems: false,
             is_baked: false,
             bake_is_missing: false,
             needs_analysis: false,
@@ -7605,6 +7697,253 @@ mod tests {
         }
 
         fs::remove_file(&fake_mp3).expect("fake MP3 should be removed");
+        for suffix in ["", "-wal", "-shm"] {
+            let candidate =
+                std::path::PathBuf::from(format!("{}{}", database_path.to_string_lossy(), suffix));
+            if candidate.exists() {
+                fs::remove_file(candidate).expect("test database should be removed");
+            }
+        }
+    }
+
+    /// Une cuisson qui n'a rien emporté, en JSON. Les deux tests qui suivent
+    /// regardent quel fichier joue, pas ce que la cuisson a retiré.
+    const NOTHING_REMOVED: &str =
+        r#"{"lane":0,"fromBeat":0.0,"toBeat":0.0,"volume":[],"pan":[],"filter":[]}"#;
+
+    /// Le stem d'un clip cuit est celui qu'on entend.
+    ///
+    /// La cuisson passait avant tout le reste, sans condition : `VOX` sur un
+    /// clip cuit allumait sa touche sans rien changer au son, et pouvait lancer
+    /// deux minutes de séparation dont le résultat n'était jamais lu. Le test
+    /// pose les deux jeux à la fois — celui du morceau et celui du fichier cuit
+    /// — parce que c'est là que le choix se joue : sur un clip cuit, seul le
+    /// second porte les effets qu'on entend.
+    #[test]
+    fn a_baked_clip_plays_the_stem_of_its_baked_file() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-bake-stem-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+        let fake_mp3 = database_path.with_extension("mp3");
+        let baked = database_path.with_extension("baked.wav");
+        let source_vox = database_path.with_extension("source-vox.wav");
+        let baked_vox = database_path.with_extension("baked-vox.wav");
+        for file in [&fake_mp3, &baked, &source_vox, &baked_vox] {
+            fs::write(file, []).expect("fake file should be created");
+        }
+
+        {
+            let mut store = LibraryStore::open(&database_path).expect("database should open");
+            store
+                .connection
+                .execute(
+                    "INSERT INTO library_tracks
+                     (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                      bpm, first_beat_ms, beat_count, analysis_status)
+                     VALUES (?1, ?2, 'bake.mp3', 60000, 44100, 2, 120.0, 500, 120, 'analyzed')",
+                    params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+                )
+                .expect("track should be inserted");
+            let track_id = store.connection.last_insert_rowid();
+            let placed = add_clip(&mut store.connection, track_id, Some(4.0), Some(0))
+                .expect("clip should be added");
+            let clip_id = placed.clips[0].id;
+
+            // Les deux jeux, avec des décalages différents : c'est le décalage
+            // qui dit lequel des deux fichiers a répondu.
+            for (kind, path, from_ms, from_bake) in [
+                ("vocals", &source_vox, 500_i64, 0_i64),
+                ("vocals", &baked_vox, 250, 1),
+            ] {
+                store
+                    .connection
+                    .execute(
+                        "INSERT INTO clip_stems
+                         (clip_id, kind, file_path, source_from_ms, from_bake)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![clip_id, kind, path.to_string_lossy(), from_ms, from_bake],
+                    )
+                    .expect("stem should be recorded");
+            }
+            store
+                .connection
+                .execute(
+                    "INSERT INTO clip_bakes (clip_id, file_path, source_from_ms, removed)
+                     VALUES (?1, ?2, 250, ?3)",
+                    params![clip_id, baked.to_string_lossy(), NOTHING_REMOVED],
+                )
+                .expect("bake should be recorded");
+
+            // Sans stem choisi, on entend le fichier cuit.
+            let (path, from_ms) = clip_audio_source(
+                &store.connection,
+                clip_id,
+                "full",
+                &fake_mp3.to_string_lossy(),
+            );
+            assert_eq!(path, baked.to_string_lossy(), "un clip cuit joue son WAV");
+            assert_eq!(from_ms, 250.0);
+
+            // Avec `VOX`, on entend la voix **de ce WAV**, pas celle du morceau.
+            let (path, from_ms) = clip_audio_source(
+                &store.connection,
+                clip_id,
+                "vocals",
+                &fake_mp3.to_string_lossy(),
+            );
+            assert_eq!(
+                path,
+                baked_vox.to_string_lossy(),
+                "la voix du fichier cuit, pas celle de la source"
+            );
+            assert_eq!(from_ms, 250.0, "elle couvre la même étendue que le bake");
+
+            // Le stem du morceau reste hors jeu tant que le clip est cuit :
+            // retirer celui du bake fait retomber sur le WAV cuit, jamais sur
+            // une voix qui n'a pas les effets.
+            store
+                .connection
+                .execute(
+                    "DELETE FROM clip_stems WHERE clip_id = ?1 AND from_bake = 1",
+                    params![clip_id],
+                )
+                .expect("the bake stem should go");
+            let (path, _) = clip_audio_source(
+                &store.connection,
+                clip_id,
+                "vocals",
+                &fake_mp3.to_string_lossy(),
+            );
+            assert_eq!(
+                path,
+                baked.to_string_lossy(),
+                "faute de voix cuite, le WAV cuit — pas la voix de la source"
+            );
+
+            // L'instantané distingue les deux jeux, sans quoi l'interface ne
+            // saurait pas si `VOX` bascule ou lance un rendu.
+            let read = snapshot(&store.connection).expect("snapshot should read");
+            let clip = &read.clips[0];
+            assert!(clip.has_stems, "le morceau a bien sa voix");
+            assert!(!clip.has_bake_stems, "le fichier cuit ne l'a plus");
+        }
+
+        for file in [&fake_mp3, &baked, &source_vox, &baked_vox] {
+            let _ = fs::remove_file(file);
+        }
+        for suffix in ["", "-wal", "-shm"] {
+            let candidate =
+                std::path::PathBuf::from(format!("{}{}", database_path.to_string_lossy(), suffix));
+            if candidate.exists() {
+                fs::remove_file(candidate).expect("test database should be removed");
+            }
+        }
+    }
+
+    /// Décuire retire les voix du fichier cuit et laisse celles du morceau.
+    ///
+    /// Elles décrivent un fichier que le clip ne joue plus : les garder ferait
+    /// entendre les effets qu'on vient de retirer. Le cas qui compte est celui
+    /// où la source n'a **pas** la voix demandée — le clip doit alors revenir au
+    /// morceau entier, faute de quoi sa touche `VOX` resterait allumée sur un
+    /// son qui n'est pas une voix.
+    #[test]
+    fn unbaking_drops_the_stems_that_came_from_the_baked_file() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-unbake-stem-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+        let fake_mp3 = database_path.with_extension("mp3");
+        let baked = database_path.with_extension("baked.wav");
+        let baked_vox = database_path.with_extension("baked-vox.wav");
+        let source_mus = database_path.with_extension("source-mus.wav");
+        for file in [&fake_mp3, &baked, &baked_vox, &source_mus] {
+            fs::write(file, []).expect("fake file should be created");
+        }
+
+        {
+            let mut store = LibraryStore::open(&database_path).expect("database should open");
+            store
+                .connection
+                .execute(
+                    "INSERT INTO library_tracks
+                     (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                      bpm, first_beat_ms, beat_count, analysis_status)
+                     VALUES (?1, ?2, 'unbake.mp3', 60000, 44100, 2, 120.0, 500, 120, 'analyzed')",
+                    params![fake_mp3.to_string_lossy(), fake_mp3.to_string_lossy()],
+                )
+                .expect("track should be inserted");
+            let track_id = store.connection.last_insert_rowid();
+            let placed = add_clip(&mut store.connection, track_id, Some(4.0), Some(0))
+                .expect("clip should be added");
+            let clip_id = placed.clips[0].id;
+
+            // La source n'a que son instrumental; le fichier cuit, que sa voix.
+            for (kind, path, from_bake) in [
+                ("instrumental", &source_mus, 0_i64),
+                ("vocals", &baked_vox, 1),
+            ] {
+                store
+                    .connection
+                    .execute(
+                        "INSERT INTO clip_stems (clip_id, kind, file_path, from_bake)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![clip_id, kind, path.to_string_lossy(), from_bake],
+                    )
+                    .expect("stem should be recorded");
+            }
+            store
+                .connection
+                .execute(
+                    "INSERT INTO clip_bakes (clip_id, file_path, source_from_ms, removed)
+                     VALUES (?1, ?2, 0, ?3)",
+                    params![clip_id, baked.to_string_lossy(), NOTHING_REMOVED],
+                )
+                .expect("bake should be recorded");
+            set_clip_stem(&store.connection, clip_id, "vocals")
+                .expect("the baked clip should play its cooked voice");
+
+            unbake_clip(&mut store.connection, clip_id).expect("unbake should succeed");
+
+            let remaining: Vec<(String, i64)> = {
+                let mut statement = store
+                    .connection
+                    .prepare(
+                        "SELECT kind, from_bake FROM clip_stems
+                         WHERE clip_id = ?1 ORDER BY kind",
+                    )
+                    .expect("the stems should be readable");
+                statement
+                    .query_map([clip_id], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .expect("query")
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("rows")
+            };
+            assert_eq!(
+                remaining,
+                vec![("instrumental".to_owned(), 0_i64)],
+                "seule la voix du fichier cuit s'en va"
+            );
+
+            let read = snapshot(&store.connection).expect("snapshot should read");
+            assert_eq!(
+                read.clips[0].stem, "full",
+                "la source n'a pas de voix : la touche ne peut pas rester allumée"
+            );
+        }
+
+        for file in [&fake_mp3, &baked, &baked_vox, &source_mus] {
+            let _ = fs::remove_file(file);
+        }
         for suffix in ["", "-wal", "-shm"] {
             let candidate =
                 std::path::PathBuf::from(format!("{}{}", database_path.to_string_lossy(), suffix));

@@ -385,7 +385,6 @@ export function LibraryPanel({
         <div className="library-table" role="table" aria-label="MP3 Library">
           <div className="library-table-header" role="row">
             <span role="columnheader">Track</span>
-            <span role="columnheader">BPM</span>
           </div>
 
           {visibleTracks.map((track) => {
@@ -393,7 +392,6 @@ export function LibraryPanel({
             const isInTimeline = timelineTrackOrder.has(track.id);
             const isActive = activePreviewPath === track.filePath;
             const isLoading = previewingTrackId === track.id;
-            const previewLabel = isActive && isPreviewPlaying ? "Ⅱ" : "▶";
             const previewTitle = isLoading
               ? "Loading Preview…"
               : isActive && isPreviewPlaying
@@ -487,9 +485,11 @@ export function LibraryPanel({
                   </button>
                   <div className="library-track-details">
                     <div className="library-track-title-line">
-                      {/* Le nom écoute le morceau, comme la flèche à côté.
-                          C'est le geste qu'on tente en premier devant une
-                          liste de musique, et il ne faisait rien. */}
+                      {/* Le nom écoute le morceau. C'est le geste qu'on tente
+                          en premier devant une liste de musique, et il ne
+                          faisait rien. Une flèche le doublait dans sa propre
+                          colonne, qui prenait la largeur du nom pour proposer
+                          le même geste. */}
                       <strong
                         className="library-track-name"
                         role="button"
@@ -513,18 +513,6 @@ export function LibraryPanel({
                     </div>
                     <span title={track.filePath}>{track.filePath}</span>
                   </div>
-                </div>
-                <div className="bpm-cell library-preview-cell" role="cell">
-                  <button
-                    className="library-inline-preview"
-                    type="button"
-                    disabled={previewDisabled || isLoading || track.isMissing}
-                    onClick={() => onPreview(track)}
-                    aria-label={previewTitle}
-                    title={previewTitle}
-                  >
-                    {previewLabel}
-                  </button>
                 </div>
               </div>
             );

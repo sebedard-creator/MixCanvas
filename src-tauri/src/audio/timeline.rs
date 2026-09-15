@@ -166,8 +166,11 @@ const FILTER_LOW_PASS_OPEN_HZ: f32 = 18_000.0;
 const FILTER_LOW_PASS_CLOSED_HZ: f32 = 90.0;
 const FILTER_HIGH_PASS_OPEN_HZ: f32 = 50.0;
 const FILTER_HIGH_PASS_CLOSED_HZ: f32 = 12_000.0;
-const FILTER_LOW_PASS_MAX_MAKEUP_DB: f32 = 6.0;
+/// Le passe-haut se rattrape en rampe, le passe-bas en bosse. Le pourquoi
+/// des deux formes est dans `filter_makeup_gain`.
 const FILTER_HIGH_PASS_MAX_MAKEUP_DB: f32 = 4.5;
+const FILTER_LOW_PASS_HUMP_DB: f32 = 2.0;
+const FILTER_LOW_PASS_TAIL_DB: f32 = 0.8;
 /// Clip EQ gain at or below which a band is a full cut rather than an
 /// attenuation. `CLIP_EQ_SILENCE_DB` in `src/lib/clipEq.ts` holds the same
 /// value; the interface never sends `-Infinity`, which JSON cannot carry.
@@ -1105,17 +1108,31 @@ fn filter_cutoff_hz(value: f32) -> f32 {
     }
 }
 
-/// The ear perceives level approximately logarithmically. A linear ramp in dB
-/// therefore keeps a filter sweep substantially more even than a linear
-/// amplitude multiplier while keeping the maximum boost predictable.
+/// Ce qu'on redonne au signal filtré, en décibels.
+///
+/// Le passe-haut garde une rampe : ce qu'il enlève, l'oreille l'entend
+/// partir, et ce qui reste est aigu, donc léger en crête.
+///
+/// Le passe-bas suit une bosse. Une rampe jusqu'à 6 dB partait d'une idée
+/// juste — un balayage ne doit pas mourir — mais la mesure la dément sur du
+/// vrai matériel : sur un morceau de dance, fermer jusqu'à 260 Hz ne coûte
+/// que 0,4 dB de sonie pondérée K, pendant que le rattrapage en ajoutait
+/// 4,8. Ces décibels ne rendaient rien d'audible ; ils poussaient un grave
+/// déjà à pleine échelle contre le limiteur, qui suit alors le cycle d'une
+/// onde à 55 Hz et déforme au lieu de retenir.
+///
+/// D'où la bosse : on redonne là où la perte s'entend — le milieu qui s'en
+/// va — et on relâche vers la fermeture, où il ne reste qu'un grave que
+/// l'oreille compte à peine et que la crête compte pleinement.
 fn filter_makeup_gain(value: f32) -> f32 {
     let amount = value.abs().clamp(0.0, 1.0);
-    let maximum_db = if value >= 0.0 {
-        FILTER_HIGH_PASS_MAX_MAKEUP_DB
+    let decibels = if value >= 0.0 {
+        FILTER_HIGH_PASS_MAX_MAKEUP_DB * amount
     } else {
-        FILTER_LOW_PASS_MAX_MAKEUP_DB
+        let hump = (std::f32::consts::PI * amount).sin();
+        FILTER_LOW_PASS_HUMP_DB * hump * hump + FILTER_LOW_PASS_TAIL_DB * amount
     };
-    10_f32.powf((maximum_db * amount) / 20.0)
+    10_f32.powf(decibels / 20.0)
 }
 
 struct PcmWindow {
@@ -3172,8 +3189,9 @@ mod tests {
     use super::{
         BiquadKind, BiquadState, COLOUR_AIR_DB, COLOUR_LOW_SHELF_DB, COMPRESSOR_MAKEUP_GAIN,
         CachedTimeline, ClipEqState, DELAY_TAIL_SECONDS, DUCK_DEPTH_DB, DUCK_FLOOR, EffectTails,
-        FALLBACK_OUTPUT_SAMPLE_RATE, FILTER_HIGH_PASS_CLOSED_HZ, FILTER_HIGH_PASS_OPEN_HZ,
-        FILTER_LOW_PASS_CLOSED_HZ, FILTER_Q, FLANGER_TAIL_SECONDS, FilterAutomation,
+        FALLBACK_OUTPUT_SAMPLE_RATE, FILTER_HIGH_PASS_CLOSED_HZ, FILTER_HIGH_PASS_MAX_MAKEUP_DB,
+        FILTER_HIGH_PASS_OPEN_HZ, FILTER_LOW_PASS_CLOSED_HZ, FILTER_LOW_PASS_HUMP_DB,
+        FILTER_LOW_PASS_TAIL_DB, FILTER_Q, FLANGER_TAIL_SECONDS, FilterAutomation,
         FilterFramePoint, LaneAutomation, METER_PUBLISH_FRAMES, MasterColour, MasterCompressor,
         MasterDynamics, MasterLimiter, OUTPUT_CEILING, OVERLOAD_THRESHOLD, PanAutomation,
         PanFramePoint, PlacedClip, REVERB_TAIL_SECONDS, SendAutomation, SidechainDucker,
@@ -4895,10 +4913,26 @@ mod tests {
     }
 
     #[test]
-    fn filter_makeup_gain_is_a_linear_db_ramp_per_direction() {
-        assert!((filter_makeup_gain(0.0) - 1.0).abs() < f32::EPSILON);
-        assert!((filter_makeup_gain(-1.0) - 10_f32.powf(6.0 / 20.0)).abs() < 1.0e-6);
-        assert!((filter_makeup_gain(1.0) - 10_f32.powf(4.5 / 20.0)).abs() < 1.0e-6);
+    fn filter_makeup_backs_off_where_only_bass_is_left() {
+        let decibels = |value: f32| 20.0 * filter_makeup_gain(value).log10();
+        assert!(decibels(0.0).abs() < 1.0e-5);
+        // Le passe-haut garde sa rampe.
+        assert!((decibels(1.0) - FILTER_HIGH_PASS_MAX_MAKEUP_DB).abs() < 1.0e-4);
+        assert!((decibels(0.5) - FILTER_HIGH_PASS_MAX_MAKEUP_DB / 2.0).abs() < 1.0e-4);
+        // Le passe-bas culmine au milieu du balayage...
+        let middle = decibels(-0.5);
+        let summit = FILTER_LOW_PASS_HUMP_DB + FILTER_LOW_PASS_TAIL_DB / 2.0;
+        assert!((middle - summit).abs() < 1.0e-4, "got {middle}");
+        // ... puis relâche : fermé à fond il ne reste que la traînée, bien
+        // moins que ce que le milieu recevait. Sans ce retour, le grave qui
+        // survit seul repart à pleine crête contre le limiteur.
+        let closed = decibels(-1.0);
+        assert!(
+            (closed - FILTER_LOW_PASS_TAIL_DB).abs() < 1.0e-4,
+            "got {closed}"
+        );
+        assert!(closed < middle, "{closed} devrait rester sous {middle}");
+        assert!(decibels(-0.9) < decibels(-0.6));
     }
 
     #[test]

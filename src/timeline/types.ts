@@ -80,6 +80,15 @@ export interface TimelineClip {
   /** Si le morceau a déjà été séparé : un clic instantané, ou deux minutes. */
   hasStems: boolean;
   /**
+   * Si le **fichier cuit** de ce clip a déjà été séparé.
+   *
+   * Deux fichiers différents, donc deux drapeaux : un clip cuit joue son WAV,
+   * effets compris, et la voix de sa source ne ressemble pas à ce qu'on entend.
+   * C'est celui-ci qui dit si `VOX` bascule ou lance un rendu, dès que le clip
+   * est cuit.
+   */
+  hasBakeStems: boolean;
+  /**
    * Si ce clip joue un fichier cuit plutôt que sa source.
    *
    * Son égalisation et l'automation de sa voie sont alors **dans** le son. Les

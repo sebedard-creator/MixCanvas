@@ -279,7 +279,7 @@ button:disabled{
 .library-table-header,
 .library-row{
   display: grid;
-  grid-template-columns: minmax(280px, 1.8fr) 72px minmax(140px, 0.8fr) 94px 176px;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   column-gap: 18px;
 }
@@ -423,18 +423,6 @@ button:disabled{
 
 .library-track-name[aria-disabled="true"]{
   cursor: default;
-}
-
-.bpm-cell{
-  color: #898f9b;
-  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
-  font-size: 9px;
-}
-
-.bpm-cell{
-  display: flex;
-  align-items: center;
-  min-width: 0;
 }
 
 .bpm-value{
@@ -2077,10 +2065,7 @@ body,
 
 .library-row{
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "track bpm"
-    "actions actions";
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   min-height: 92px;
   padding: 10px 12px;
@@ -2090,7 +2075,6 @@ body,
 }
 
 .library-track-cell{
-  grid-area: track;
   gap: 7px;
 }
 
@@ -2100,10 +2084,6 @@ body,
 
 .library-track-cell > div > span{
   font-size: 7px;
-}
-
-.bpm-cell{
-  grid-area: bpm;
 }
 
 .bpm-value{
@@ -3237,8 +3217,7 @@ body,
    réservaient dix-huit que rien n'occupait. Le chemin du fichier est masqué
    dans cette disposition, et c'est lui qui justifiait la hauteur d'origine. */
 .library-row{
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas: "track bpm";
+  grid-template-columns: minmax(0, 1fr);
   min-height: 38px;
   padding: 6px 8px;
   column-gap: 6px;
@@ -3273,36 +3252,6 @@ body,
 
 .library-track-details > span{
   display: none;
-}
-
-.library-inline-preview{
-  display: grid;
-  flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  place-items: center;
-  border-radius: 5px;
-  cursor: pointer;
-  font-size: 9px;
-}
-
-.library-inline-preview{
-  border: 1px solid #061020;
-  border-top-color: #1f3a63;
-  border-bottom-color: #040914;
-  color: #ffffff;
-  background: linear-gradient(180deg, #152c4e 0%, #0a192f 100%);
-  box-shadow:
-    inset 0 1px 1px rgba(255, 255, 255, 0.2),
-    0 1.5px 0 #050d1a,
-    0 2px 4px rgba(0, 0, 0, 0.3);
-  font-weight: 800;
-}
-
-.library-inline-preview:hover:not(:disabled){
-  background: linear-gradient(180deg, #1a365d 0%, #0d1e38 100%);
-  transform: translateY(-0.5px);
 }
 
 .library-row .timeline-drag-handle{

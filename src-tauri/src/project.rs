@@ -189,6 +189,12 @@ struct ProjectClipStem {
     kind: String,
     file_path: String,
     source_from_ms: i64,
+    /// Ce stem a-t-il été tiré du fichier cuit du clip plutôt que du morceau ?
+    ///
+    /// `default` parce qu'un projet écrit avant que les deux jeux coexistent
+    /// n'en portait qu'un, celui de la source : `false` le décrit exactement.
+    #[serde(default)]
+    from_bake: bool,
 }
 
 /// Une cuisson, telle que le projet la retient.
@@ -512,8 +518,8 @@ pub fn collect(connection: &Connection) -> Result<ProjectFile, String> {
 fn read_clip_stems(connection: &Connection, clip_id: i64) -> Result<Vec<ProjectClipStem>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT kind, file_path, source_from_ms
-             FROM clip_stems WHERE clip_id = ?1 ORDER BY kind",
+            "SELECT kind, file_path, source_from_ms, from_bake
+             FROM clip_stems WHERE clip_id = ?1 ORDER BY kind, from_bake",
         )
         .map_err(database_read_error)?;
     let rows = statement
@@ -522,6 +528,7 @@ fn read_clip_stems(connection: &Connection, clip_id: i64) -> Result<Vec<ProjectC
                 kind: row.get(0)?,
                 file_path: row.get(1)?,
                 source_from_ms: row.get(2)?,
+                from_bake: row.get::<_, i64>(3)? != 0,
             })
         })
         .map_err(database_read_error)?
@@ -857,9 +864,16 @@ pub fn apply(connection: &mut Connection, project: &ProjectFile) -> Result<(), S
         for stem in &clip.stems {
             transaction
                 .execute(
-                    "INSERT INTO clip_stems (clip_id, kind, file_path, source_from_ms)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![clip_id, stem.kind, stem.file_path, stem.source_from_ms],
+                    "INSERT INTO clip_stems
+                     (clip_id, kind, file_path, source_from_ms, from_bake)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        clip_id,
+                        stem.kind,
+                        stem.file_path,
+                        stem.source_from_ms,
+                        i64::from(stem.from_bake),
+                    ],
                 )
                 .map_err(database_write_error)?;
         }

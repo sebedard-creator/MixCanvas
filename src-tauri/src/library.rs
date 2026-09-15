@@ -164,7 +164,15 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
         right_max      BLOB,
         right_rms      BLOB,
         created_at     INTEGER NOT NULL DEFAULT (unixepoch()),
-        UNIQUE (clip_id, kind)
+        -- Ce stem a-t-il ete separe depuis le fichier cuit du clip ?
+        --
+        -- Un clip cuit joue son WAV, effets compris; separer sa source
+        -- donnerait une voix sans ces effets, et le moteur ne la jouerait pas
+        -- puisque la cuisson passe avant. Les deux jeux coexistent donc, d'ou
+        -- la clef a trois colonnes : decuire un clip retire ses stems du bake
+        -- et doit rendre ceux de la source intacts.
+        from_bake      INTEGER NOT NULL DEFAULT 0 CHECK (from_bake IN (0, 1)),
+        UNIQUE (clip_id, kind, from_bake)
     );
 
     CREATE TABLE IF NOT EXISTS timeline_volume_nodes (
@@ -349,7 +357,8 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
         right_min      BLOB,
         right_max      BLOB,
         right_rms      BLOB,
-        UNIQUE (clip_id, kind)
+        from_bake      INTEGER NOT NULL DEFAULT 0,
+        UNIQUE (clip_id, kind, from_bake)
     );
 
     CREATE TABLE IF NOT EXISTS removed_clip_bakes (
@@ -367,14 +376,14 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
         right_rms      BLOB
     );
 
-    PRAGMA user_version = 38;
+    PRAGMA user_version = 39;
 "#;
 
 /// Schema version described by `CURRENT_DATABASE_SCHEMA`. The constant and the
 /// `PRAGMA user_version` above must move together: the schema is also replayed
 /// after a migration, so a stale value there would push the database back down
 /// and replay the last migrations on every start.
-const LATEST_SCHEMA_VERSION: i64 = 38;
+const LATEST_SCHEMA_VERSION: i64 = 39;
 
 const MIGRATE_VERSION_1_TO_2: &str = r#"
     BEGIN IMMEDIATE;
@@ -2001,6 +2010,82 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
                     .map_err(database_write_error)?;
                 version = 38;
             }
+            38 => {
+                // Un stem sait desormais d'ou il vient.
+                //
+                // La clef passe de (clip, sorte) a (clip, sorte, origine), ce
+                // qu'aucun ALTER ne sait faire : les deux tables sont donc
+                // reconstruites. Tout ce qui existe vient de la source, d'ou le
+                // zero. `clip_stems` n'est referencee par personne, si bien que
+                // la reconstruction ne casse aucune cle etrangere.
+                connection
+                    .execute_batch(
+                        "BEGIN IMMEDIATE;
+                         CREATE TABLE clip_stems_rebuilt (
+                             id             INTEGER PRIMARY KEY,
+                             clip_id        INTEGER NOT NULL
+                                            REFERENCES timeline_clips(id) ON DELETE CASCADE,
+                             kind           TEXT NOT NULL
+                                            CHECK (kind IN ('vocals', 'instrumental')),
+                             file_path      TEXT NOT NULL,
+                             source_from_ms INTEGER NOT NULL DEFAULT 0
+                                            CHECK (source_from_ms >= 0),
+                             bucket_count   INTEGER,
+                             left_min       BLOB,
+                             left_max       BLOB,
+                             left_rms       BLOB,
+                             right_min      BLOB,
+                             right_max      BLOB,
+                             right_rms      BLOB,
+                             created_at     INTEGER NOT NULL DEFAULT (unixepoch()),
+                             from_bake      INTEGER NOT NULL DEFAULT 0
+                                            CHECK (from_bake IN (0, 1)),
+                             UNIQUE (clip_id, kind, from_bake)
+                         );
+                         INSERT INTO clip_stems_rebuilt
+                             (id, clip_id, kind, file_path, source_from_ms, bucket_count,
+                              left_min, left_max, left_rms, right_min, right_max, right_rms,
+                              created_at, from_bake)
+                         SELECT id, clip_id, kind, file_path, source_from_ms, bucket_count,
+                                left_min, left_max, left_rms, right_min, right_max, right_rms,
+                                created_at, 0
+                         FROM clip_stems;
+                         DROP TABLE clip_stems;
+                         ALTER TABLE clip_stems_rebuilt RENAME TO clip_stems;
+
+                         CREATE TABLE removed_clip_stems_rebuilt (
+                             id             INTEGER PRIMARY KEY,
+                             clip_id        INTEGER NOT NULL,
+                             kind           TEXT NOT NULL,
+                             file_path      TEXT NOT NULL,
+                             source_from_ms INTEGER NOT NULL DEFAULT 0,
+                             bucket_count   INTEGER,
+                             left_min       BLOB,
+                             left_max       BLOB,
+                             left_rms       BLOB,
+                             right_min      BLOB,
+                             right_max      BLOB,
+                             right_rms      BLOB,
+                             from_bake      INTEGER NOT NULL DEFAULT 0,
+                             UNIQUE (clip_id, kind, from_bake)
+                         );
+                         INSERT INTO removed_clip_stems_rebuilt
+                             (id, clip_id, kind, file_path, source_from_ms, bucket_count,
+                              left_min, left_max, left_rms, right_min, right_max, right_rms,
+                              from_bake)
+                         SELECT id, clip_id, kind, file_path, source_from_ms, bucket_count,
+                                left_min, left_max, left_rms, right_min, right_max, right_rms,
+                                0
+                         FROM removed_clip_stems;
+                         DROP TABLE removed_clip_stems;
+                         ALTER TABLE removed_clip_stems_rebuilt RENAME TO removed_clip_stems;
+
+                         PRAGMA user_version = 39;
+                         COMMIT;",
+                    )
+                    .map_err(database_write_error)?;
+                version = 39;
+            }
             _ => {
                 let (target_version, migration) = match version {
                     1 => (2, MIGRATE_VERSION_1_TO_2),
@@ -2335,6 +2420,202 @@ mod tests {
                 !settings_names.iter().any(|name| name == "ducking_enabled"),
                 "the retired ducking switch should not survive the migrations"
             );
+        }
+
+        for suffix in ["", "-wal", "-shm"] {
+            let candidate =
+                std::path::PathBuf::from(format!("{}{}", database_path.to_string_lossy(), suffix));
+            if candidate.exists() {
+                fs::remove_file(candidate).expect("test database should be removed");
+            }
+        }
+    }
+
+    /// La reconstruction du schéma 39 ne perd rien.
+    ///
+    /// Passer la clef de `(clip, sorte)` à `(clip, sorte, origine)` demande de
+    /// recréer `clip_stems` : aucun `ALTER` ne change une contrainte. Recréer
+    /// une table est l'opération qui perd des lignes quand on l'écrit vite, et
+    /// ces lignes-là valent des minutes de séparation chacune. Le test simule
+    /// donc une base au schéma 38, avec ses stems et leurs waveforms, et exige
+    /// de les retrouver entiers, marqués comme venant de la source.
+    #[test]
+    fn schema_thirty_nine_keeps_every_stem_it_rebuilds() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the Unix epoch")
+            .as_nanos();
+        let database_path = std::env::temp_dir().join(format!(
+            "mixcanvas-schema39-{}-{suffix}.sqlite3",
+            std::process::id()
+        ));
+
+        {
+            let store = LibraryStore::open(&database_path).expect("database should open");
+
+            // Le schéma 38 tel qu'il était : pas de colonne d'origine, et une
+            // clef à deux colonnes. `DROP COLUMN` ne suffirait pas — SQLite
+            // refuse de retirer une colonne que porte une contrainte, ce qui
+            // est précisément pourquoi la migration reconstruit ces tables.
+            store
+                .connection
+                .execute_batch(
+                    "DROP TABLE clip_stems;
+                     CREATE TABLE clip_stems (
+                         id             INTEGER PRIMARY KEY,
+                         clip_id        INTEGER NOT NULL
+                                        REFERENCES timeline_clips(id) ON DELETE CASCADE,
+                         kind           TEXT NOT NULL
+                                        CHECK (kind IN ('vocals', 'instrumental')),
+                         file_path      TEXT NOT NULL,
+                         source_from_ms INTEGER NOT NULL DEFAULT 0
+                                        CHECK (source_from_ms >= 0),
+                         bucket_count   INTEGER,
+                         left_min       BLOB,
+                         left_max       BLOB,
+                         left_rms       BLOB,
+                         right_min      BLOB,
+                         right_max      BLOB,
+                         right_rms      BLOB,
+                         created_at     INTEGER NOT NULL DEFAULT (unixepoch()),
+                         UNIQUE (clip_id, kind)
+                     );
+                     DROP TABLE removed_clip_stems;
+                     CREATE TABLE removed_clip_stems (
+                         id             INTEGER PRIMARY KEY,
+                         clip_id        INTEGER NOT NULL,
+                         kind           TEXT NOT NULL,
+                         file_path      TEXT NOT NULL,
+                         source_from_ms INTEGER NOT NULL DEFAULT 0,
+                         bucket_count   INTEGER,
+                         left_min       BLOB,
+                         left_max       BLOB,
+                         left_rms       BLOB,
+                         right_min      BLOB,
+                         right_max      BLOB,
+                         right_rms      BLOB,
+                         UNIQUE (clip_id, kind)
+                     );",
+                )
+                .expect("version thirty-eight tables should be restored");
+
+            store
+                .connection
+                .execute(
+                    "INSERT INTO library_tracks
+                     (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+                      bpm, first_beat_ms, beat_count, analysis_status)
+                     VALUES ('stemmed.mp3', 'stemmed.mp3', 'stemmed.mp3',
+                             60000, 44100, 2, 120.0, 500, 120, 'analyzed')",
+                    [],
+                )
+                .expect("track should be inserted");
+            let track_id = store.connection.last_insert_rowid();
+            store
+                .connection
+                .execute(
+                    "INSERT INTO timeline_clips
+                     (library_track_id, lane, anchor_beat, tempo_anchor_beat)
+                     VALUES (?1, 0, 4, 4)",
+                    params![track_id],
+                )
+                .expect("clip should be inserted");
+            let clip_id = store.connection.last_insert_rowid();
+            for (kind, path) in [
+                ("vocals", "C:/mix/stems/vox.wav"),
+                ("instrumental", "C:/mix/stems/mus.wav"),
+            ] {
+                store
+                    .connection
+                    .execute(
+                        "INSERT INTO clip_stems
+                         (clip_id, kind, file_path, source_from_ms, bucket_count, left_min)
+                         VALUES (?1, ?2, ?3, 1500, 4, X'01020304')",
+                        params![clip_id, kind, path],
+                    )
+                    .expect("stem should be recorded");
+            }
+            store
+                .connection
+                .execute(
+                    "INSERT INTO removed_clip_stems (clip_id, kind, file_path, source_from_ms)
+                     VALUES (?1, 'vocals', 'C:/mix/stems/held.wav', 250)",
+                    params![clip_id],
+                )
+                .expect("a held stem should be recorded");
+
+            store
+                .connection
+                .execute_batch("PRAGMA user_version = 38;")
+                .expect("version thirty-eight should be simulated");
+        }
+
+        {
+            let store = LibraryStore::open(&database_path).expect("database should migrate");
+            let version = store
+                .connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .expect("schema version should be readable");
+            assert_eq!(version, LATEST_SCHEMA_VERSION);
+
+            let stems: Vec<(String, String, i64, i64, Vec<u8>)> = {
+                let mut statement = store
+                    .connection
+                    .prepare(
+                        "SELECT kind, file_path, source_from_ms, from_bake, left_min
+                         FROM clip_stems ORDER BY kind",
+                    )
+                    .expect("the rebuilt stems should be readable");
+                statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    })
+                    .expect("query")
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("rows")
+            };
+            assert_eq!(
+                stems.len(),
+                2,
+                "les deux stems traversent la reconstruction"
+            );
+            assert_eq!(stems[0].0, "instrumental");
+            assert_eq!(stems[0].1, "C:/mix/stems/mus.wav");
+            assert_eq!(stems[0].2, 1500, "leur origine dans la source");
+            assert_eq!(stems[0].3, 0, "tout ce qui existait vient du morceau");
+            assert_eq!(stems[0].4, vec![1_u8, 2, 3, 4], "waveforms comprises");
+            assert_eq!(stems[1].0, "vocals");
+            assert_eq!(stems[1].3, 0);
+
+            let held: (String, i64) = store
+                .connection
+                .query_row(
+                    "SELECT file_path, from_bake FROM removed_clip_stems",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("le stem en attente survit aussi");
+            assert_eq!(held, ("C:/mix/stems/held.wav".to_owned(), 0));
+
+            // Et la nouvelle clef laisse les deux origines coexister.
+            let clip_id: i64 = store
+                .connection
+                .query_row("SELECT id FROM timeline_clips", [], |row| row.get(0))
+                .expect("the clip should still be there");
+            store
+                .connection
+                .execute(
+                    "INSERT INTO clip_stems (clip_id, kind, file_path, from_bake)
+                     VALUES (?1, 'vocals', 'C:/mix/stems/baked-vox.wav', 1)",
+                    params![clip_id],
+                )
+                .expect("une voix tirée du fichier cuit doit pouvoir cohabiter");
         }
 
         for suffix in ["", "-wal", "-shm"] {
