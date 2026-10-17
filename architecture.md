@@ -1,12 +1,36 @@
 # Architecture de MixCanvas
 
+## Bounce normalisé — 1.8.1-beta4 (2026-09-27)
+
+Le bounce mastérisé retire le limiteur de protection du transport **et sa borne
+fixe à ±0,98**. Le moteur fournit alors au traitement hors ligne toutes les
+crêtes float32, y compris celles au-dessus de 0 dBFS; la lecture normale garde
+sa protection. Sans cette distinction, mesurer ou limiter le bounce après la
+borne mesurerait un signal déjà écrêté.
+
+Quand l'option de normalisation est active, une première passe rend exactement
+le programme entendu (tempo, automation, effets et queues) dans un PCM float32
+temporaire sous `MixCanvas Files/Scratch/bounce-temp`. Elle relève la plus forte
+valeur absolue des deux canaux. Une deuxième passe relit ce même PCM, applique
+un **gain constant et lié en stéréo** vers une crête échantillon de 0 dBFS,
+borné à +12 dB, puis passe au limiteur de mastering. Le limiteur garde son
+plafond propre au WAV ou au MP3. Le PCM est effacé sur succès comme sur erreur.
+Le bounce sans normalisation évite cette passe et ce disque supplémentaire.
+
+Le résultat affiche le gain de normalisation et la réduction de gain maximale
+du limiteur. Une crête de zéro laisse le gain à l'unité. Ce traitement n'est
+pas une mesure de sonie LUFS et ne change pas les balances voulues entre les
+morceaux du set. La préférence de la case vit dans la base locale, non dans le
+fichier projet, car elle règle une opération d'export et non le mix lui-même.
+
+
 ## Rôle de ce document
 
 Ce document vivant décrit la mécanique sous le capot de MixCanvas : les responsabilités des différentes parties du logiciel, la circulation des données et les règles techniques qui garantissent la synchronisation audio.
 
 Il ne sert pas à décrire l'apparence de l'interface ni à imposer prématurément un langage ou un framework. Toute décision qui modifie le fonctionnement interne doit être reflétée ici. Chaque modification matérielle du projet doit également être inscrite dans le journal de développement le jour où elle est faite. Jusqu'à la 1.0 ce journal est `prereleasechangelog.md`, qui reste sur la machine de l'auteur : il consigne des décisions au jour le jour, utiles pour reprendre le contexte et sans intérêt pour qui clone le programme.
 
-Dernière mise à jour : 2026-08-03
+Dernière mise à jour : 2026-09-27
 
 ## Vision du produit
 

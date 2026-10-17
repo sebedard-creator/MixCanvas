@@ -203,6 +203,12 @@ Nothing to open and nothing to put away.
 
 ## Save and export
 
+The Bounce dialog can normalize the complete stereo mix before its mastering
+limiter. It measures once, applies one fixed gain across the whole set, and
+reports both that gain and the limiter's maximum reduction. The limiter keeps
+its format-specific output ceiling; normalization cannot balance individual
+tracks for you.
+
 <p align="center">
   <img src="assets/screenshots/bounce.png" width="512"
        alt="The Bounce the mix dialog: WAV and MP3 format cards, an armed Mastering Limiter with threshold, ceiling, and release fields, auto release, and a line reading Lifts the mix by 2.7 dB, then holds it under -1.0 dB.">

@@ -19,7 +19,7 @@ use std::{
 use analysis::{BeatModelPaths, analyze_mp3, analyze_mp3_near, analyze_waveform};
 use audio::{
     BounceFormat, BounceSummary, PreviewEngine, PreviewSnapshot, TimelinePlaybackEngine,
-    bounce_timeline,
+    bounce_timeline, bounce_timeline_with_normalization,
 };
 use library::{AnalysisBatchResult, LibraryImportResult, LibraryStore, LibraryTrack};
 use tauri::{Emitter, Manager, State};
@@ -240,8 +240,10 @@ async fn bounce_mix(
     format: BounceFormat,
     // Absent, le rendu garde le garde-fou du moteur et rien d'autre.
     mastering: Option<crate::audio::mastering::MasteringSettings>,
+    normalize: bool,
     app: tauri::AppHandle,
     library_state: State<'_, LibraryState>,
+    media_state: State<'_, MediaState>,
 ) -> Result<BounceSummary, String> {
     let plan = {
         let library = library_state
@@ -249,6 +251,11 @@ async fn bounce_mix(
             .map_err(|_| "The library is in an invalid state.".to_owned())?;
         timeline::render_plan(&library.connection)?
     };
+    let cache_root = media_state
+        .lock()
+        .map_err(|_| "The media folder is in an invalid state.".to_owned())?
+        .root
+        .clone();
 
     tauri::async_runtime::spawn_blocking(move || {
         let mut report = |fraction: f64| {
@@ -256,11 +263,13 @@ async fn bounce_mix(
             // minutes : au pire la barre cesse d'avancer.
             let _ = app.emit("bounce-progress", fraction);
         };
-        bounce_timeline(
+        bounce_timeline_with_normalization(
             &plan,
             std::path::Path::new(&path),
             format,
             mastering,
+            normalize,
+            &cache_root,
             &mut report,
         )
     })

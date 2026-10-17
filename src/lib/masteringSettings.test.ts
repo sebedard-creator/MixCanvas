@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   DEFAULT_BOUNCE_FORMAT,
+  parseBounceNormalize,
   DEFAULT_MASTERING_SETTINGS,
   MASTERING_LIMITS,
   ceilingForFormat,
@@ -10,6 +11,14 @@ import {
   parseMasteringSettings,
   serializeMasteringSettings,
 } from "./masteringSettings";
+
+describe("parseBounceNormalize", () => {
+  it("defaults on and remembers an explicit off setting", () => {
+    expect(parseBounceNormalize(undefined)).toBe(true);
+    expect(parseBounceNormalize("1")).toBe(true);
+    expect(parseBounceNormalize("0")).toBe(false);
+  });
+});
 
 describe("parseMasteringSettings", () => {
   it("survives a round trip", () => {

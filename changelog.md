@@ -12,6 +12,31 @@ wrote it. What changed, and what it means when you sit down to build a mix.
 
 ---
 
+## 1.8.1-beta4 — 2026-09-27
+
+### Added
+
+- **Optional whole-mix normalization before the mastering limiter.** Bounce
+  measures the complete stereo mix in float32, applies one constant gain to
+  both channels, and then runs the existing look-ahead limiter. The gain is
+  capped at +12 dB on exceptionally quiet material. The bounce result reports
+  the applied gain and the limiter's maximum gain reduction. The intermediate
+  audio lives in MixCanvas's local Scratch media folder and is removed when the
+  render ends.
+
+### Fixed
+
+- **The mastering limiter now receives unclipped float32 peaks.** The playback
+  engine's hard output bound previously remained active even after its live
+  limiter was disabled for a mastered bounce. That bound could cut peaks before
+  the offline limiter or its new normalization pass saw them. Playback still
+  uses its protective bound.
+
+The 1.8.1-beta4 single-file Windows portable was built with embedded resources
+on 2026-09-27 and verified against its release executable by SHA-256.
+
+---
+
 ## 1.8.1 — 2026-09-15
 
 ### Fixed

@@ -20,6 +20,7 @@ import { UNDO_HISTORY_LIMIT, UndoRedoHistory } from "./lib/undoRedo";
 import {
   BOUNCE_FORMATS,
   BOUNCE_FORMAT_PREFERENCE,
+  BOUNCE_NORMALIZE_PREFERENCE,
   DEFAULT_BOUNCE_FORMAT,
   DEFAULT_MASTERING_SETTINGS,
   MASTERING_ENABLED_PREFERENCE,
@@ -30,6 +31,7 @@ import {
   serializeMasteringSettings,
   ceilingForFormat,
   parseBounceFormat,
+  parseBounceNormalize,
   type BounceFormat,
   type MasteringSettings,
 } from "./lib/masteringSettings";
@@ -508,6 +510,7 @@ function App() {
              quelqu'un qui n'a jamais ouvert la boîte. */
           setMasteringEnabled(preferences[MASTERING_ENABLED_PREFERENCE] !== "0");
           setBounceFormat(parseBounceFormat(preferences[BOUNCE_FORMAT_PREFERENCE]));
+          setNormalizeBeforeLimiter(parseBounceNormalize(preferences[BOUNCE_NORMALIZE_PREFERENCE]));
           setLibrary(tracks);
           setTimeline(timelineSnapshot);
           publishTransport(transportSnapshot);
@@ -924,6 +927,7 @@ function App() {
    * délibéré, pour qui masterise ailleurs.
    */
   const [masteringEnabled, setMasteringEnabled] = useState(true);
+  const [normalizeBeforeLimiter, setNormalizeBeforeLimiter] = useState(true);
   const [mastering, setMastering] = useState<MasteringSettings>(DEFAULT_MASTERING_SETTINGS);
   const [bounceOptionsOpen, setBounceOptionsOpen] = useState(false);
   const [bounceFormat, setBounceFormat] = useState<BounceFormat>(DEFAULT_BOUNCE_FORMAT);
@@ -946,6 +950,13 @@ function App() {
     }).catch((preferenceError) => setError(errorMessage(preferenceError)));
   }, []);
 
+  const rememberNormalization = useCallback((enabled: boolean) => {
+    void invoke("write_app_preference", {
+      key: BOUNCE_NORMALIZE_PREFERENCE,
+      value: enabled ? "1" : "0",
+    }).catch((preferenceError) => setError(errorMessage(preferenceError)));
+  }, []);
+
   /**
    * Referme la boîte de bounce en gardant ce qu'on y a réglé.
    *
@@ -961,7 +972,8 @@ function App() {
     setBounceOptionsOpen(false);
     rememberMastering(masteringEnabled, mastering);
     rememberFormat(bounceFormat);
-  }, [bounceFormat, mastering, masteringEnabled, rememberFormat, rememberMastering]);
+    rememberNormalization(normalizeBeforeLimiter);
+  }, [bounceFormat, mastering, masteringEnabled, normalizeBeforeLimiter, rememberFormat, rememberMastering, rememberNormalization]);
 
   const bounceMix = useCallback(async () => {
     closeBounceOptions();
@@ -984,10 +996,13 @@ function App() {
         trimmedSeconds: number;
         sampleRate: number;
         bitsPerSample: number;
+        normalizationGainDb: number | null;
+        maxLimiterReductionDb: number | null;
       }>("bounce_mix", {
         path,
         format: bounceFormat,
         mastering: masteringEnabled ? mastering : null,
+        normalize: masteringEnabled && normalizeBeforeLimiter,
       });
       const trimmed = summary.trimmedSeconds > 0.001
         ? `, ${summary.trimmedSeconds.toFixed(2)} s of leading silence skipped`
@@ -996,7 +1011,9 @@ function App() {
         `Bounced ${formatDuration(summary.durationSeconds * 1000)} to ${summary.path}`
         + ` — ${summary.bitsPerSample > 0
           ? `${summary.bitsPerSample}-bit`
-          : "320 kbps"} ${summary.sampleRate / 1000} kHz stereo${trimmed}.`,
+          : "320 kbps"} ${summary.sampleRate / 1000} kHz stereo${trimmed}`
+        + `${summary.normalizationGainDb === null ? "" : `, normalized ${summary.normalizationGainDb >= 0 ? "+" : ""}${summary.normalizationGainDb.toFixed(1)} dB`}`
+        + `${summary.maxLimiterReductionDb === null ? "" : `, max limiter reduction ${summary.maxLimiterReductionDb.toFixed(1)} dB`}.`,
       );
     } catch (bounceError) {
       setLibraryMessage(null);
@@ -2063,6 +2080,22 @@ function App() {
                   Brings the mix up to full level and keeps every peak under the
                   ceiling. Leave it on unless you are mastering the file
                   elsewhere.
+                </em>
+              </span>
+            </label>
+
+            <label className="bounce-toggle">
+              <input
+                type="checkbox"
+                checked={normalizeBeforeLimiter}
+                disabled={!masteringEnabled}
+                onChange={(event) => setNormalizeBeforeLimiter(event.target.checked)}
+              />
+              <span>
+                <strong>Normalize before limiter</strong>
+                <em>
+                  Measures the entire mix, then applies one stereo-linked gain before limiting.
+                  Boost is capped at 12 dB.
                 </em>
               </span>
             </label>

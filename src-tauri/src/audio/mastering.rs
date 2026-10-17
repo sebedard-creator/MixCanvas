@@ -124,6 +124,7 @@ pub struct MasteringLimiter {
     makeup: f32,
     ceiling: f32,
     gain: f32,
+    min_gain: f32,
     release_coefficient: f32,
     auto_release: bool,
     /// La profondeur de réduction moyenne, qui décide de la vitesse de retour.
@@ -163,6 +164,7 @@ impl MasteringLimiter {
             makeup,
             ceiling,
             gain: 1.0,
+            min_gain: 1.0,
             release_coefficient: one_pole(settings.release_ms, sample_rate),
             auto_release: settings.auto_release,
             sensed_depth: 0.0,
@@ -204,6 +206,7 @@ impl MasteringLimiter {
 
         let target = self.required.minimum();
         self.advance_gain(target);
+        self.min_gain = self.min_gain.min(self.gain);
 
         if self.pending < self.lookahead_frames {
             self.pending += 1;
@@ -213,6 +216,11 @@ impl MasteringLimiter {
             *slot = value * self.gain;
         }
         true
+    }
+
+    /// Plus forte réduction réellement appliquée pendant ce rendu.
+    pub fn max_reduction_db(&self) -> f32 {
+        -20.0 * self.min_gain.max(f32::MIN_POSITIVE).log10()
     }
 
     /// Le gain descend d'un coup et remonte doucement.

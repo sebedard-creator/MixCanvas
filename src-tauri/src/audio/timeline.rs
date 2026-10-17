@@ -1843,6 +1843,8 @@ pub(crate) struct TimelineMixSource {
     bitcrushers: [BitCrusher; 3],
     delay_sends: [f32; 3],
     limiter: MasterLimiter,
+    /// L'écoute garde sa borne; le bounce mastérisé laisse les crêtes au limiteur hors ligne.
+    monitor_bound_enabled: bool,
     /// Both channels of the current frame, already limited. Rendered together
     /// so the limiter can link them.
     pending_frame: [f32; OUTPUT_CHANNELS as usize],
@@ -1871,6 +1873,10 @@ impl TimelineMixSource {
     /// du plan neuf.
     fn share_tails(&mut self, tails: Arc<Mutex<EffectTails>>) {
         self.tails = tails;
+    }
+
+    pub(crate) fn disable_monitor_bound_for_bounce(&mut self) {
+        self.monitor_bound_enabled = false;
     }
 }
 
@@ -1910,6 +1916,7 @@ impl Clone for TimelineMixSource {
             bitcrush_sends: [0.0; 3],
             delay_sends: [0.0; 3],
             limiter: MasterLimiter::default(),
+            monitor_bound_enabled: self.monitor_bound_enabled,
             pending_frame: [0.0; OUTPUT_CHANNELS as usize],
             tempo_map: self.tempo_map.clone(),
             output_sample_rate: self.output_sample_rate,
@@ -1992,6 +1999,7 @@ impl TimelineMixSource {
             bitcrush_sends: [0.0; 3],
             delay_sends: [0.0; 3],
             limiter: MasterLimiter::default(),
+            monitor_bound_enabled: true,
             pending_frame: [0.0; OUTPUT_CHANNELS as usize],
             tempo_map,
             output_sample_rate,
@@ -2483,7 +2491,11 @@ impl TimelineMixSource {
                 continue;
             }
             clipped |= limited.abs() > OVERLOAD_THRESHOLD;
-            *output = limited.clamp(-OUTPUT_CEILING, OUTPUT_CEILING);
+            *output = if self.monitor_bound_enabled {
+                limited.clamp(-OUTPUT_CEILING, OUTPUT_CEILING)
+            } else {
+                limited
+            };
         }
         self.update_overload(clipped);
     }

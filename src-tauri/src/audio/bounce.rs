@@ -1,4 +1,4 @@
-//! Rendu hors ligne du mix complet vers un fichier WAV.
+//! Rendu hors ligne du mix complet vers WAV ou MP3.
 //!
 //! Le bounce réutilise `TimelineMixSource`, la source même que joue le
 //! transport : time-stretch, égaliseur de clip, filtres, automation de volume,
@@ -9,10 +9,10 @@
 //! Il ne tourne pas en temps réel : la source est tirée aussi vite que la
 //! machine le permet, sans périphérique audio ni contrainte de latence.
 
-use std::fs::File;
-use std::io::{BufWriter, Seek, SeekFrom, Write};
-use std::path::Path;
-use std::time::Duration;
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rodio::Source;
 
@@ -57,6 +57,78 @@ pub struct BounceSummary {
     pub sample_rate: u32,
     pub bits_per_sample: u16,
     pub format: BounceFormat,
+    pub normalization_gain_db: Option<f32>,
+    pub max_limiter_reduction_db: Option<f32>,
+}
+
+/// Le PCM intermédiaire est toujours dans les données locales de MixCanvas.
+/// Le gardien efface le fichier après succès comme après erreur.
+struct BouncePcm {
+    path: PathBuf,
+}
+
+impl BouncePcm {
+    fn create(root: &Path) -> Result<(Self, File), String> {
+        let folder = root.join("Scratch").join("bounce-temp");
+        fs::create_dir_all(&folder)
+            .map_err(|error| format!("Could not prepare the bounce cache: {error}"))?;
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| format!("Could not name the bounce cache: {error}"))?
+            .as_nanos();
+        for attempt in 0..16 {
+            let path = folder.join(format!(
+                "bounce-{}-{stamp}-{attempt}.f32",
+                std::process::id()
+            ));
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => return Ok((Self { path }, file)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(format!("Could not create the bounce cache: {error}")),
+            }
+        }
+        Err("Could not find a free name for the bounce cache.".to_owned())
+    }
+}
+
+impl Drop for BouncePcm {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Un seul gain sur tout le programme et sur les deux canaux.
+/// Une pointe isolée ne peut demander une amplification illimitée.
+fn normalization_gain(peak: f32) -> f32 {
+    const MAX_GAIN_DB: f32 = 12.0;
+    if peak <= 0.0 {
+        1.0
+    } else {
+        (1.0 / peak).min(10.0_f32.powf(MAX_GAIN_DB / 20.0))
+    }
+}
+
+struct PcmSamples {
+    reader: BufReader<File>,
+    remaining: usize,
+}
+
+impl Iterator for PcmSamples {
+    type Item = Result<f32, String>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        self.remaining -= 1;
+        let mut bytes = [0_u8; 4];
+        Some(
+            self.reader
+                .read_exact(&mut bytes)
+                .map(|()| f32::from_le_bytes(bytes))
+                .map_err(|error| format!("Could not read the bounce cache: {error}")),
+        )
+    }
 }
 
 /// Là où finissent les images, une fois limitées.
@@ -274,7 +346,7 @@ fn first_audible_seconds(plan: &TimelineRenderPlan) -> f64 {
 /// changement de point de pourcentage : un rendu émet donc cent messages au
 /// plus, quelle que soit la longueur du mix. Inonder l'interface d'événements
 /// la ralentirait précisément pendant qu'elle doit rester réactive.
-/// `mastering` remplace le garde-fou du moteur par un limiteur d'outil.
+/// `mastering` remplace le garde-fou et sa borne de sortie par un limiteur d'outil.
 ///
 /// Les deux ne peuvent pas coexister dans ce rendu : le garde-fou borne à
 /// 0,98, soit −0,18 dBFS, donc **en dessous** d'un plafond de mastering
@@ -289,8 +361,31 @@ pub fn bounce_timeline(
     mastering: Option<MasteringSettings>,
     on_progress: &mut dyn FnMut(f64),
 ) -> Result<BounceSummary, String> {
+    bounce_timeline_with_normalization(
+        plan,
+        path,
+        format,
+        mastering,
+        false,
+        Path::new("."),
+        on_progress,
+    )
+}
+
+pub fn bounce_timeline_with_normalization(
+    plan: &TimelineRenderPlan,
+    path: &Path,
+    format: BounceFormat,
+    mastering: Option<MasteringSettings>,
+    normalize: bool,
+    cache_root: &Path,
+    on_progress: &mut dyn FnMut(f64),
+) -> Result<BounceSummary, String> {
     if plan.clips.is_empty() {
         return Err("Add at least one clip before bouncing the mix.".to_owned());
+    }
+    if normalize && mastering.is_none() {
+        return Err("Enable the mastering limiter to normalize before it.".to_owned());
     }
 
     let unlimited;
@@ -304,12 +399,49 @@ pub fn bounce_timeline(
         plan
     };
     let mut source = prepare_timeline(plan, true, BOUNCE_SAMPLE_RATE)?;
+    if mastering.is_some() {
+        source.disable_monitor_bound_for_bounce();
+    }
     let trimmed_seconds = first_audible_seconds(plan);
     if trimmed_seconds > 0.0 {
         source
             .try_seek(Duration::from_secs_f64(trimmed_seconds))
             .map_err(|error| format!("The mix could not be positioned for bouncing: {error}"))?;
     }
+
+    // La première passe fige exactement ce que le limiteur recevra : effets,
+    // tempo et queue compris. Rejouer les sources aurait pu changer le signal.
+    // Le format brut reste flottant, sans écrêtage ni dither prématuré.
+    let mut prepared = None;
+    let mut measured_samples = 0_usize;
+    let mut peak = 0.0_f32;
+    if normalize {
+        let (cache, file) = BouncePcm::create(cache_root)?;
+        let mut writer = BufWriter::with_capacity(65_536, file);
+        let expected = source.len().max(1);
+        let mut last_percent = usize::MAX;
+        for sample in source.by_ref() {
+            if !sample.is_finite() {
+                return Err("The mix contains a non-finite audio sample.".to_owned());
+            }
+            peak = peak.max(sample.abs());
+            writer
+                .write_all(&sample.to_le_bytes())
+                .map_err(|error| format!("Could not write the bounce cache: {error}"))?;
+            measured_samples += 1;
+            let percent = measured_samples * 100 / expected;
+            if percent != last_percent {
+                last_percent = percent;
+                on_progress(0.5 * measured_samples as f64 / expected as f64);
+            }
+        }
+        writer
+            .flush()
+            .map_err(|error| format!("Could not finish the bounce cache: {error}"))?;
+        drop(writer);
+        prepared = Some(cache);
+    }
+    let applied_gain = normalize.then(|| normalization_gain(peak));
 
     let file =
         File::create(path).map_err(|error| format!("This file could not be created: {error}"))?;
@@ -322,9 +454,13 @@ pub fn bounce_timeline(
 
     // La source sait exactement combien d'échantillons il lui reste après le
     // repositionnement : la progression est mesurée, pas estimée.
-    let expected_samples = source.len().max(1);
+    let expected_samples = if normalize {
+        measured_samples.max(1)
+    } else {
+        source.len().max(1)
+    };
     let mut last_percent = usize::MAX;
-    on_progress(0.0);
+    on_progress(if normalize { 0.5 } else { 0.0 });
 
     // Écrit au fil de l'eau plutôt qu'accumulé : un mix d'une heure fait
     // 635 Mo en 16 bits stéréo, qu'il n'y a aucune raison de tenir en mémoire.
@@ -358,12 +494,29 @@ pub fn bounce_timeline(
             let percent = *frames * 100 / expected_frames;
             if percent != last_percent {
                 last_percent = percent;
-                on_progress(*frames as f64 / expected_frames as f64);
+                let fraction = *frames as f64 / expected_frames as f64;
+                on_progress(if normalize {
+                    0.5 + 0.5 * fraction
+                } else {
+                    fraction
+                });
             }
             Ok(())
         };
 
-    for sample in source.by_ref() {
+    let mut samples: Box<dyn Iterator<Item = Result<f32, String>> + '_> =
+        if let Some(cache) = &prepared {
+            let file = File::open(&cache.path)
+                .map_err(|error| format!("Could not open the bounce cache: {error}"))?;
+            Box::new(PcmSamples {
+                reader: BufReader::with_capacity(65_536, file),
+                remaining: measured_samples,
+            })
+        } else {
+            Box::new(source.by_ref().map(Ok))
+        };
+    for sample in samples.by_ref() {
+        let sample = sample? * applied_gain.unwrap_or(1.0);
         frame[filled] = sample;
         filled += 1;
         if filled < channels {
@@ -382,6 +535,7 @@ pub fn bounce_timeline(
             None => push(&mut sink, &mut frames, &frame)?,
         }
     }
+    drop(samples);
     // Ce que la ligne à retard tient encore. Sans cette vidange, le mix
     // perdrait ses trois dernières millisecondes.
     if let Some(limiter) = limiter.as_mut() {
@@ -390,6 +544,7 @@ pub fn bounce_timeline(
         }
     }
 
+    let max_limiter_reduction_db = limiter.as_ref().map(MasteringLimiter::max_reduction_db);
     sink.finish(frames)?;
     on_progress(1.0);
 
@@ -406,6 +561,8 @@ pub fn bounce_timeline(
             BounceFormat::Mp3 => 0,
         },
         format,
+        normalization_gain_db: applied_gain.map(|gain| 20.0 * gain.log10()),
+        max_limiter_reduction_db,
     })
 }
 
@@ -464,6 +621,108 @@ fn finish_header<W: Write + Seek>(writer: &mut W, data_bytes: usize) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalization_uses_one_bounded_gain_for_a_whole_mix() {
+        assert_eq!(normalization_gain(0.0), 1.0);
+        assert!((normalization_gain(0.5) - 2.0).abs() < 1.0e-6);
+        assert!((normalization_gain(2.0) - 0.5).abs() < 1.0e-6);
+        assert!(normalization_gain(0.001) <= 10.0_f32.powf(12.0 / 20.0) + 1.0e-6);
+    }
+
+    #[test]
+    fn normalized_bounce_reaches_the_limiter_and_cleans_up_its_pcm() {
+        use crate::audio::stems::write_stereo_wav;
+        use crate::tempo::TempoMap;
+        use crate::timeline::{TimelineRenderClip, TimelineRenderPlan};
+
+        let root = std::env::temp_dir().join(format!(
+            "mixcanvas-normalize-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("tone.wav");
+        let samples: Vec<f32> = (0..BOUNCE_SAMPLE_RATE)
+            .map(|index| {
+                0.75 * (std::f32::consts::TAU * 220.0 * index as f32 / BOUNCE_SAMPLE_RATE as f32)
+                    .sin()
+            })
+            .collect();
+        write_stereo_wav(&source, &samples, &samples).unwrap();
+        let plan = TimelineRenderPlan {
+            project_bpm: 120.0,
+            tempo_map: TempoMap::new(120.0, Vec::new()).unwrap(),
+            end_beat: 2.0,
+            audible_lane_mask: 0b111,
+            limiter_enabled: true,
+            compressor_enabled: false,
+            clips: vec![TimelineRenderClip {
+                id: 1,
+                lane: 0,
+                file_path: source.to_string_lossy().into_owned(),
+                source_bpm: 120.0,
+                first_beat_ms: 0,
+                anchor_beat: 0.0,
+                visual_start_beat: 0.0,
+                duration_beats: 2.0,
+                trim_start_beats: 0.0,
+                trim_end_beats: 0.0,
+                is_sidechain_key: false,
+                ducks_under_key: false,
+                eq_settings: None,
+            }],
+            volume_nodes: Vec::new(),
+            pan_nodes: Vec::new(),
+            filter_nodes: Vec::new(),
+            reverb_nodes: Vec::new(),
+            flanger_nodes: Vec::new(),
+            bitcrush_nodes: Vec::new(),
+            delay_nodes: Vec::new(),
+        };
+        let settings = MasteringSettings {
+            threshold_db: -6.0,
+            ceiling_db: -1.0,
+            ..MasteringSettings::default()
+        };
+        let output = root.join("normalized.wav");
+        let mut progress = Vec::new();
+        let summary = bounce_timeline_with_normalization(
+            &plan,
+            &output,
+            BounceFormat::Wav,
+            Some(settings),
+            true,
+            &root,
+            &mut |fraction| progress.push(fraction),
+        )
+        .unwrap();
+        assert!(summary.normalization_gain_db.unwrap() > 3.0);
+        assert!(
+            summary.max_limiter_reduction_db.unwrap() > 1.0,
+            "limiter reduction {:?}, normalization gain {:?}",
+            summary.max_limiter_reduction_db,
+            summary.normalization_gain_db,
+        );
+        assert_eq!(summary.frames, BOUNCE_SAMPLE_RATE as usize);
+        assert!(
+            progress
+                .iter()
+                .any(|&fraction| (0.5..1.0).contains(&fraction))
+        );
+        assert_eq!(progress.last(), Some(&1.0));
+        assert_eq!(
+            fs::metadata(&output).unwrap().len(),
+            44 + u64::from(BOUNCE_SAMPLE_RATE) * 4
+        );
+        let cache_dir = root.join("Scratch/bounce-temp");
+        assert_eq!(fs::read_dir(&cache_dir).unwrap().count(), 0);
+
+        let _ = fs::remove_dir_all(&root);
+    }
 
     /// Symphonia contre un décodeur de référence, sur le même MP3.
     ///

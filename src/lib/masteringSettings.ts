@@ -48,6 +48,11 @@ export const DEFAULT_MASTERING_SETTINGS: MasteringSettings = {
 
 export const MASTERING_PREFERENCE = "bounce.mastering";
 export const MASTERING_ENABLED_PREFERENCE = "bounce.masteringEnabled";
+export const BOUNCE_NORMALIZE_PREFERENCE = "bounce.normalizeBeforeLimiter";
+
+export function parseBounceNormalize(raw: string | undefined | null): boolean {
+  return raw !== "0";
+}
 
 /** Les bornes de chaque champ, partagées par la saisie et la relecture. */
 export const MASTERING_LIMITS = {
