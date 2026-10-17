@@ -12,6 +12,31 @@ wrote it. What changed, and what it means when you sit down to build a mix.
 
 ---
 
+## 1.8.2 — 2026-10-17
+
+### Added
+
+- **Normalize the complete mix before the mastering limiter.** This optional
+  bounce setting measures the stereo mix in float32, applies one constant gain
+  to both channels, then feeds the existing limiter. Boost is capped at +12 dB;
+  it does not change the balance between tracks. The bounce reports both the
+  gain applied and the limiter's maximum gain reduction.
+
+### Fixed
+
+- **The mastered bounce no longer clips peaks before limiting.** The monitor's
+  protective output bound previously remained active during export. The
+  offline limiter now receives the full float32 signal; normal playback keeps
+  its protective bound.
+
+The 1.8.1-beta4 preview introduced and tested both changes. No project-file
+format or library database migration is introduced by 1.8.2.
+
+The Windows single-file portable was built with embedded resources on
+2026-10-17. SHA-256: `E6EE929B127B28A8554E6833A0A6B9C32496D8955B51CC40F691E500BE61FACC`.
+
+---
+
 ## 1.8.1-beta4 — 2026-09-27
 
 ### Added

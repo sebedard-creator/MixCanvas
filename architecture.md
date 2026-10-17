@@ -2,6 +2,10 @@
 
 ## Bounce normalisé — 1.8.1-beta4 (2026-09-27)
 
+La version stable 1.8.2 (2026-10-17) reprend cette chaîne sans changement de
+mécanique. Le numéro de version et l'exécutable portable ont été actualisés;
+aucune migration de base locale ni du format de projet n'est ajoutée.
+
 Le bounce mastérisé retire le limiteur de protection du transport **et sa borne
 fixe à ±0,98**. Le moteur fournit alors au traitement hors ligne toutes les
 crêtes float32, y compris celles au-dessus de 0 dBFS; la lecture normale garde
@@ -30,7 +34,7 @@ Ce document vivant décrit la mécanique sous le capot de MixCanvas : les respon
 
 Il ne sert pas à décrire l'apparence de l'interface ni à imposer prématurément un langage ou un framework. Toute décision qui modifie le fonctionnement interne doit être reflétée ici. Chaque modification matérielle du projet doit également être inscrite dans le journal de développement le jour où elle est faite. Jusqu'à la 1.0 ce journal est `prereleasechangelog.md`, qui reste sur la machine de l'auteur : il consigne des décisions au jour le jour, utiles pour reprendre le contexte et sans intérêt pour qui clone le programme.
 
-Dernière mise à jour : 2026-09-27
+Dernière mise à jour : 2026-10-17
 
 ## Vision du produit
 
