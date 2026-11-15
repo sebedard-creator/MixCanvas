@@ -1,5 +1,18 @@
 const TEXT_ENTRY_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT"]);
 
+/** Wheel gestures keep vertical track navigation separate from time and zoom. */
+export function resolveTimelineWheel(event: {
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+  deltaX: number;
+  deltaY: number;
+}): "vertical" | "horizontal" | "zoom" {
+  if (event.ctrlKey || event.metaKey) return "zoom";
+  if (event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return "horizontal";
+  return "vertical";
+}
+
 function isTextEntryTarget(targetTagName?: string, isContentEditable = false): boolean {
   return isContentEditable || (targetTagName !== undefined && TEXT_ENTRY_TAGS.has(targetTagName));
 }

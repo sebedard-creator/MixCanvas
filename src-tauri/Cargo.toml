@@ -1,6 +1,6 @@
 [package]
 name = "mixcanvas"
-version = "1.8.2"
+version = "1.9.0"
 description = "A focused, timeline-based DJ mix editor"
 authors = ["MixCanvas contributors"]
 edition = "2024"
@@ -74,9 +74,12 @@ embed-resources = []
 # déclarer ici ne coûte ni téléchargement ni compilation, et évite d'écrire un
 # rééchantillonneur maison là où il en existe un bon.
 rubato = "3.0"
-# `wav` sert aux stems : ils sortent de la séparation en PCM, et doivent
-# pouvoir rentrer par la même porte que les MP3 de la bibliothèque.
-rodio = { version = "0.22.2", default-features = false, features = ["playback", "mp3", "wav"] }
+# Rodio décode les sources MP3/WAV/FLAC et les stems PCM du programme.
+# Préécoutes, waveforms et mixage réutilisent ce même chemin.
+rodio = { version = "0.22.2", default-features = false, features = ["playback", "mp3", "wav", "flac"] }
+# Même Symphonia que Rodio, uniquement pour lire les tags WAV/FLAC sans
+# maintenir des parseurs de conteneurs supplémentaires.
+symphonia = { version = "0.5.5", default-features = false, features = ["mp3", "wav", "pcm", "flac"] }
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"] }
 base64 = "0.22"
 serde = { version = "1.0.228", features = ["derive"] }

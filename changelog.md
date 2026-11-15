@@ -12,6 +12,25 @@ wrote it. What changed, and what it means when you sit down to build a mix.
 
 ---
 
+## 1.9.0 — 2026-11-15
+
+### Added
+
+- **WAV and FLAC imports alongside MP3.** Add files, scan folders or drop a
+  mixed batch into the window. Tags, waveforms, beat analysis, previews and
+  project saves use the same workflow for all three formats.
+- **A fourth stereo track, D**, with the same editing, automation, effects,
+  mute and solo controls as A–C. Existing sessions gain an empty fourth track.
+- **Vertical track scrolling.** Use the wheel to move up and down, Ctrl + wheel
+  to zoom, and Shift + wheel to move along the timeline. R/T still zoom.
+- **A discreet light/dark toggle beside HELP.** The matte graphite theme covers
+  the console, library and editing dialogs, and remembers your choice.
+
+### Compatibility
+
+- New saves use project format 2 and require this version. Older project files
+  still open; their missing fourth track starts with mute and solo off.
+
 ## 1.8.2 — 2026-10-17
 
 ### Added

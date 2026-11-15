@@ -1,4 +1,4 @@
-import { timelineLaneFromPointer } from "./timelineLane";
+import { TIMELINE_LANE_COUNT, timelineLaneFromPointer } from "./timelineLane";
 import { snapTimelineBeat } from "./timelineSnap";
 
 export const POINTER_DRAG_THRESHOLD_PX = 6;
@@ -14,6 +14,8 @@ export interface TimelineDropGeometry {
   contentLeft: number;
   viewportLeft: number;
   viewportRight: number;
+  viewportTop: number;
+  viewportBottom: number;
   top: number;
   height: number;
 }
@@ -37,11 +39,13 @@ export function resolveTimelinePointerDrop(
   clientY: number,
   geometry: TimelineDropGeometry,
   pixelsPerBeat: number,
-  laneCount = 3,
+  laneCount: number = TIMELINE_LANE_COUNT,
 ): TimelinePointerDrop | null {
   const bottom = geometry.top + geometry.height;
   const isInside = clientX >= geometry.viewportLeft
     && clientX <= geometry.viewportRight
+    && clientY >= geometry.viewportTop
+    && clientY <= geometry.viewportBottom
     && clientY >= geometry.top
     && clientY <= bottom;
   if (!isInside || pixelsPerBeat <= 0 || laneCount <= 0) {

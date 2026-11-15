@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { TIMELINE_LANES } from "./timelineLane";
 
 import {
   DEFAULT_TRACK_GAIN_DB,
@@ -22,7 +23,7 @@ describe("volumeCurve", () => {
     // The regression that motivated this module: grabbing a node used to
     // resolve its own drawn position to a different gain, so the node jumped
     // to silence before it started following the pointer.
-    for (const lane of [0, 1, 2]) {
+    for (const lane of TIMELINE_LANES) {
       for (const gainDb of [VOLUME_MAX_DB, 6, 0.5, 0, -3, -6, -24, -39.9]) {
         const y = volumeNodeY(lane, gainDb);
         expect(volumeNodeGainDb(lane, y)).toBeCloseTo(gainDb, 1);
@@ -31,7 +32,7 @@ describe("volumeCurve", () => {
   });
 
   it("keeps silence at the bottom of the travel, where it is drawn", () => {
-    for (const lane of [0, 1, 2]) {
+    for (const lane of TIMELINE_LANES) {
       const y = volumeNodeY(lane, null);
       expect(volumeNodeGainDb(lane, y)).toBeNull();
       // A node flipping to silence must not move.
@@ -79,7 +80,7 @@ describe("volumeCurve", () => {
   });
 
   it("stays inside the audio lane, clear of the filter sub-lane above it", () => {
-    for (const lane of [0, 1, 2]) {
+    for (const lane of TIMELINE_LANES) {
       const laneTop = lane * LANE_PAIR_UNITS;
       const highest = volumeNodeY(lane, VOLUME_MAX_DB) - laneTop;
       const lowest = volumeNodeY(lane, null) - laneTop;
@@ -89,8 +90,8 @@ describe("volumeCurve", () => {
   });
 
   it("maps a pointer through the viewBox rather than through pixels", () => {
-    // Half way down a 300 px tall element is half way down the 450 unit box.
-    expect(automationUnitsAtPointer(200, 50, 300)).toBeCloseTo(225, 6);
+    // Half way down a 300 px tall element is half way down the 600 unit box.
+    expect(automationUnitsAtPointer(200, 50, 300)).toBeCloseTo(300, 6);
     expect(automationUnitsAtPointer(50, 50, 300)).toBe(0);
     expect(automationUnitsAtPointer(100, 0, 0)).toBe(0);
   });
@@ -107,14 +108,14 @@ describe("pan geometry", () => {
   it("puts left at the top and right at the bottom", () => {
     // Rien dans une image stéréo ne désigne un haut : la convention doit être
     // écrite une fois et tenue partout.
-    for (const lane of [0, 1, 2]) {
+    for (const lane of TIMELINE_LANES) {
       expect(panNodeY(lane, -1)).toBeLessThan(panCentreY(lane));
       expect(panNodeY(lane, 1)).toBeGreaterThan(panCentreY(lane));
     }
   });
 
   it("reads back the value a node is drawn at", () => {
-    for (const lane of [0, 1, 2]) {
+    for (const lane of TIMELINE_LANES) {
       for (const value of [-1, -0.5, -0.25, 0, 0.33, 0.75, 1]) {
         expect(panNodeValue(lane, panNodeY(lane, value))).toBeCloseTo(value, 2);
       }
@@ -127,7 +128,7 @@ describe("pan geometry", () => {
   });
 
   it("sits inside the audio lane, clear of the filter sub-lane", () => {
-    for (const lane of [0, 1, 2]) {
+    for (const lane of TIMELINE_LANES) {
       const top = panNodeY(lane, -1) - lane * LANE_PAIR_UNITS;
       const bottom = panNodeY(lane, 1) - lane * LANE_PAIR_UNITS;
       expect(top).toBeGreaterThan(FILTER_LANE_UNITS);

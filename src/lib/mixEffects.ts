@@ -7,9 +7,6 @@
  * une règle écrite à deux endroits, qui finit par diverger.
  */
 
-/** Trois pistes stéréo : A, B et C. */
-export const TIMELINE_LANE_COUNT = 3;
-
 /**
  * Les effets qu'on joue à la main, dans l'ordre où ils se présentent.
  *
@@ -41,11 +38,6 @@ export const EFFECT_LABELS: Record<PlayedEffect, string> = {
   bitcrush: "CRUSH",
   delay: "DELAY",
 };
-
-/** La lettre d'une piste, telle qu'elle s'affiche partout. */
-export function laneLetter(lane: number): string {
-  return String.fromCharCode(65 + lane);
-}
 
 export interface ReverbNode {
   beat: number;

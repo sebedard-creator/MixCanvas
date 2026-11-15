@@ -12,12 +12,15 @@ use std::{
 
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player, Source, source::SeekError};
 
-use crate::{tempo::TempoMap, timeline::TimelineRenderPlan};
+use crate::{
+    tempo::TempoMap,
+    timeline::{TIMELINE_LANE_COUNT, TimelineRenderPlan},
+};
 
 use super::bitcrush::BitCrusher;
 use super::delay::{DELAY_BEATS, Delay};
 use super::flanger::Flanger;
-use super::metadata::{Mp3Decoder, open_mp3_decoder};
+use super::metadata::{AudioDecoder, open_audio_decoder};
 use super::reverb::Reverb;
 
 const FALLBACK_OUTPUT_SAMPLE_RATE: u32 = 44_100;
@@ -1136,7 +1139,7 @@ fn filter_makeup_gain(value: f32) -> f32 {
 }
 
 struct PcmWindow {
-    decoder: Mp3Decoder,
+    decoder: AudioDecoder,
     source_sample_rate: u32,
     source_channels: usize,
     samples: VecDeque<f32>,
@@ -1148,7 +1151,7 @@ struct PcmWindow {
 
 impl PcmWindow {
     fn open(path: &Path) -> Result<Self, String> {
-        let decoder = open_mp3_decoder(path)?;
+        let decoder = open_audio_decoder(path)?;
         let source_sample_rate = decoder.sample_rate().get();
         let source_channels = usize::from(decoder.channels().get());
         Ok(Self {
@@ -1203,7 +1206,7 @@ impl PcmWindow {
             .try_seek(Duration::from_secs_f64(
                 source_frame as f64 / f64::from(self.source_sample_rate),
             ))
-            .map_err(|error| format!("Could not position the MP3 decoder: {error}"))?;
+            .map_err(|error| format!("Could not position the audio decoder: {error}"))?;
         self.samples.clear();
         self.window_start_frame = source_frame;
         self.decoded_end_frame = source_frame;
@@ -1769,15 +1772,15 @@ pub(crate) struct TimelineMixSource {
     position_sample: usize,
     next_start_index: usize,
     active_indices: Vec<usize>,
-    volume_automation: [VolumeAutomation; 3],
-    pan_automation: [PanAutomation; 3],
-    filter_automation: [FilterAutomation; 3],
-    reverb_automation: [SendAutomation; 3],
-    flanger_automation: [SendAutomation; 3],
-    bitcrush_automation: [SendAutomation; 3],
-    delay_automation: [SendAutomation; 3],
-    filter_states: [LaneFilterState; 3],
-    filter_values: [f32; 3],
+    volume_automation: [VolumeAutomation; TIMELINE_LANE_COUNT],
+    pan_automation: [PanAutomation; TIMELINE_LANE_COUNT],
+    filter_automation: [FilterAutomation; TIMELINE_LANE_COUNT],
+    reverb_automation: [SendAutomation; TIMELINE_LANE_COUNT],
+    flanger_automation: [SendAutomation; TIMELINE_LANE_COUNT],
+    bitcrush_automation: [SendAutomation; TIMELINE_LANE_COUNT],
+    delay_automation: [SendAutomation; TIMELINE_LANE_COUNT],
+    filter_states: [LaneFilterState; TIMELINE_LANE_COUNT],
+    filter_values: [f32; TIMELINE_LANE_COUNT],
     audible_lane_mask: Arc<AtomicU8>,
     limiter_enabled: Arc<AtomicBool>,
     compressor_enabled: Arc<AtomicBool>,
@@ -1829,19 +1832,19 @@ pub(crate) struct TimelineMixSource {
     /// Un créneau franc claque. La montée est courte et fixe — assez pour
     /// tomber sur le temps —, la descente suit le tempo, si bien qu'elle
     /// respire avec le morceau au lieu d'être une constante arbitraire.
-    reverb_sends: [f32; 3],
-    flanger_sends: [f32; 3],
+    reverb_sends: [f32; TIMELINE_LANE_COUNT],
+    flanger_sends: [f32; TIMELINE_LANE_COUNT],
     /// Le dosage du bitcrush par voie.
     ///
     /// « Envoi » est un abus de langage ici : rien n'est envoyé nulle part, ce
     /// nombre est la position d'un fondu entre le son sec et le son broyé. Il
     /// suit pourtant exactement la même rampe que les deux autres, puisque
     /// c'est le même geste qui le pilote.
-    bitcrush_sends: [f32; 3],
+    bitcrush_sends: [f32; TIMELINE_LANE_COUNT],
     /// Un broyeur par voie : c'est un insert, il travaille sur le signal de
     /// **cette** piste.
-    bitcrushers: [BitCrusher; 3],
-    delay_sends: [f32; 3],
+    bitcrushers: [BitCrusher; TIMELINE_LANE_COUNT],
+    delay_sends: [f32; TIMELINE_LANE_COUNT],
     limiter: MasterLimiter,
     /// L'écoute garde sa borne; le bounce mastérisé laisse les crêtes au limiteur hors ligne.
     monitor_bound_enabled: bool,
@@ -1896,7 +1899,7 @@ impl Clone for TimelineMixSource {
             bitcrush_automation: self.bitcrush_automation.clone(),
             delay_automation: self.delay_automation.clone(),
             filter_states: std::array::from_fn(|_| LaneFilterState::default()),
-            filter_values: [0.0; 3],
+            filter_values: [0.0; TIMELINE_LANE_COUNT],
             audible_lane_mask: Arc::clone(&self.audible_lane_mask),
             limiter_enabled: Arc::clone(&self.limiter_enabled),
             compressor_enabled: Arc::clone(&self.compressor_enabled),
@@ -1911,10 +1914,10 @@ impl Clone for TimelineMixSource {
             bitcrush_keys: Arc::clone(&self.bitcrush_keys),
             delay_keys: Arc::clone(&self.delay_keys),
             effect_erase: Arc::clone(&self.effect_erase),
-            reverb_sends: [0.0; 3],
-            flanger_sends: [0.0; 3],
-            bitcrush_sends: [0.0; 3],
-            delay_sends: [0.0; 3],
+            reverb_sends: [0.0; TIMELINE_LANE_COUNT],
+            flanger_sends: [0.0; TIMELINE_LANE_COUNT],
+            bitcrush_sends: [0.0; TIMELINE_LANE_COUNT],
+            delay_sends: [0.0; TIMELINE_LANE_COUNT],
             limiter: MasterLimiter::default(),
             monitor_bound_enabled: self.monitor_bound_enabled,
             pending_frame: [0.0; OUTPUT_CHANNELS as usize],
@@ -1943,13 +1946,13 @@ struct MasterDynamics {
 /// The per-lane automation curves, which always travel together.
 #[derive(Clone, Debug)]
 struct LaneAutomation {
-    volume: [VolumeAutomation; 3],
-    pan: [PanAutomation; 3],
-    filter: [FilterAutomation; 3],
-    reverb: [SendAutomation; 3],
-    flanger: [SendAutomation; 3],
-    bitcrush: [SendAutomation; 3],
-    delay: [SendAutomation; 3],
+    volume: [VolumeAutomation; TIMELINE_LANE_COUNT],
+    pan: [PanAutomation; TIMELINE_LANE_COUNT],
+    filter: [FilterAutomation; TIMELINE_LANE_COUNT],
+    reverb: [SendAutomation; TIMELINE_LANE_COUNT],
+    flanger: [SendAutomation; TIMELINE_LANE_COUNT],
+    bitcrush: [SendAutomation; TIMELINE_LANE_COUNT],
+    delay: [SendAutomation; TIMELINE_LANE_COUNT],
 }
 
 impl TimelineMixSource {
@@ -1978,7 +1981,7 @@ impl TimelineMixSource {
             bitcrush_automation: automation.bitcrush,
             delay_automation: automation.delay,
             filter_states: std::array::from_fn(|_| LaneFilterState::default()),
-            filter_values: [0.0; 3],
+            filter_values: [0.0; TIMELINE_LANE_COUNT],
             audible_lane_mask: Arc::new(AtomicU8::new(audible_lane_mask)),
             limiter_enabled: Arc::new(AtomicBool::new(dynamics.limiter_enabled)),
             compressor_enabled: Arc::new(AtomicBool::new(dynamics.compressor_enabled)),
@@ -1994,10 +1997,10 @@ impl TimelineMixSource {
             bitcrush_keys: Arc::new(AtomicU8::new(0)),
             delay_keys: Arc::new(AtomicU8::new(0)),
             effect_erase: Arc::new(AtomicU8::new(0)),
-            reverb_sends: [0.0; 3],
-            flanger_sends: [0.0; 3],
-            bitcrush_sends: [0.0; 3],
-            delay_sends: [0.0; 3],
+            reverb_sends: [0.0; TIMELINE_LANE_COUNT],
+            flanger_sends: [0.0; TIMELINE_LANE_COUNT],
+            bitcrush_sends: [0.0; TIMELINE_LANE_COUNT],
+            delay_sends: [0.0; TIMELINE_LANE_COUNT],
             limiter: MasterLimiter::default(),
             monitor_bound_enabled: true,
             pending_frame: [0.0; OUTPUT_CHANNELS as usize],
@@ -2285,13 +2288,13 @@ impl TimelineMixSource {
         // les canaux : les deux canaux doivent être retenus et relâchés
         // ensemble, sans quoi leur maintien glisserait de l'un à l'autre et
         // l'image stéréo se déchirerait.
-        let mut crush_latch = [false; 3];
+        let mut crush_latch = [false; TIMELINE_LANE_COUNT];
         for (lane, latch) in crush_latch.iter_mut().enumerate() {
             *latch = self.bitcrushers[lane].tick();
         }
 
         for (channel, master_sample) in master.iter_mut().enumerate() {
-            let mut lane_mix = [0.0_f32; 3];
+            let mut lane_mix = [0.0_f32; TIMELINE_LANE_COUNT];
             for active_position in 0..self.active_indices.len() {
                 let clip_index = self.active_indices[active_position];
                 let lane = self.clips[clip_index].lane;
@@ -2920,7 +2923,7 @@ pub(crate) fn prepare_timeline(
             &clip.file_path,
         )?;
         if verify_files && verified_paths.insert(clip.file_path.clone()) {
-            open_mp3_decoder(Path::new(&clip.file_path))?;
+            open_audio_decoder(Path::new(&clip.file_path))?;
         }
         let start_seconds = plan.tempo_map.seconds_at_beat(clip.visual_start_beat);
         let start_frame = seconds_to_frames(start_seconds, output_sample_rate)?;
@@ -2930,7 +2933,7 @@ pub(crate) fn prepare_timeline(
         total_frames = total_frames.max(start_frame.saturating_add(output_frames));
         let lane = usize::try_from(clip.lane)
             .map_err(|_| "This clip's audio track is not valid.".to_owned())?;
-        if lane >= 3 {
+        if lane >= TIMELINE_LANE_COUNT {
             return Err("This clip's audio track is not valid.".to_owned());
         }
         clips.push(PlacedClip {
@@ -2952,7 +2955,7 @@ pub(crate) fn prepare_timeline(
         });
     }
 
-    let mut volume_automation: [VolumeAutomation; 3] =
+    let mut volume_automation: [VolumeAutomation; TIMELINE_LANE_COUNT] =
         std::array::from_fn(|_| VolumeAutomation::default());
     for node in &plan.volume_nodes {
         let lane = usize::try_from(node.lane)
@@ -2969,7 +2972,8 @@ pub(crate) fn prepare_timeline(
         });
     }
 
-    let mut pan_automation: [PanAutomation; 3] = std::array::from_fn(|_| PanAutomation::default());
+    let mut pan_automation: [PanAutomation; TIMELINE_LANE_COUNT] =
+        std::array::from_fn(|_| PanAutomation::default());
     for node in &plan.pan_nodes {
         let lane =
             usize::try_from(node.lane).map_err(|_| "The Pan Node lane is invalid.".to_owned())?;
@@ -2985,7 +2989,7 @@ pub(crate) fn prepare_timeline(
         });
     }
 
-    let mut filter_automation: [FilterAutomation; 3] =
+    let mut filter_automation: [FilterAutomation; TIMELINE_LANE_COUNT] =
         std::array::from_fn(|_| FilterAutomation::default());
     for node in &plan.filter_nodes {
         let lane = usize::try_from(node.lane)
@@ -3006,7 +3010,7 @@ pub(crate) fn prepare_timeline(
     // Les deux effets joués se convertissent de la même façon : mêmes nœuds,
     // même passage des beats aux images. Une boucle plutôt que deux blocs
     // jumeaux, pour qu'ils ne puissent pas diverger.
-    let mut played_automation: [[SendAutomation; 3]; 4] =
+    let mut played_automation: [[SendAutomation; TIMELINE_LANE_COUNT]; 4] =
         std::array::from_fn(|_| std::array::from_fn(|_| SendAutomation::default()));
     for (slot, nodes) in [
         &plan.reverb_nodes,
@@ -3215,7 +3219,9 @@ mod tests {
     };
     use crate::{
         tempo::{TempoMap, TempoPoint},
-        timeline::{TimelineRenderClip, TimelineRenderPlan, TimelineVolumeNode},
+        timeline::{
+            TIMELINE_LANE_COUNT, TimelineRenderClip, TimelineRenderPlan, TimelineVolumeNode,
+        },
     };
     use rodio::Source;
     use std::sync::{Arc, Mutex};
@@ -3269,7 +3275,7 @@ mod tests {
         TempoMap::new(120.0, Vec::new()).expect("valid constant tempo")
     }
 
-    fn unity_automation() -> [VolumeAutomation; 3] {
+    fn unity_automation() -> [VolumeAutomation; TIMELINE_LANE_COUNT] {
         std::array::from_fn(|_| VolumeAutomation::default())
     }
 
@@ -3337,11 +3343,11 @@ mod tests {
     }
 
     /// Panoramique au centre : ce que produit une piste sans nœud.
-    fn centred_pan_automation() -> [PanAutomation; 3] {
+    fn centred_pan_automation() -> [PanAutomation; TIMELINE_LANE_COUNT] {
         std::array::from_fn(|_| PanAutomation::default())
     }
 
-    fn bypass_filter_automation() -> [FilterAutomation; 3] {
+    fn bypass_filter_automation() -> [FilterAutomation; TIMELINE_LANE_COUNT] {
         std::array::from_fn(|_| FilterAutomation::default())
     }
 
@@ -4271,7 +4277,7 @@ mod tests {
             )
             .expect("le rendu devrait aboutir");
 
-            let decodeur = super::open_mp3_decoder(&rendu).expect("le rendu devrait se relire");
+            let decodeur = super::open_audio_decoder(&rendu).expect("le rendu devrait se relire");
             let sortie: Vec<f32> = decodeur.collect();
             let (creux, bosse) = enveloppe(&sortie);
             let parasite = hors_partiels(&sortie, &partiels, taux);
@@ -4398,7 +4404,7 @@ mod tests {
         )
         .expect("le rendu devrait aboutir");
 
-        let sortie: Vec<f32> = super::open_mp3_decoder(&rendu)
+        let sortie: Vec<f32> = super::open_audio_decoder(&rendu)
             .expect("le rendu devrait se relire")
             .collect();
         let mono: Vec<f32> = sortie.chunks(2).map(|paire| paire[0]).collect();
@@ -5089,6 +5095,108 @@ mod tests {
                 "COMP should reach the render as the project saved it"
             );
         }
+    }
+
+    #[test]
+    fn fourth_track_audio_and_automation_reach_the_stereo_mix() {
+        use crate::audio::stems::write_stereo_wav;
+        use crate::timeline::{TimelinePanNode, TimelineReverbNode};
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("mixcanvas-track-d-{stamp}.wav"));
+        let signal: Vec<f32> = (0..8_820)
+            .map(|frame| (TAU * 440.0 * frame as f64 / 44_100.0).sin() as f32 * 0.1)
+            .collect();
+        write_stereo_wav(&path, &signal, &signal).unwrap();
+        let mut plan = TimelineRenderPlan {
+            project_bpm: 120.0,
+            tempo_map: constant_tempo(),
+            end_beat: 0.4,
+            audible_lane_mask: 0b1000,
+            limiter_enabled: false,
+            compressor_enabled: false,
+            clips: vec![TimelineRenderClip {
+                id: 1,
+                lane: 3,
+                file_path: path.to_string_lossy().into_owned(),
+                source_bpm: 120.0,
+                first_beat_ms: 0,
+                anchor_beat: 0.0,
+                visual_start_beat: 0.0,
+                duration_beats: 0.4,
+                trim_start_beats: 0.0,
+                trim_end_beats: 0.0,
+                is_sidechain_key: false,
+                ducks_under_key: false,
+                eq_settings: None,
+            }],
+            volume_nodes: Vec::new(),
+            pan_nodes: Vec::new(),
+            filter_nodes: Vec::new(),
+            reverb_nodes: Vec::new(),
+            flanger_nodes: Vec::new(),
+            bitcrush_nodes: Vec::new(),
+            delay_nodes: Vec::new(),
+        };
+        let energy = |plan: &TimelineRenderPlan| {
+            let samples: Vec<f32> = prepare_timeline(plan, true, 44_100)
+                .unwrap()
+                .take(8_000)
+                .collect();
+            samples
+                .chunks_exact(2)
+                .fold([0.0_f64; 2], |mut sum, frame| {
+                    for channel in 0..2 {
+                        sum[channel] += f64::from(frame[channel]).powi(2);
+                    }
+                    sum
+                })
+        };
+        let audible = energy(&plan);
+        assert!(
+            audible[0] > 0.1 && audible[1] > 0.1,
+            "D must produce stereo audio: {audible:?}"
+        );
+        plan.audible_lane_mask = 0b0111;
+        assert_eq!(energy(&plan), [0.0; 2], "muting D must silence it");
+        plan.audible_lane_mask = 0b1000;
+        plan.volume_nodes.push(TimelineVolumeNode {
+            id: 1,
+            lane: 3,
+            beat: 0.0,
+            gain_db: None,
+            draw_group_id: None,
+        });
+        assert_eq!(
+            energy(&plan),
+            [0.0; 2],
+            "D's volume automation must reach the mix"
+        );
+        plan.volume_nodes.clear();
+        plan.pan_nodes.push(TimelinePanNode {
+            id: 1,
+            lane: 3,
+            beat: 0.0,
+            value: 1.0,
+            draw_group_id: None,
+        });
+        let panned = energy(&plan);
+        assert!(
+            panned[0] < 1.0e-8 && panned[1] > 0.1,
+            "D must pan right: {panned:?}"
+        );
+        plan.reverb_nodes.push(TimelineReverbNode {
+            id: 1,
+            lane: 3,
+            beat: 0.0,
+            value: 0.5,
+        });
+        let source = prepare_timeline(&plan, true, 44_100).unwrap();
+        assert_eq!(source.reverb_automation[3].points.len(), 1);
+        drop(source);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

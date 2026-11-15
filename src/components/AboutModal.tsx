@@ -34,7 +34,7 @@ const CREDITS: Credit[] = [
   { name: "Vite", licence: "MIT", role: "Build tooling" },
   { name: "rodio", licence: "MIT / Apache-2.0", role: "Audio playback" },
   { name: "cpal", licence: "Apache-2.0", role: "Audio device access" },
-  { name: "Symphonia", licence: "MPL-2.0", role: "MP3 and WAV decoding" },
+  { name: "Symphonia", licence: "MPL-2.0", role: "MP3, WAV and FLAC decoding" },
   { name: "LAME 3.100", licence: "LGPL-2.1", role: "MP3 encoding on bounce" },
   { name: "rubato", licence: "MIT", role: "Sample rate conversion" },
   { name: "rusqlite · SQLite", licence: "MIT · Public domain", role: "Library and project storage" },

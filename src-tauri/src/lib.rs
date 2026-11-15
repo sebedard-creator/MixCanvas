@@ -16,7 +16,7 @@ use std::{
     },
 };
 
-use analysis::{BeatModelPaths, analyze_mp3, analyze_mp3_near, analyze_waveform};
+use analysis::{BeatModelPaths, analyze_audio, analyze_audio_near, analyze_waveform};
 use audio::{
     BounceFormat, BounceSummary, PreviewEngine, PreviewSnapshot, TimelinePlaybackEngine,
     bounce_timeline, bounce_timeline_with_normalization,
@@ -1826,7 +1826,7 @@ async fn refine_tapped_tempo(
     let models = beat_analysis_resources(&app)?;
 
     tauri::async_runtime::spawn_blocking(move || {
-        let analysis = analyze_mp3_near(std::path::Path::new(&path), tapped_bpm, &models)?;
+        let analysis = analyze_audio_near(std::path::Path::new(&path), tapped_bpm, &models)?;
         let first_beat_ms = snap_manual_downbeat(anchor_ms, analysis.bpm, analysis.first_beat_ms);
         Ok(TempoSuggestion {
             bpm: analysis.bpm,
@@ -1947,7 +1947,7 @@ fn run_analysis_batch(
             library.mark_analysis_running(target.id)?;
         }
 
-        match analyze_mp3(&target.file_path, models) {
+        match analyze_audio(&target.file_path, models) {
             Ok(analysis) => {
                 let mut library = library_state
                     .lock()

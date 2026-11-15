@@ -1,0 +1,347 @@
+/* The aluminium palette stays the default. Dark mode changes the shared
+   surface roles; effect colours, lamps and transport states keep their meaning.
+   Matte graphite has its own lighting: fine edges, recessed displays and
+   restrained highlights instead of the aluminium theme's bright bevels. */
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --console-surface: #1b1e23;
+  --lane-surface: #15191d;
+  --control-top: #292e35;
+  --control-bottom: #292e35;
+  --control-hover: #343b44;
+  --control-selected: #243d3c;
+  --control-sheen-opacity: 0;
+  --control-glint: 58, 65, 74;
+  --filter-surface: #1b2328;
+  --filter-grid: rgba(180, 198, 206, 0.13);
+  --filter-middle: rgba(180, 198, 206, 0.02);
+  --filter-zero: rgba(180, 198, 206, 0.18);
+  --surface-ink: #d9dfe3;
+  --surface-muted: #a0a9b1;
+  --surface-edge: #363e46;
+  --surface-highlight: #3b434c;
+  --surface-shadow: #121518;
+  --lane-downbeat: rgba(177, 195, 202, 0.18);
+  --lane-beat: rgba(177, 195, 202, 0.045);
+  --clip-surface: rgba(49, 69, 71, 0.48);
+  --waveform-ink: #a6c1c2;
+  --waveform-rms: #829fa1;
+  --waveform-peak: rgba(143, 182, 184, 0.16);
+  --waveform-zero: rgba(166, 193, 194, 0.18);
+  --dark-accent: #8fc9bf;
+  --dark-control-shadow: inset 0 1px rgba(255, 255, 255, 0.025), 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+
+:root[data-theme="dark"] body{
+  background: #101215;
+}
+
+:root[data-theme="dark"] button:focus-visible{
+  outline-color: var(--dark-accent);
+}
+
+:root[data-theme="dark"] :is(.timeline-panel, .library-panel){
+  border-color: #30363e;
+  background: #161a1e;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+}
+
+:root[data-theme="dark"] :is(.timeline-header, .library-header){
+  background: var(--console-surface);
+  border-color: #30363e;
+}
+
+:root[data-theme="dark"] .library-panel.library-panel--drop{
+  border-color: #67becd;
+  box-shadow: inset 0 0 0 1px rgba(103, 190, 205, 0.4), 0 0 18px rgba(103, 190, 205, 0.16);
+}
+
+:root[data-theme="dark"] .library-title-row h2{
+  color: #c9d2d7;
+  text-shadow: none;
+}
+
+/* The transport and FX sit in quiet recesses. Their lamps still carry state. */
+:root[data-theme="dark"] :is(.analog-transport, .stereo-vu-meter){
+  border-color: #2c333b;
+  background: #14181c;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+
+:root[data-theme="dark"] .analog-transport-button{
+  background: #2a3037;
+  box-shadow: 0 0 0 1px #3a424b, var(--dark-control-shadow);
+}
+
+:root[data-theme="dark"] .analog-transport-button:hover:not(:disabled):not(.is-disabled){
+  background: #343c45;
+}
+
+:root[data-theme="dark"] .analog-transport-button:active:not(:disabled):not(.is-disabled){
+  transform: translateY(1px);
+  box-shadow: 0 0 0 1px #46515b, inset 0 2px 3px rgba(0, 0, 0, 0.22);
+}
+
+:root[data-theme="dark"] .analog-auto-strip{
+  background: #22272d;
+  color: var(--surface-muted);
+  border-top-color: #39414a;
+}
+
+:root[data-theme="dark"] :is(.draw-half--period, .draw-half:first-child){
+  background: transparent;
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .draw-half--period{
+  border-left: 1px solid #414953;
+}
+
+:root[data-theme="dark"] .draw-half:hover:not(:disabled){
+  background: #3d4651;
+}
+
+:root[data-theme="dark"] .analog-fx-pad:not(.is-held){
+  background: #272d34;
+  box-shadow: 0 0 0 1px #363f48, var(--dark-control-shadow);
+}
+
+:root[data-theme="dark"] .analog-fx-pad:not(.is-held):hover:not([aria-disabled="true"]){
+  color: #eef2f5;
+  background: #39424c;
+}
+
+/* Secondary controls share one low-relief finish, including those on clips. */
+:root[data-theme="dark"] :is(
+  .help-btn, .bounce-btn:not(.bounce-btn--go), .project-bpm-control,
+  .undo-redo-btn, .library-actions .secondary-button,
+  .library-row .timeline-drag-handle, .library-row .bpm-value,
+  .library-sort button, .lane-filter-hint, .lane-tempo-hint,
+  .timeline-lane-controls-row button:not(.is-active),
+  .clip-heading button:not(.is-active), .editor-close-button,
+  .bpm-edit-row > button, .bpm-edit-row .tempo-assist > button,
+  .first-beat-row > button, .beatgrid-editor .text-button,
+  .timeline-scrollbar-thumb, .help-keycap
+){
+  border-color: var(--surface-edge);
+  background: #292e35;
+  color: var(--surface-ink);
+  box-shadow: var(--dark-control-shadow);
+}
+
+:root[data-theme="dark"] :is(
+  .help-btn, .undo-redo-btn, .library-actions .secondary-button,
+  .library-row .timeline-drag-handle, .library-row .bpm-value,
+  .library-sort button:not(.is-selected), .timeline-lane-controls-row button:not(.is-active)
+):hover:not(:disabled){
+  border-color: #55616d;
+  background: #343d46;
+}
+
+:root[data-theme="dark"] .timeline-lane-controls-row button:focus-visible{
+  outline: 2px solid var(--dark-accent);
+  outline-offset: 2px;
+}
+
+:root[data-theme="dark"] :is(.project-bpm-control, .bounce-btn:not(.bounce-btn--go)){
+  background: #242a30;
+}
+
+:root[data-theme="dark"] .bpm-value-display{
+  color: #b7d4cf;
+  background: #151c20;
+  border-color: #364047;
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .theme-toggle:hover{
+  color: var(--dark-accent);
+}
+
+:root[data-theme="dark"] :is(
+  .primary-button, .library-actions .primary-button, .bounce-btn--go,
+  .mini-preview-toggle, .clip-eq-btn--save, .help-modal-done-btn
+){
+  color: #edf6f3;
+  background: #315e57;
+  border-color: #4b7e74;
+  box-shadow: var(--dark-control-shadow);
+}
+
+:root[data-theme="dark"] :is(
+  .primary-button, .library-actions .primary-button, .bounce-btn--go,
+  .mini-preview-toggle, .clip-eq-btn--save, .help-modal-done-btn
+):hover:not(:disabled){
+  background: #3a7066;
+  border-color: #6a9e92;
+}
+
+:root[data-theme="dark"] .library-sort button.is-selected{
+  color: #bddfd7;
+  background: #2b3c3c;
+  border-color: #496661;
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .library-table{
+  background: #161a1e;
+  scrollbar-color: #46515b #161a1e;
+}
+
+:root[data-theme="dark"] .library-row{
+  background: #1c2126;
+  border-bottom-color: #2c333b;
+}
+
+:root[data-theme="dark"] .library-row:hover{
+  background: #272f36;
+}
+
+:root[data-theme="dark"] .library-row--active{
+  background: #2b3c3c !important;
+}
+
+:root[data-theme="dark"] .library-row--in-use{
+  background: repeating-linear-gradient(135deg, rgba(143, 201, 191, 0.035) 0 2px, transparent 2px 8px), #1f292c !important;
+}
+
+:root[data-theme="dark"] .library-row--active.library-row--in-use{
+  background: repeating-linear-gradient(135deg, rgba(143, 201, 191, 0.07) 0 2px, transparent 2px 8px), #2b3c3c !important;
+}
+
+:root[data-theme="dark"] .library-row .bpm-value--manual{
+  background: #243845;
+  border-color: #456b7f;
+}
+
+:root[data-theme="dark"] .library-row .bpm-edit-hint{
+  color: #a8b3bd;
+}
+
+/* The arrangement is darker than the console. Grid lines stay behind audio. */
+:root[data-theme="dark"] .timeline-scroll{
+  background: #121619;
+}
+
+:root[data-theme="dark"] .timeline-ruler{
+  background: #20262c;
+  border-bottom-color: #3a434b;
+  color: #b0bcc5;
+}
+
+:root[data-theme="dark"] .timeline-lane::before{
+  background: transparent;
+}
+
+:root[data-theme="dark"] .timeline-lane:not(.timeline-lane--drop-target)::after{
+  background: #101518;
+  border-top: 1px solid #2a333a;
+}
+
+:root[data-theme="dark"] .timeline-lane--inaudible{
+  background-color: #14181b;
+}
+
+:root[data-theme="dark"] .measure-marker{
+  border-left-color: #3c464e;
+}
+
+:root[data-theme="dark"] .timeline-clip{
+  border-color: #486165;
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .timeline-clip:active{
+  border-color: #d6a35a;
+}
+
+:root[data-theme="dark"] .timeline-clip--sidechain-key{
+  border-color: #d6a35a;
+}
+
+:root[data-theme="dark"] :is(.volume-automation-lines path, .timeline-tempo-curve path){
+  stroke: #91a6b0;
+}
+
+:root[data-theme="dark"] .clip-heading{
+  background: #2d4042;
+  border-bottom-color: #486165;
+}
+
+:root[data-theme="dark"] .clip-heading span{
+  color: #b2c8c8;
+}
+
+:root[data-theme="dark"] .clip-heading button:not(.is-active){
+  background: #283638;
+  border-color: #4b6062;
+  color: #c2d2d3;
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .clip-heading button:not(.is-active):hover:not(:disabled){
+  background: #3b5052;
+  color: #f0f7f6;
+}
+
+:root[data-theme="dark"] .clip-heading .clip-remove-btn:hover:not(:disabled){
+  border-color: #c06666;
+  color: #ffc5c5;
+  background: #5a2c2c;
+}
+
+:root[data-theme="dark"] .timeline-clip:is(.timeline-clip--missing, .timeline-clip--invalid){
+  border-color: #db7373;
+  background: rgba(97, 40, 40, 0.45);
+}
+
+:root[data-theme="dark"] .timeline-clip--trim-start{
+  box-shadow: inset 3px 0 #dc2626;
+}
+
+:root[data-theme="dark"] .timeline-clip--trim-end{
+  box-shadow: inset -3px 0 #dc2626;
+}
+
+:root[data-theme="dark"] .timeline-clip--sidechain-ducked{
+  box-shadow: inset 3px 0 rgba(16, 185, 129, 0.75);
+}
+
+:root[data-theme="dark"] .timeline-scrollbar-thumb:hover{
+  background: #3a454f;
+  border-color: #52616e;
+}
+
+/* Floating surfaces use the same graphite, with no aluminium underlining. */
+:root[data-theme="dark"] :is(.timeline-context-menu, .library-context-menu, .bounce-options, .clip-eq-modal-dialog){
+  background: #20262c;
+  border-color: #46515b;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+}
+
+:root[data-theme="dark"] :is(.clip-eq-param-card, .bounce-format, .clip-eq-value-display){
+  background: #191f25;
+}
+
+:root[data-theme="dark"] .clip-eq-num-input{
+  width: 68px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--surface-ink);
+  font: 600 12px "Cascadia Code", Consolas, monospace;
+  text-align: right;
+}
+
+:root[data-theme="dark"] .clip-eq-num-input:focus-visible{
+  outline: 1px solid var(--dark-accent);
+}
+
+:root[data-theme="dark"] .bounce-format.is-picked{
+  background: #243d3c;
+  border-color: #699f96;
+}
+
+:root[data-theme="dark"] .bounce-options .bounce-gain{
+  color: #a4c9c0;
+}

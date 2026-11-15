@@ -26,7 +26,8 @@ const MAX_SHAPE_NODES: usize = 2_048;
 const SHAPE_EDGE_NODES: usize = 3;
 const MAX_STROKE_NODES: usize = MAX_SHAPE_NODES + SHAPE_EDGE_NODES;
 const MAX_TIMELINE_BEAT: f64 = 1_000_000.0;
-const MAX_LANE: i64 = 2;
+pub const TIMELINE_LANE_COUNT: usize = 4;
+const MAX_LANE: i64 = TIMELINE_LANE_COUNT as i64 - 1;
 /// Niveau d'une piste lÃ  oÃ¹ l'utilisateur n'a rien dÃ©cidÃ©.
 ///
 /// Deux morceaux beatmatchÃ©s ont leurs kicks en phase : ils s'additionnent de
@@ -1187,7 +1188,7 @@ pub fn add_clip(
              else, or onto a free track."
                 .to_owned()
         } else {
-            "All three tracks are already busy at this point. Move the playhead, \
+            "All four tracks are already busy at this point. Move the playhead, \
              or make room on one of them."
                 .to_owned()
         });
@@ -4005,7 +4006,7 @@ fn validate_bpm(bpm: f64) -> Result<(), String> {
 }
 
 /// Where an automatic placement starts looking: one lane on from the most
-/// recently added clip, so successive drops walk A, B, C rather than piling up.
+/// recently added clip, so successive drops walk A, B, C, D rather than piling up.
 ///
 /// The newest clip is the one with the highest id, since ids are handed out in
 /// insertion order â€” the order the clips sit in the timeline says nothing about
@@ -4020,7 +4021,7 @@ fn next_rotation_lane(clips: &[TimelineClip]) -> i64 {
 
 fn validate_lane(lane: i64) -> Result<(), String> {
     if !(0..=MAX_LANE).contains(&lane) {
-        return Err("The track has to be A, B or C.".to_owned());
+        return Err("The track has to be A, B, C or D.".to_owned());
     }
     Ok(())
 }
@@ -4991,9 +4992,9 @@ mod tests {
                 .expect("track should be inserted");
             let track_id = store.connection.last_insert_rowid();
 
-            // Three clips dropped at the same point walk A, B, C.
+            // Four clips dropped at the same point walk A, B, C, D.
             let mut lanes = Vec::new();
-            for _ in 0..3 {
+            for _ in 0..4 {
                 let snapshot = add_clip(&mut store.connection, track_id, Some(8.0), None)
                     .expect("each drop should find a free lane");
                 lanes.push(
@@ -5005,16 +5006,16 @@ mod tests {
                         .lane,
                 );
             }
-            assert_eq!(lanes, vec![0, 1, 2], "placements should walk the lanes");
+            assert_eq!(lanes, vec![0, 1, 2, 3], "placements should walk the lanes");
 
-            // The regression: a fourth drop at the same point brought the
+            // The regression: a fifth drop at the same point brought the
             // rotation back round to A, which is busy. Rotation only chooses
             // where to start looking, so this has to report that there is
             // genuinely nowhere left rather than refuse a lane it never tried.
             let full = add_clip(&mut store.connection, track_id, Some(8.0), None)
-                .expect_err("a fourth clip at the same point has nowhere to go");
+                .expect_err("a fifth clip at the same point has nowhere to go");
             assert!(
-                full.contains("All three tracks"),
+                full.contains("All four tracks"),
                 "the message should say every lane was tried, got {full}"
             );
 
@@ -5889,7 +5890,7 @@ mod tests {
                 "the other lane must be untouched"
             );
 
-            assert!(clear_filter_range(&store.connection, 3, 0.0, 4.0).is_err());
+            assert!(clear_filter_range(&store.connection, 4, 0.0, 4.0).is_err());
             assert!(clear_filter_range(&store.connection, 1, 8.0, 4.0).is_err());
             assert!(clear_filter_range(&store.connection, 1, f64::NAN, 4.0).is_err());
         }
@@ -6740,7 +6741,7 @@ mod tests {
         );
     }
 
-    /// La voie A n'a pas de dessus, la voie C pas de dessous.
+    /// La voie A n'a pas de dessus, la voie D pas de dessous.
     #[test]
     fn the_outer_lanes_only_have_one_neighbour() {
         let geometry = ClipGeometry {
@@ -6756,7 +6757,7 @@ mod tests {
         );
         assert_eq!(
             duplicate_placements(&geometry, MAX_LANE, 32, 0),
-            vec![(1, 32), (2, 36), (2, 28)]
+            vec![(2, 32), (3, 36), (3, 28)]
         );
     }
 

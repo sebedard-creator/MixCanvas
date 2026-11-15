@@ -6,8 +6,13 @@ use std::{
 };
 
 use rodio::{Decoder, Source};
+use symphonia::core::{
+    io::MediaSourceStream,
+    meta::{Limit, MetadataOptions, MetadataRevision, StandardTagKey},
+    probe::Hint,
+};
 
-pub(crate) type Mp3Decoder = Decoder<BufReader<File>>;
+pub(crate) type AudioDecoder = Decoder<BufReader<File>>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct AudioFileMetadata {
@@ -19,19 +24,20 @@ pub(crate) struct AudioFileMetadata {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Id3Tags {
+pub(crate) struct AudioTags {
     pub artist: Option<String>,
     pub title: Option<String>,
 }
 
-pub(crate) fn open_mp3_decoder(path: &Path) -> Result<Mp3Decoder, String> {
-    validate_mp3_path(path)?;
+pub(crate) fn open_audio_decoder(path: &Path) -> Result<AudioDecoder, String> {
+    validate_audio_path(path)?;
 
-    let file = File::open(path).map_err(|error| format!("Could not open the MP3: {error}"))?;
-    Decoder::try_from(file).map_err(|error| format!("Could not decode the MP3: {error}"))
+    let file =
+        File::open(path).map_err(|error| format!("Could not open the audio file: {error}"))?;
+    Decoder::try_from(file).map_err(|error| format!("Could not decode the audio file: {error}"))
 }
 
-pub(crate) fn metadata_from_decoder(decoder: &Mp3Decoder) -> AudioFileMetadata {
+pub(crate) fn metadata_from_decoder(decoder: &AudioDecoder) -> AudioFileMetadata {
     AudioFileMetadata {
         duration: decoder.total_duration().unwrap_or_default(),
         sample_rate: decoder.sample_rate().get(),
@@ -41,28 +47,78 @@ pub(crate) fn metadata_from_decoder(decoder: &Mp3Decoder) -> AudioFileMetadata {
     }
 }
 
-pub(crate) fn inspect_mp3(path: &Path) -> Result<AudioFileMetadata, String> {
-    let decoder = open_mp3_decoder(path)?;
+pub(crate) fn inspect_audio(path: &Path) -> Result<AudioFileMetadata, String> {
+    let decoder = open_audio_decoder(path)?;
     let mut metadata = metadata_from_decoder(&decoder);
-    let tags = read_mp3_id3_tags(path);
+    let tags = read_audio_tags(path);
     metadata.artist = tags.artist;
     metadata.title = tags.title;
     Ok(metadata)
 }
 
-pub(crate) fn read_mp3_id3_tags(path: &Path) -> Id3Tags {
+pub(crate) fn read_audio_tags(path: &Path) -> AudioTags {
+    if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("mp3"))
+    {
+        return read_mp3_id3_tags(path);
+    }
+    read_container_tags(path).unwrap_or_default()
+}
+
+fn read_container_tags(path: &Path) -> Option<AudioTags> {
+    if !is_supported_audio_path(path) {
+        return None;
+    }
+    let file = File::open(path).ok()?;
+    let source = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
+        hint.with_extension(extension);
+    }
+    let options = MetadataOptions {
+        limit_metadata_bytes: Limit::Maximum(16 * 1024 * 1024),
+        limit_visual_bytes: Limit::Maximum(0),
+    };
+    let mut probed = symphonia::default::get_probe()
+        .format(&hint, source, &Default::default(), &options)
+        .ok()?;
+    let mut tags = AudioTags::default();
+    if let Some(mut metadata) = probed.metadata.get() {
+        merge_container_tags(&mut tags, metadata.skip_to_latest());
+    }
+    merge_container_tags(&mut tags, probed.format.metadata().skip_to_latest());
+    Some(tags)
+}
+
+fn merge_container_tags(tags: &mut AudioTags, revision: Option<&MetadataRevision>) {
+    let Some(revision) = revision else { return };
+    for tag in revision.tags() {
+        match tag.std_key {
+            Some(StandardTagKey::Artist) if tags.artist.is_none() => {
+                tags.artist = clean_tag(tag.value.to_string());
+            }
+            Some(StandardTagKey::TrackTitle) if tags.title.is_none() => {
+                tags.title = clean_tag(tag.value.to_string());
+            }
+            _ => {}
+        }
+    }
+}
+
+fn read_mp3_id3_tags(path: &Path) -> AudioTags {
     let Ok(mut file) = File::open(path) else {
-        return Id3Tags::default();
+        return AudioTags::default();
     };
     let v2 = read_id3v2_tags(&mut file).unwrap_or_default();
     let v1 = read_id3v1_tags(&mut file).unwrap_or_default();
-    Id3Tags {
+    AudioTags {
         artist: v2.artist.or(v1.artist),
         title: v2.title.or(v1.title),
     }
 }
 
-fn read_id3v2_tags(file: &mut File) -> Option<Id3Tags> {
+fn read_id3v2_tags(file: &mut File) -> Option<AudioTags> {
     file.seek(SeekFrom::Start(0)).ok()?;
     let mut header = [0_u8; 10];
     file.read_exact(&mut header).ok()?;
@@ -81,7 +137,7 @@ fn read_id3v2_tags(file: &mut File) -> Option<Id3Tags> {
     Some(parse_id3v2_frames(header[3], &body))
 }
 
-fn read_id3v1_tags(file: &mut File) -> Option<Id3Tags> {
+fn read_id3v1_tags(file: &mut File) -> Option<AudioTags> {
     if file.seek(SeekFrom::End(-128)).is_err() {
         return None;
     }
@@ -90,14 +146,14 @@ fn read_id3v1_tags(file: &mut File) -> Option<Id3Tags> {
     if &tag[..3] != b"TAG" {
         return None;
     }
-    Some(Id3Tags {
+    Some(AudioTags {
         title: decode_latin1(&tag[3..33]),
         artist: decode_latin1(&tag[33..63]),
     })
 }
 
-fn parse_id3v2_frames(version: u8, body: &[u8]) -> Id3Tags {
-    let mut tags = Id3Tags::default();
+fn parse_id3v2_frames(version: u8, body: &[u8]) -> AudioTags {
+    let mut tags = AudioTags::default();
     let mut offset = 0_usize;
     let header_size = if version == 2 { 6 } else { 10 };
 
@@ -212,44 +268,103 @@ fn remove_unsynchronisation(bytes: &[u8]) -> Vec<u8> {
     result
 }
 
-/// Ce que le décodeur sait ouvrir.
-///
-/// Le MP3 est ce que l'utilisateur importe; le WAV est ce que le programme
-/// produit — les stems sortent de la séparation en PCM et doivent rentrer par
-/// la même porte, sans quoi ils ne seraient jouables par rien.
-pub(crate) const DECODABLE_EXTENSIONS: [&str; 2] = ["mp3", "wav"];
+/// Formats acceptés à l'import et par tous les chemins de décodage.
+pub(crate) const SUPPORTED_AUDIO_EXTENSIONS: [&str; 3] = ["mp3", "wav", "flac"];
 
-fn validate_mp3_path(path: &Path) -> Result<(), String> {
+pub(crate) fn is_supported_audio_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            SUPPORTED_AUDIO_EXTENSIONS
+                .iter()
+                .any(|known| extension.eq_ignore_ascii_case(known))
+        })
+}
+
+fn validate_audio_path(path: &Path) -> Result<(), String> {
     if !path.is_file() {
         return Err("The selected file does not exist, or cannot be read.".to_owned());
     }
-
-    let is_decodable = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            DECODABLE_EXTENSIONS
-                .iter()
-                .any(|known| extension.eq_ignore_ascii_case(known))
-        });
-
-    if !is_decodable {
-        return Err("This version accepts MP3 and WAV files only.".to_owned());
+    if !is_supported_audio_path(path) {
+        return Err("Supported audio formats are MP3, WAV and FLAC.".to_owned());
     }
-
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Id3Tags, parse_id3v2_frames, validate_mp3_path};
+    use super::{
+        AudioTags, inspect_audio, is_supported_audio_path, open_audio_decoder, parse_id3v2_frames,
+        validate_audio_path,
+    };
     use std::path::Path;
+    use std::time::Duration;
 
     #[test]
     fn rejects_a_path_that_is_not_a_file() {
-        let error = validate_mp3_path(Path::new("a-file-that-does-not-exist.mp3"));
+        let error = validate_audio_path(Path::new("a-file-that-does-not-exist.mp3"));
 
         assert!(error.is_err());
+    }
+
+    #[test]
+    fn imports_decode_and_seek_mp3_wav_and_flac_at_their_native_rates() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/audio");
+        for (name, rate, channels, seconds) in [
+            ("pcm24-stereo.wav", 48_000, 2, 0.25),
+            ("float32-mono.wav", 96_000, 1, 0.125),
+            ("tagged-stereo.flac", 48_000, 2, 0.25),
+            ("tagged-stereo.mp3", 44_100, 2, 2.0),
+        ] {
+            let path = fixtures.join(name);
+            let metadata = inspect_audio(&path).unwrap();
+            assert_eq!(metadata.sample_rate, rate, "{name}");
+            assert_eq!(metadata.channels, channels, "{name}");
+            assert!(
+                (metadata.duration.as_secs_f64() - seconds).abs() < 0.04,
+                "{name}: {:?}",
+                metadata.duration
+            );
+            let mut decoder = open_audio_decoder(&path).unwrap();
+            let energy: f32 = decoder
+                .by_ref()
+                .take(1024)
+                .map(|sample| sample * sample)
+                .sum();
+            assert!(energy > 0.1, "{name} must decode real samples");
+            rodio::Source::try_seek(&mut decoder, Duration::from_secs_f64(seconds / 2.0)).unwrap();
+            let energy: f32 = decoder.take(4096).map(|sample| sample * sample).sum();
+            assert!(energy > 0.1, "{name} must remain audible after a seek");
+            let waveform = crate::analysis::analyze_waveform(&path).unwrap();
+            assert!(
+                waveform.left_max.iter().any(|peak| *peak > 0.05),
+                "{name} waveform"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_id3_and_reads_riff_and_vorbis_artist_title_tags() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/audio");
+        for (name, artist, title) in [
+            ("pcm24-stereo.wav", "MixCanvas Test", "PCM 24"),
+            ("tagged-stereo.flac", "Équipe MixCanvas", "FLAC Test"),
+            ("tagged-stereo.mp3", "MixCanvas Test", "MP3 Test"),
+        ] {
+            let metadata = inspect_audio(&fixtures.join(name)).unwrap();
+            assert_eq!(metadata.artist.as_deref(), Some(artist), "{name}");
+            assert_eq!(metadata.title.as_deref(), Some(title), "{name}");
+        }
+    }
+
+    #[test]
+    fn accepts_uppercase_extensions_and_keeps_the_format_boundary() {
+        for name in ["TRACK.MP3", "TRACK.WaV", "TRACK.FLAC"] {
+            assert!(is_supported_audio_path(Path::new(name)));
+        }
+        for name in ["track.aac", "track.flac.exe", "track", "notes.txt"] {
+            assert!(!is_supported_audio_path(Path::new(name)));
+        }
     }
 
     #[test]
@@ -266,7 +381,7 @@ mod tests {
 
         assert_eq!(
             parse_id3v2_frames(3, &body),
-            Id3Tags {
+            AudioTags {
                 artist: Some("Bicep".to_owned()),
                 title: Some("Glue".to_owned()),
             }
@@ -285,7 +400,7 @@ mod tests {
 
         assert_eq!(
             parse_id3v2_frames(2, &body),
-            Id3Tags {
+            AudioTags {
                 artist: Some("Aphex".to_owned()),
                 title: Some("Xtal".to_owned()),
             }

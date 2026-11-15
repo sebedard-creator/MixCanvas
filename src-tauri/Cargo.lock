@@ -2087,7 +2087,7 @@ dependencies = [
 
 [[package]]
 name = "mixcanvas"
-version = "1.8.2"
+version = "1.9.0"
 dependencies = [
  "base64 0.22.1",
  "beat-this",
@@ -2099,6 +2099,7 @@ dependencies = [
  "rustfft",
  "serde",
  "serde_json",
+ "symphonia 0.5.5",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -3633,6 +3634,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5773a4c030a19d9bfaa090f49746ff35c75dfddfa700df7a5939d5e076a57039"
 dependencies = [
  "lazy_static",
+ "symphonia-bundle-flac 0.5.5",
  "symphonia-bundle-mp3 0.5.5",
  "symphonia-codec-pcm 0.5.5",
  "symphonia-core 0.5.5",
@@ -3647,7 +3649,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1758d6c853020a7244de03cc3e0185eaea3f58715122422dd3cc7452e6d4c16a"
 dependencies = [
  "lazy_static",
- "symphonia-bundle-flac",
+ "symphonia-bundle-flac 0.6.0",
  "symphonia-bundle-mp3 0.6.0",
  "symphonia-codec-aac",
  "symphonia-codec-adpcm",
@@ -3661,6 +3663,18 @@ dependencies = [
  "symphonia-format-ogg",
  "symphonia-format-riff 0.6.0",
  "symphonia-metadata 0.6.0",
+]
+
+[[package]]
+name = "symphonia-bundle-flac"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c91565e180aea25d9b80a910c546802526ffd0072d0b8974e3ebe59b686c9976"
+dependencies = [
+ "log",
+ "symphonia-core 0.5.5",
+ "symphonia-metadata 0.5.5",
+ "symphonia-utils-xiph",
 ]
 
 [[package]]
@@ -3895,6 +3909,16 @@ dependencies = [
  "regex-lite",
  "smallvec",
  "symphonia-core 0.6.0",
+]
+
+[[package]]
+name = "symphonia-utils-xiph"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee27c85ab799a338446b68eec77abf42e1a6f1bb490656e121c6e27bfbab9f16"
+dependencies = [
+ "symphonia-core 0.5.5",
+ "symphonia-metadata 0.5.5",
 ]
 
 [[package]]

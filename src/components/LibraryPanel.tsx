@@ -275,9 +275,9 @@ export function LibraryPanel({
               type="button"
               onClick={onAddFiles}
               disabled={libraryBusy || analysisBusy}
-              title={libraryBusyReason ?? undefined}
+              title={libraryBusyReason ?? "Add MP3, WAV or FLAC files"}
             >
-              + MP3
+              + AUDIO
             </button>
           </div>
         </div>
@@ -368,7 +368,7 @@ export function LibraryPanel({
           <span className="library-empty-icon" aria-hidden="true">♫</span>
           <div>
             <strong>Your library is empty</strong>
-            <p>Add MP3 files or select a music folder.</p>
+            <p>Add MP3, WAV or FLAC files, or select a music folder.</p>
           </div>
         </div>
       ) : visibleTracks.length === 0 ? (
@@ -382,7 +382,7 @@ export function LibraryPanel({
           </div>
         </div>
       ) : (
-        <div className="library-table" role="table" aria-label="MP3 Library">
+        <div className="library-table" role="table" aria-label="Audio Library">
           <div className="library-table-header" role="row">
             <span role="columnheader">Track</span>
           </div>

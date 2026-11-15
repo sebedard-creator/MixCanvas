@@ -71,7 +71,8 @@ const SHORTCUTS: ShortcutItem[] = [
   { surface: "key", group: "History", keys: ["Ctrl", "Y"], description: "Redo" },
 
   // ── À la souris ───────────────────────────────────────────────────────────
-  { surface: "pointer", group: "Moving around", keys: ["Scroll"], description: "Zoom the timeline" },
+  { surface: "pointer", group: "Moving around", keys: ["Scroll"], description: "Scroll up or down through the tracks" },
+  { surface: "pointer", group: "Moving around", keys: ["Ctrl", "Scroll"], description: "Zoom the timeline" },
   { surface: "pointer", group: "Moving around", keys: ["Shift", "Scroll"], description: "Scroll sideways — the view follows the playhead again after a pause" },
   { surface: "pointer", group: "Moving around", keys: ["Click a track"], description: "Select it — anywhere inside counts" },
 

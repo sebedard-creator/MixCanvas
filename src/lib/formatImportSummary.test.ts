@@ -9,13 +9,13 @@ import {
 describe("formatImportSummary", () => {
   it("describes a mixed import", () => {
     expect(formatImportSummary({ addedCount: 4, duplicateCount: 2, failedCount: 1 })).toBe(
-      "4 MP3 added · 2 already present · 1 unreadable file",
+      "4 audio files added · 2 already present · 1 unreadable file",
     );
   });
 
   it("describes an empty folder", () => {
     expect(formatImportSummary({ addedCount: 0, duplicateCount: 0, failedCount: 0 })).toBe(
-      "No new MP3 files found.",
+      "No new audio files found.",
     );
   });
 });

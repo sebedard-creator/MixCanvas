@@ -5,20 +5,21 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { flushSync } from "react-dom";
 import { formatDuration } from "../lib/formatDuration";
 import { MixFxBay } from "./MixFxBay";
-import { timelineLaneFromPointer } from "../lib/timelineLane";
+import { TIMELINE_LANES, TIMELINE_LANE_COUNT, timelineLaneFromPointer } from "../lib/timelineLane";
 import {
   resolveTimelinePointerDrop,
   type LibraryPointerDrag,
 } from "../lib/timelinePointerDrag";
 import { tempoBpmAtBeat, tempoCurveGeometry, tempoSecondsAtBeat } from "../lib/tempoCurve";
 import { BEATS_PER_MEASURE, snapTimelineBeat } from "../lib/timelineSnap";
-import { isDeleteShortcut, resolveViewShortcut, shouldCaptureTimelineZoom } from "../lib/timelineShortcut";
+import { isDeleteShortcut, resolveViewShortcut, resolveTimelineWheel, shouldCaptureTimelineZoom } from "../lib/timelineShortcut";
 import {
   FILTER_BUBBLE_DEFAULT_WIDTH_BEATS,
   FILTER_BUBBLE_MAX_WIDTH_BEATS,
@@ -64,6 +65,7 @@ import {
   type ShapePeriod,
 } from "../lib/automationShapes";
 import {
+  AUTOMATION_VIEWBOX_UNITS,
   DEFAULT_TRACK_GAIN_DB,
   FILTER_LANE_UNITS,
   LANE_PAIR_UNITS,
@@ -171,7 +173,6 @@ function nextAutomationView(current: AutomationView): AutomationView {
   const index = AUTOMATION_VIEW_ORDER.indexOf(current);
   return AUTOMATION_VIEW_ORDER[(index + 1) % AUTOMATION_VIEW_ORDER.length];
 }
-const TIMELINE_LANES = [0, 1, 2] as const;
 const MAX_ZOOM_DELTA_PER_FRAME = 96;
 /** Idle delay after which the viewport follows the playhead again. */
 const MANUAL_SCROLL_RELEASE_MS = 2_500;
@@ -211,6 +212,8 @@ function compactDrawPoints<T>(points: readonly T[], maxPoints: number): T[] {
 }
 
 interface TimelinePanelProps {
+  darkMode: boolean;
+  onToggleTheme: () => void;
   timeline: TimelineSnapshot;
   /** L'état du transport tel que React le connaît : il ne bouge qu'aux évènements. */
   transport: TimelineTransportSnapshot;
@@ -436,6 +439,8 @@ function filterNodeY(lane: number, value: number) {
 }
 
 export function TimelinePanel({
+  darkMode,
+  onToggleTheme,
   timeline,
   transport,
   liveTransport,
@@ -1159,7 +1164,8 @@ export function TimelinePanel({
       event.preventDefault();
       event.stopPropagation();
 
-      const isHorizontalScrollGesture = event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY);
+      const action = resolveTimelineWheel(event);
+      const isHorizontalScrollGesture = action === "horizontal";
       const rawDelta = isHorizontalScrollGesture
         ? (Math.abs(event.deltaX) > 0 ? event.deltaX : event.deltaY)
         : event.deltaY;
@@ -1167,7 +1173,7 @@ export function TimelinePanel({
       const deltaPixels = event.deltaMode === WheelEvent.DOM_DELTA_LINE
         ? rawDelta * 16
         : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
-          ? rawDelta * Math.max(1, element.clientWidth)
+          ? rawDelta * Math.max(1, action === "vertical" ? element.clientHeight : element.clientWidth)
           : rawDelta;
 
       if (isHorizontalScrollGesture) {
@@ -1181,9 +1187,11 @@ export function TimelinePanel({
         manualScrollBeat.current = Math.max(0, Math.min(maxScrollBeat, startBeat + beatsToMove));
         paintView();
         holdManualScroll();
-      } else {
-        // Molette seule (sans Shift) -> Zoom avant / arrière
+      } else if (action === "zoom") {
+        // Ctrl + molette -> Zoom avant / arrière; la molette seule parcourt les pistes.
         queueTimelineZoom(deltaPixels);
+      } else {
+        element.scrollTop += deltaPixels;
       }
     };
 
@@ -1310,6 +1318,7 @@ export function TimelinePanel({
 
     const tracksBounds = tracksElement.getBoundingClientRect();
     const viewportBounds = scrollElement.getBoundingClientRect();
+    const verticalBounds = timelineBody.current?.getBoundingClientRect() ?? viewportBounds;
     const target = resolveTimelinePointerDrop(
       libraryPointerDrag.clientX,
       libraryPointerDrag.clientY,
@@ -1317,6 +1326,8 @@ export function TimelinePanel({
         contentLeft: tracksBounds.left,
         viewportLeft: viewportBounds.left,
         viewportRight: viewportBounds.right,
+        viewportTop: verticalBounds.top,
+        viewportBottom: verticalBounds.bottom,
         top: tracksBounds.top,
         height: tracksBounds.height,
       },
@@ -2557,7 +2568,7 @@ export function TimelinePanel({
   const playUnavailable = busy || timeline.clips.length === 0 || transport.status === "playing";
 
   return (
-    <section className="timeline-panel" aria-label="Timeline">
+    <section className="timeline-panel" aria-label="Timeline" style={{ "--timeline-lane-count": TIMELINE_LANE_COUNT } as CSSProperties}>
       <div className="timeline-header">
         <div className="timeline-identity">
           <div className="analog-transport-group">
@@ -2879,19 +2890,41 @@ export function TimelinePanel({
                 LOAD
               </button>
             </div>
-            <button
-              className="help-btn"
-              type="button"
-              onClick={() => setShowHelpModal(true)}
-              title="Open Keyboard Shortcuts & Reference Guide (Esc)"
-            >
-              HELP
-            </button>
+            <div className="console-utility-row">
+              <button
+                className="help-btn"
+                type="button"
+                onClick={() => setShowHelpModal(true)}
+                title="Open Keyboard Shortcuts & Reference Guide (Esc)"
+              >
+                HELP
+              </button>
+              <button
+                className="theme-toggle"
+                type="button"
+                aria-label="Dark mode"
+                aria-pressed={darkMode}
+                title={darkMode ? "Switch to light mode" : "Switch to dark mode"}
+                onClick={onToggleTheme}
+              >
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  {darkMode ? (
+                    <>
+                      <circle cx="12" cy="12" r="4" />
+                      <path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" />
+                    </>
+                  ) : (
+                    <path d="M20.5 14A8.5 8.5 0 0 1 10 3.5 8.5 8.5 0 1 0 20.5 14Z" />
+                  )}
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
       </div>
 
-      <div className="timeline-body" ref={timelineBody}>
+      <div className="timeline-body" ref={timelineBody} tabIndex={0} role="region" aria-label="Timeline tracks">
+      <div className="timeline-vertical-content">
         <div className="timeline-lane-controls" aria-label="Fixed track controls">
           {/* La première rangée de la grille fait les trente-quatre pixels de
               la règle : ce repère tombe donc en face de la ligne de tempo, comme
@@ -2948,6 +2981,7 @@ export function TimelinePanel({
                 title={`Track ${String.fromCharCode(65 + lane)}${selectedLane === lane ? " · keyboard target (B, Shift+S, Shift+M)" : ""}`}
                 onPointerDownCapture={() => onSelectLane(lane)}
               >
+                <span className="timeline-lane-letter" aria-hidden="true">{String.fromCharCode(65 + lane)}</span>
                 <button
                   className={`lane-mute-button${laneState.isMuted ? " is-active" : ""}`}
                   type="button"
@@ -3230,7 +3264,7 @@ export function TimelinePanel({
               className="reverb-regions"
               width={contentWidth}
               height="100%"
-              viewBox={`0 0 ${contentWidth} 450`}
+              viewBox={`0 0 ${contentWidth} ${AUTOMATION_VIEWBOX_UNITS}`}
               preserveAspectRatio="none"
               aria-hidden="true"
             >
@@ -3352,7 +3386,7 @@ export function TimelinePanel({
               className="volume-automation-lines"
               width={contentWidth}
               height="100%"
-              viewBox={`0 0 ${contentWidth} 450`}
+              viewBox={`0 0 ${contentWidth} ${AUTOMATION_VIEWBOX_UNITS}`}
               preserveAspectRatio="none"
               aria-hidden="true"
             >
@@ -3364,7 +3398,7 @@ export function TimelinePanel({
               className="pan-automation-lines"
               width={contentWidth}
               height="100%"
-              viewBox={`0 0 ${contentWidth} 450`}
+              viewBox={`0 0 ${contentWidth} ${AUTOMATION_VIEWBOX_UNITS}`}
               preserveAspectRatio="none"
               aria-hidden="true"
             >
@@ -3376,7 +3410,7 @@ export function TimelinePanel({
               className="filter-automation-lines"
               width={contentWidth}
               height="100%"
-              viewBox={`0 0 ${contentWidth} 450`}
+              viewBox={`0 0 ${contentWidth} ${AUTOMATION_VIEWBOX_UNITS}`}
               preserveAspectRatio="none"
               aria-hidden="true"
             >
@@ -3397,7 +3431,7 @@ export function TimelinePanel({
                   className="pan-node"
                   type="button"
                   key={node.id}
-                  style={{ left: beat * pixelsPerBeat, top: `${panNodeY(node.lane, value) / 4.5}%` }}
+                  style={{ left: beat * pixelsPerBeat, top: `${panNodeY(node.lane, value) * 100 / AUTOMATION_VIEWBOX_UNITS}%` }}
                   title={`${String.fromCharCode(65 + node.lane)} · pan ${panLabel(value)} · beat ${beat.toFixed(2)}`}
                   onContextMenu={(event) => {
                     event.preventDefault();
@@ -3442,7 +3476,7 @@ export function TimelinePanel({
                   className="volume-node"
                   type="button"
                   key={node.id}
-                  style={{ left: beat * pixelsPerBeat, top: `${volumeNodeY(node.lane, gainDb) / 4.5}%` }}
+                  style={{ left: beat * pixelsPerBeat, top: `${volumeNodeY(node.lane, gainDb) * 100 / AUTOMATION_VIEWBOX_UNITS}%` }}
                   title={`${String.fromCharCode(65 + node.lane)} · ${gainLabel(gainDb)} · beat ${beat.toFixed(2)}`}
                   onContextMenu={(event) => {
                     event.preventDefault();
@@ -3488,7 +3522,7 @@ export function TimelinePanel({
                 className="filter-node"
                 type="button"
                 key={node.id}
-                style={{ left: beat * pixelsPerBeat, top: `${filterNodeY(node.lane, value) / 4.5}%` }}
+                style={{ left: beat * pixelsPerBeat, top: `${filterNodeY(node.lane, value) * 100 / AUTOMATION_VIEWBOX_UNITS}%` }}
                 title={`${String.fromCharCode(65 + node.lane)} Filter · ${value > 0 ? "HP" : value < 0 ? "LP" : "Bypass"} · beat ${beat.toFixed(2)}`}
                 onContextMenu={(event) => {
                   event.preventDefault();
@@ -3593,7 +3627,7 @@ export function TimelinePanel({
                   style={{
                     left: visualStartBeat * pixelsPerBeat,
                     width: clipWidth,
-                    top: `calc(${lane * (100 / TIMELINE_LANES.length)}% + (100% / 9) + 7px)`,
+                    top: `calc(${lane * (100 / TIMELINE_LANES.length)}% + (100% / ${TIMELINE_LANE_COUNT * 3}) + 7px)`,
                   }}
                   title={`${clipLabel} · track ${String.fromCharCode(65 + lane)} · first downbeat on bar ${anchorBeat / BEATS_PER_MEASURE + 1}`}
                   /* An edge belongs to the trim tool; anywhere else moves the
@@ -3884,6 +3918,7 @@ export function TimelinePanel({
             <span />
           </div>
         )}
+      </div>
       </div>
 
       {/* Photorealistic TE Horizontal Timeline Scrollbar */}

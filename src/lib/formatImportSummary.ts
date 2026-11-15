@@ -6,7 +6,7 @@ export function formatImportSummary(counts: ImportCounts): string {
   const details: string[] = [];
 
   if (counts.addedCount > 0) {
-    details.push(`${counts.addedCount} MP3 added`);
+    details.push(`${counts.addedCount} audio file${counts.addedCount > 1 ? "s" : ""} added`);
   }
 
   if (counts.duplicateCount > 0) {
@@ -17,7 +17,7 @@ export function formatImportSummary(counts: ImportCounts): string {
     details.push(`${counts.failedCount} unreadable file${counts.failedCount > 1 ? "s" : ""}`);
   }
 
-  return details.length > 0 ? details.join(" · ") : "No new MP3 files found.";
+  return details.length > 0 ? details.join(" · ") : "No new audio files found.";
 }
 
 /**

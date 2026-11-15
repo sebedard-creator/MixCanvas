@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use crate::{
     analysis::{ANALYSIS_ALGORITHM_VERSION, BeatAnalysis, WAVEFORM_BUCKET_COUNT, WaveformPeaks},
-    audio::{inspect_mp3, read_mp3_id3_tags},
+    audio::{inspect_audio, is_supported_audio_path, read_audio_tags},
 };
 
 const DATABASE_PRAGMAS: &str = r#"
@@ -85,19 +85,19 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
         VALUES (1, 120.0);
 
     CREATE TABLE IF NOT EXISTS timeline_lanes (
-        lane       INTEGER PRIMARY KEY CHECK (lane BETWEEN 0 AND 2),
+        lane       INTEGER PRIMARY KEY CHECK (lane BETWEEN 0 AND 3),
         is_muted   INTEGER NOT NULL DEFAULT 0 CHECK (is_muted IN (0, 1)),
         is_solo    INTEGER NOT NULL DEFAULT 0 CHECK (is_solo IN (0, 1))
     );
 
     INSERT OR IGNORE INTO timeline_lanes (lane, is_muted, is_solo)
-        VALUES (0, 0, 0), (1, 0, 0), (2, 0, 0);
+        VALUES (0, 0, 0), (1, 0, 0), (2, 0, 0), (3, 0, 0);
 
     CREATE TABLE IF NOT EXISTS timeline_clips (
         id               INTEGER PRIMARY KEY,
         library_track_id INTEGER NOT NULL
                          REFERENCES library_tracks(id) ON DELETE CASCADE,
-        lane             INTEGER NOT NULL DEFAULT 0 CHECK (lane BETWEEN 0 AND 2),
+        lane             INTEGER NOT NULL DEFAULT 0 CHECK (lane BETWEEN 0 AND 3),
         anchor_beat      INTEGER NOT NULL CHECK (anchor_beat >= 0),
         tempo_anchor_beat INTEGER NOT NULL CHECK (tempo_anchor_beat >= 0),
         eq_settings      TEXT,
@@ -177,7 +177,7 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
 
     CREATE TABLE IF NOT EXISTS timeline_volume_nodes (
         id      INTEGER PRIMARY KEY,
-        lane    INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
+        lane    INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 3),
         beat    REAL NOT NULL CHECK (beat >= 0.0),
         gain_db REAL CHECK (gain_db IS NULL OR gain_db BETWEEN -60.0 AND 12.0),
         draw_group_id INTEGER,
@@ -189,7 +189,7 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
 
     CREATE TABLE IF NOT EXISTS timeline_pan_nodes (
         id    INTEGER PRIMARY KEY,
-        lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
+        lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 3),
         beat  REAL NOT NULL CHECK (beat >= 0.0),
         value REAL NOT NULL CHECK (value BETWEEN -1.0 AND 1.0),
         draw_group_id INTEGER,
@@ -202,7 +202,7 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
     CREATE TABLE IF NOT EXISTS timeline_draw_groups (
         id         INTEGER PRIMARY KEY,
         kind       TEXT NOT NULL CHECK (kind IN ('volume', 'pan')),
-        lane       INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
+        lane       INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 3),
         start_beat REAL NOT NULL CHECK (start_beat >= 0.0),
         end_beat   REAL NOT NULL CHECK (end_beat >= start_beat),
         shape      TEXT NOT NULL,
@@ -212,7 +212,7 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
 
     CREATE TABLE IF NOT EXISTS timeline_filter_nodes (
         id      INTEGER PRIMARY KEY,
-        lane    INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
+        lane    INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 3),
         beat    REAL NOT NULL CHECK (beat >= 0.0),
         value   REAL NOT NULL CHECK (value BETWEEN -1.0 AND 1.0),
         tension REAL NOT NULL DEFAULT 0.0 CHECK (tension BETWEEN -1.0 AND 1.0),
@@ -230,7 +230,7 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
     -- passe tenue s'écrit en quatre nœuds — zéro, un, un, zéro.
     CREATE TABLE IF NOT EXISTS timeline_reverb_nodes (
         id    INTEGER PRIMARY KEY,
-        lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
+        lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 3),
         beat  REAL NOT NULL CHECK (beat >= 0.0),
         value REAL NOT NULL CHECK (value BETWEEN 0.0 AND 1.0),
         UNIQUE (lane, beat)
@@ -248,7 +248,7 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
     -- verifier partout qu'on a filtre sur le bon effet.
     CREATE TABLE IF NOT EXISTS timeline_flanger_nodes (
         id    INTEGER PRIMARY KEY,
-        lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
+        lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 3),
         beat  REAL NOT NULL CHECK (beat >= 0.0),
         value REAL NOT NULL CHECK (value BETWEEN 0.0 AND 1.0),
         UNIQUE (lane, beat)
@@ -264,7 +264,7 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
     -- qui l'ecrit. Le routage differe dans le moteur, pas dans la base.
     CREATE TABLE IF NOT EXISTS timeline_bitcrush_nodes (
         id    INTEGER PRIMARY KEY,
-        lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
+        lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 3),
         beat  REAL NOT NULL CHECK (beat >= 0.0),
         value REAL NOT NULL CHECK (value BETWEEN 0.0 AND 1.0),
         UNIQUE (lane, beat)
@@ -276,7 +276,7 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
     -- L'envoi de delay, quatrieme table jumelle.
     CREATE TABLE IF NOT EXISTS timeline_delay_nodes (
         id    INTEGER PRIMARY KEY,
-        lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 2),
+        lane  INTEGER NOT NULL CHECK (lane BETWEEN 0 AND 3),
         beat  REAL NOT NULL CHECK (beat >= 0.0),
         value REAL NOT NULL CHECK (value BETWEEN 0.0 AND 1.0),
         UNIQUE (lane, beat)
@@ -376,14 +376,16 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
         right_rms      BLOB
     );
 
-    PRAGMA user_version = 39;
+    PRAGMA user_version = 40;
 "#;
 
 /// Schema version described by `CURRENT_DATABASE_SCHEMA`. The constant and the
 /// `PRAGMA user_version` above must move together: the schema is also replayed
 /// after a migration, so a stale value there would push the database back down
 /// and replay the last migrations on every start.
-const LATEST_SCHEMA_VERSION: i64 = 39;
+const LATEST_SCHEMA_VERSION: i64 = 40;
+
+const MIGRATE_VERSION_39_TO_40: &str = include_str!("migrations/0040_four_tracks.sql");
 
 const MIGRATE_VERSION_1_TO_2: &str = r#"
     BEGIN IMMEDIATE;
@@ -678,7 +680,7 @@ impl LibraryStore {
             .map_err(database_write_error)?;
 
         let mut store = Self { connection };
-        store.backfill_id3_metadata()?;
+        store.backfill_audio_metadata()?;
         store.reclaim_free_pages();
         Ok(store)
     }
@@ -852,7 +854,7 @@ impl LibraryStore {
     }
 
     pub fn import_paths(&mut self, raw_paths: Vec<String>) -> Result<LibraryImportResult, String> {
-        let discovered = discover_mp3_paths(raw_paths);
+        let discovered = discover_audio_paths(raw_paths);
         let existing_keys = self.existing_path_keys()?;
         let mut duplicate_count = discovered.duplicate_count;
         let mut failed_count = discovered.failed_count;
@@ -865,7 +867,7 @@ impl LibraryStore {
                 continue;
             }
 
-            match inspect_mp3(&path) {
+            match inspect_audio(&path) {
                 Ok(metadata) => candidates.push(NewLibraryTrack {
                     file_name: path
                         .file_name()
@@ -929,7 +931,7 @@ impl LibraryStore {
         })
     }
 
-    fn backfill_id3_metadata(&mut self) -> Result<(), String> {
+    fn backfill_audio_metadata(&mut self) -> Result<(), String> {
         let mut statement = self
             .connection
             .prepare(
@@ -952,7 +954,7 @@ impl LibraryStore {
             .filter_map(|(id, file_path)| {
                 Path::new(&file_path)
                     .is_file()
-                    .then(|| (id, read_mp3_id3_tags(Path::new(&file_path))))
+                    .then(|| (id, read_audio_tags(Path::new(&file_path))))
             })
             .collect::<Vec<_>>();
         if discovered.is_empty() {
@@ -1326,7 +1328,7 @@ impl LibraryStore {
     }
 }
 
-fn discover_mp3_paths(raw_paths: Vec<String>) -> DiscoveredPaths {
+fn discover_audio_paths(raw_paths: Vec<String>) -> DiscoveredPaths {
     let mut pending = raw_paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
     let mut files = Vec::new();
     let mut seen = HashSet::new();
@@ -1357,7 +1359,7 @@ fn discover_mp3_paths(raw_paths: Vec<String>) -> DiscoveredPaths {
             continue;
         }
 
-        if !metadata.is_file() || !is_mp3_path(&path) {
+        if !metadata.is_file() || !is_supported_audio_path(&path) {
             continue;
         }
 
@@ -1374,12 +1376,6 @@ fn discover_mp3_paths(raw_paths: Vec<String>) -> DiscoveredPaths {
         duplicate_count,
         failed_count,
     }
-}
-
-fn is_mp3_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("mp3"))
 }
 
 pub(crate) fn normalize_path_key(path: &Path) -> String {
@@ -1531,6 +1527,45 @@ fn ensure_column(
             .map_err(database_write_error)?;
     }
     Ok(())
+}
+
+/// Rebuilds the constrained tables atomically without cascading away clip media.
+fn migrate_to_four_tracks(connection: &Connection) -> Result<(), String> {
+    let foreign_keys: bool = connection
+        .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+        .map_err(database_read_error)?;
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .map_err(database_write_error)?;
+    let result = (|| {
+        let transaction = rusqlite::Transaction::new_unchecked(
+            connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .map_err(database_write_error)?;
+        transaction
+            .execute_batch(MIGRATE_VERSION_39_TO_40)
+            .map_err(database_write_error)?;
+        let broken_reference = transaction
+            .query_row("PRAGMA foreign_key_check", [], |_| Ok(()))
+            .optional()
+            .map_err(database_read_error)?;
+        if broken_reference.is_some() {
+            return Err(
+                "The four-track upgrade found invalid media references; no changes were saved."
+                    .to_owned(),
+            );
+        }
+        transaction
+            .pragma_update(None, "user_version", 40)
+            .map_err(database_write_error)?;
+        transaction.commit().map_err(database_write_error)
+    })();
+    // Restore enforcement after both success and rollback, before exposing the connection.
+    let restored = connection
+        .pragma_update(None, "foreign_keys", foreign_keys)
+        .map_err(database_write_error);
+    result.and(restored)
 }
 
 fn initialize_database(connection: &Connection) -> Result<(), String> {
@@ -2086,6 +2121,10 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
                     .map_err(database_write_error)?;
                 version = 39;
             }
+            39 => {
+                migrate_to_four_tracks(connection)?;
+                version = 40;
+            }
             _ => {
                 let (target_version, migration) = match version {
                     1 => (2, MIGRATE_VERSION_1_TO_2),
@@ -2151,11 +2190,11 @@ pub fn write_app_preference(connection: &Connection, key: &str, value: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::{
-        LATEST_SCHEMA_VERSION, LibraryStore, decode_waveform, discover_mp3_paths,
+        LATEST_SCHEMA_VERSION, LibraryStore, decode_waveform, discover_audio_paths,
         effective_beat_count, encode_waveform_values, normalize_path_key,
     };
     use crate::analysis::{ANALYSIS_ALGORITHM_VERSION, BeatAnalysis, WaveformPeaks};
-    use rusqlite::params;
+    use rusqlite::{Connection, params};
     use std::{
         fs,
         path::Path,
@@ -2627,6 +2666,149 @@ mod tests {
         }
     }
 
+    fn version_39_session() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(super::DATABASE_PRAGMAS).unwrap();
+        let schema = super::CURRENT_DATABASE_SCHEMA
+            .replace("lane BETWEEN 0 AND 3", "lane BETWEEN 0 AND 2")
+            .replace(", (3, 0, 0)", "")
+            .replace("PRAGMA user_version = 40", "PRAGMA user_version = 39");
+        connection.execute_batch(&schema).unwrap();
+        connection.execute_batch(
+            "INSERT INTO library_tracks (id, file_path, path_key, file_name, duration_ms, sample_rate, channels)
+             VALUES (1, 'track.mp3', 'track.mp3', 'track.mp3', 60000, 44100, 2);
+             INSERT INTO timeline_clips (id, library_track_id, lane, anchor_beat, tempo_anchor_beat, trim_start_beats, looping, eq_settings)
+             VALUES (7, 1, 2, 16, 20, 4.5, 1, '{\"gainDb\":-3}');
+             INSERT INTO clip_stems (clip_id, kind, file_path, from_bake) VALUES (7, 'vocals', 'source.wav', 0), (7, 'vocals', 'baked.wav', 1);
+             INSERT INTO clip_bakes (clip_id, file_path, removed) VALUES (7, 'bake.wav', '{}');
+             UPDATE timeline_lanes SET is_solo = 1 WHERE lane = 2;
+             INSERT INTO timeline_draw_groups (id, kind, lane, start_beat, end_beat, shape, period) VALUES (9, 'volume', 2, 16, 24, 'sine', 2);
+             INSERT INTO timeline_volume_nodes (lane, beat, gain_db, draw_group_id) VALUES (2, 16, -3, 9);
+             INSERT INTO timeline_pan_nodes (lane, beat, value) VALUES (2, 16, 0.5);
+             INSERT INTO timeline_filter_nodes (lane, beat, value) VALUES (2, 16, -0.5);"
+        ).unwrap();
+        for effect in ["reverb", "flanger", "bitcrush", "delay"] {
+            connection.execute(&format!("INSERT INTO timeline_{effect}_nodes (lane, beat, value) VALUES (2, 16, 0.7)"), []).unwrap();
+        }
+        connection
+    }
+
+    #[test]
+    fn four_track_upgrade_preserves_the_session_and_clip_media() {
+        let connection = version_39_session();
+        super::initialize_database(&connection).unwrap();
+        let lanes: i64 = connection
+            .query_row("SELECT COUNT(*) FROM timeline_lanes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(lanes, 4);
+        let clip: (i64, f64, bool, String) = connection
+            .query_row(
+                "SELECT id, trim_start_beats, looping, eq_settings FROM timeline_clips",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(clip, (7, 4.5, true, "{\"gainDb\":-3}".to_owned()));
+        for (table, expected) in [
+            ("clip_stems", 2),
+            ("clip_bakes", 1),
+            ("timeline_draw_groups", 1),
+        ] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, expected, "{table} must survive");
+        }
+        connection
+            .execute("UPDATE timeline_clips SET lane = 3 WHERE id = 7", [])
+            .unwrap();
+        assert!(
+            connection
+                .execute("UPDATE timeline_clips SET lane = 4 WHERE id = 7", [])
+                .is_err()
+        );
+        for (table, column) in [
+            ("timeline_volume_nodes", "gain_db"),
+            ("timeline_pan_nodes", "value"),
+            ("timeline_filter_nodes", "value"),
+            ("timeline_reverb_nodes", "value"),
+            ("timeline_flanger_nodes", "value"),
+            ("timeline_bitcrush_nodes", "value"),
+            ("timeline_delay_nodes", "value"),
+        ] {
+            let kept: i64 = connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE lane = 2 AND beat = 16"),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(kept, 1, "{table} automation must survive");
+            connection
+                .execute(
+                    &format!("INSERT INTO {table} (lane, beat, {column}) VALUES (3, 32, 0)"),
+                    [],
+                )
+                .unwrap();
+            assert!(
+                connection
+                    .execute(
+                        &format!("INSERT INTO {table} (lane, beat, {column}) VALUES (4, 32, 0)"),
+                        []
+                    )
+                    .is_err()
+            );
+        }
+        // The original foreign keys still target clips, and enforcement is restored.
+        connection
+            .execute("DELETE FROM timeline_clips WHERE id = 7", [])
+            .unwrap();
+        for table in ["clip_stems", "clip_bakes"] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0);
+        }
+        super::initialize_database(&connection).unwrap();
+    }
+
+    #[test]
+    fn failed_four_track_upgrade_rolls_back_and_restores_foreign_keys() {
+        let connection = version_39_session();
+        connection
+            .execute(
+                "CREATE TABLE timeline_volume_nodes_v40 (conflict INTEGER)",
+                [],
+            )
+            .unwrap();
+        assert!(super::initialize_database(&connection).is_err());
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 39);
+        let enabled: bool = connection
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        assert!(enabled);
+        let media: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM clip_stems WHERE clip_id = 7",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(media, 2);
+        assert!(
+            connection
+                .execute("UPDATE timeline_clips SET lane = 3 WHERE id = 7", [])
+                .is_err()
+        );
+    }
+
     #[test]
     fn version_one_database_is_migrated_without_losing_tracks() {
         let suffix = SystemTime::now()
@@ -2753,7 +2935,7 @@ mod tests {
     }
 
     #[test]
-    fn folder_discovery_keeps_mp3_files_and_deduplicates_paths() {
+    fn folder_discovery_keeps_supported_audio_and_deduplicates_paths() {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after the Unix epoch")
@@ -2764,23 +2946,71 @@ mod tests {
         ));
         let mp3_path = directory.join("morceau.MP3");
         let text_path = directory.join("notes.txt");
+        let nested = directory.join("nested");
+        let wav_path = nested.join("sample.WaV");
+        let flac_path = nested.join("sample.FLAC");
 
         fs::create_dir(&directory).expect("test directory should be created");
+        fs::create_dir(&nested).unwrap();
+        fs::write(&wav_path, []).unwrap();
+        fs::write(&flac_path, []).unwrap();
         fs::write(&mp3_path, []).expect("fake MP3 should be created");
         fs::write(&text_path, []).expect("text file should be created");
 
-        let discovered = discover_mp3_paths(vec![
+        let mut discovered = discover_audio_paths(vec![
             directory.to_string_lossy().into_owned(),
             mp3_path.to_string_lossy().into_owned(),
         ]);
 
-        assert_eq!(discovered.files, vec![mp3_path.clone()]);
+        discovered.files.sort();
+        let mut expected = vec![mp3_path.clone(), wav_path.clone(), flac_path.clone()];
+        expected.sort();
+        assert_eq!(discovered.files, expected);
         assert_eq!(discovered.duplicate_count, 1);
         assert_eq!(discovered.failed_count, 0);
 
         fs::remove_file(mp3_path).expect("fake MP3 should be removed");
         fs::remove_file(text_path).expect("text file should be removed");
+        fs::remove_file(wav_path).unwrap();
+        fs::remove_file(flac_path).unwrap();
+        fs::remove_dir(nested).unwrap();
         fs::remove_dir(directory).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn mixed_audio_import_keeps_valid_files_and_reports_corrupt_flac() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(super::DATABASE_PRAGMAS).unwrap();
+        super::initialize_database(&connection).unwrap();
+        let mut store = LibraryStore { connection };
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/audio");
+        let paths: Vec<String> = [
+            "pcm24-stereo.wav",
+            "tagged-stereo.flac",
+            "tagged-stereo.mp3",
+        ]
+        .map(|name| fixtures.join(name).to_string_lossy().into_owned())
+        .into();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let broken = std::env::temp_dir().join(format!("mixcanvas-corrupt-{stamp}.FLAC"));
+        fs::write(&broken, b"not an audio file").unwrap();
+        let mut first_paths = paths.clone();
+        first_paths.push(broken.to_string_lossy().into_owned());
+        let imported = store.import_paths(first_paths).unwrap();
+        assert_eq!(imported.added_count, 3);
+        assert_eq!(imported.failed_count, 1);
+        assert_eq!(imported.tracks.len(), 3);
+        assert!(imported.tracks.iter().all(|track| track.duration_ms > 100
+            && track.artist.is_some()
+            && track.title.is_some()));
+        let again = store.import_paths(paths).unwrap();
+        assert_eq!(again.added_count, 0);
+        assert_eq!(again.duplicate_count, 3);
+        assert_eq!(again.failed_count, 0);
+        fs::remove_file(broken).unwrap();
     }
 
     #[test]

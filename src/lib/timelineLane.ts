@@ -1,3 +1,12 @@
+/** Fixed track set shared by layout, pointer geometry and played effects. */
+export const TIMELINE_LANES = [0, 1, 2, 3] as const;
+export const TIMELINE_LANE_COUNT = TIMELINE_LANES.length;
+
+/** La lettre d'une piste, telle qu'elle s'affiche partout. */
+export function laneLetter(lane: number): string {
+  return String.fromCharCode(65 + lane);
+}
+
 export function timelineLaneFromPointer(
   clientY: number,
   tracksTop: number,

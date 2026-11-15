@@ -26,7 +26,7 @@ use rubato::{
 };
 
 use crate::analysis::{WAVEFORM_BUCKET_COUNT, WaveformPeaks};
-use crate::audio::open_mp3_decoder;
+use crate::audio::open_audio_decoder;
 
 use rustfft::num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
@@ -646,7 +646,7 @@ fn decode_stereo(
     stop_after_ms: Option<f64>,
     on_progress: &mut dyn FnMut(f64),
 ) -> Result<([Vec<f32>; 2], u32, f64), String> {
-    let decoder = open_mp3_decoder(path)?;
+    let decoder = open_audio_decoder(path)?;
     let sample_rate = decoder.sample_rate().get();
     let channel_count = usize::from(decoder.channels().get()).max(1);
     let total = decoder.total_duration().unwrap_or_default().as_secs_f64() * 1000.0;
@@ -898,7 +898,7 @@ mod tests {
         println!("décalage de source : {} ms", files.source_from_ms);
 
         let lire = |path: &Path| -> Vec<f32> {
-            let decoder = open_mp3_decoder(path).expect("le stem devrait se relire");
+            let decoder = open_audio_decoder(path).expect("le stem devrait se relire");
             decoder.collect()
         };
         let voix = lire(&files.vocals);

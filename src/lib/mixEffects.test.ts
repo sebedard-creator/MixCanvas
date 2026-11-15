@@ -1,11 +1,10 @@
+import { TIMELINE_LANE_COUNT, laneLetter } from "./timelineLane";
 import { describe, expect, it } from "vitest";
 
 import {
   PLAYED_EFFECTS,
-  TIMELINE_LANE_COUNT,
   hatchBands,
   hatchPatternId,
-  laneLetter,
   lanesPlayingAt,
   regionsAcross,
   reverbGradientId,
@@ -14,10 +13,11 @@ import {
 } from "./mixEffects";
 
 describe("laneLetter", () => {
-  it("names the three tracks the way the rest of the program does", () => {
+  it("names the four tracks the way the rest of the program does", () => {
     expect(laneLetter(0)).toBe("A");
     expect(laneLetter(1)).toBe("B");
     expect(laneLetter(2)).toBe("C");
+    expect(laneLetter(3)).toBe("D");
   });
 });
 
@@ -142,7 +142,7 @@ describe("reverbGradientId", () => {
    *  couleur, et rien dans le rendu ne le signale. */
   it("stays a usable id whatever the beat looks like", () => {
     for (const beat of [0, 8, 30.125, 1e-7, 1234.5678, -4.5]) {
-      for (const lane of [0, 1, 2]) {
+      for (const lane of [0, 1, 2, 3]) {
         for (const effect of PLAYED_EFFECTS) {
           expect(reverbGradientId(effect, lane, beat)).toMatch(/^[A-Za-z][-A-Za-z0-9_]*$/);
         }

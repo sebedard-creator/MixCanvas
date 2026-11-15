@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::Path, time::Duration};
 use beat_this::{BeatThis, RtenRuntime};
 use rodio::Source;
 
-use crate::audio::open_mp3_decoder;
+use crate::audio::open_audio_decoder;
 
 const ENVELOPE_RATE_HZ: f64 = 100.0;
 const MIN_BPM: f64 = 70.0;
@@ -80,7 +80,7 @@ fn tempo_search_window(hinted_bpm: Option<f64>) -> (f64, f64) {
 /// détecte restent bonnes. Un tap donne la période approximative, la corrélation
 /// la précise sur les kicks, et le placement du premier temps suit sans
 /// changer — c'est lui qui recale la phase.
-pub fn analyze_mp3_near(
+pub fn analyze_audio_near(
     path: &Path,
     hinted_bpm: f64,
     models: &BeatModelPaths,
@@ -88,7 +88,7 @@ pub fn analyze_mp3_near(
     analyze_with_hint(path, Some(hinted_bpm), models)
 }
 
-pub fn analyze_mp3(path: &Path, models: &BeatModelPaths) -> Result<BeatAnalysis, String> {
+pub fn analyze_audio(path: &Path, models: &BeatModelPaths) -> Result<BeatAnalysis, String> {
     analyze_with_hint(path, None, models)
 }
 
@@ -97,7 +97,7 @@ fn analyze_with_hint(
     hinted_bpm: Option<f64>,
     models: &BeatModelPaths,
 ) -> Result<BeatAnalysis, String> {
-    let decoder = open_mp3_decoder(path)?;
+    let decoder = open_audio_decoder(path)?;
     let duration = decoder.total_duration().unwrap_or_default();
     let sample_rate = decoder.sample_rate().get();
     let channels = decoder.channels().get();
@@ -143,7 +143,7 @@ fn analyze_with_hint(
 }
 
 pub fn analyze_waveform(path: &Path) -> Result<WaveformPeaks, String> {
-    let decoder = open_mp3_decoder(path)?;
+    let decoder = open_audio_decoder(path)?;
     let duration = decoder.total_duration().unwrap_or_default();
     let sample_rate = decoder.sample_rate().get();
     let channels = decoder.channels().get();
@@ -1369,6 +1369,33 @@ mod tests {
         optimize_pulse_origin, refine_period_across_track, tempo_search_window,
     };
     use std::time::Duration;
+
+    #[test]
+    fn wav_and_flac_feed_the_same_beat_and_waveform_analysis() {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/audio/clicks-120bpm.flac");
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let wav = std::env::temp_dir().join(format!("mixcanvas-analysis-formats-{stamp}.wav"));
+        let signal: Vec<f32> = crate::audio::open_audio_decoder(&source).unwrap().collect();
+        crate::audio::stems::write_stereo_wav(&wav, &signal, &signal).unwrap();
+        // Force the fallback so this format regression test needs no model files.
+        let models = super::BeatModelPaths {
+            mel: source.with_extension("missing-mel.onnx"),
+            beats: source.with_extension("missing-beats.onnx"),
+        };
+        let flac = super::analyze_audio(&source, &models).unwrap();
+        let pcm = super::analyze_audio(&wav, &models).unwrap();
+        assert!((flac.bpm - 120.0).abs() < 0.1, "{} BPM", flac.bpm);
+        assert!((pcm.bpm - flac.bpm).abs() < 0.01);
+        assert!(flac.beats_ms.len() >= 24 && pcm.beats_ms.len() >= 24);
+        assert!(flac.first_beat_ms.abs_diff(pcm.first_beat_ms) <= 20);
+        assert!(flac.waveform.left_max.iter().any(|peak| *peak > 0.1));
+        assert!(pcm.waveform.right_max.iter().any(|peak| *peak > 0.1));
+        std::fs::remove_file(wav).unwrap();
+    }
 
     #[test]
     fn without_a_tap_the_search_covers_the_whole_useful_range() {

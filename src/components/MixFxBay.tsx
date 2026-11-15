@@ -1,11 +1,10 @@
+import { TIMELINE_LANE_COUNT, laneLetter } from "../lib/timelineLane";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { LiveTransport } from "../lib/liveTransport";
 import {
   EFFECT_LABELS,
   PLAYED_EFFECTS,
-  TIMELINE_LANE_COUNT,
-  laneLetter,
   lanesPlayingAt,
   reverbSpans,
 } from "../lib/mixEffects";
@@ -60,8 +59,8 @@ interface MixFxBayProps {
  * Une baie posée dans la console ne cache rien et ne se range pas.
  *
  * Ce qu'on y perd est la taille des pastilles : 59 × 22 au lieu de 52 carrés.
- * La hauteur de la barre est le facteur qui limite — trois pistes dans 82 px —
- * et elle ne bouge pas, sinon c'est la timeline qui rétrécit. La marque de
+ * La hauteur de la barre est le facteur qui limite — quatre pistes dans 104 px —
+ * afin de garder la hauteur de chaque pastille quand une voie s'ajoute. La marque de
  * 12 px tient; il n'y a plus de place pour l'écrire en toutes lettres, d'où
  * l'infobulle et `aria-label` sur chaque pastille.
  *

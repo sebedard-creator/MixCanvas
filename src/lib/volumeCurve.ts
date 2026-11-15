@@ -1,3 +1,5 @@
+import { TIMELINE_LANE_COUNT } from "./timelineLane";
+
 /**
  * Where a volume automation node sits vertically, and what a vertical position
  * means in decibels.
@@ -7,10 +9,10 @@
  * node jumped before it followed the pointer.
  */
 
-/** Height of the automation SVG's viewBox, covering all three lane pairs. */
-export const AUTOMATION_VIEWBOX_UNITS = 450;
 /** Height of one lane pair: its filter sub-lane on top, its audio lane below. */
 export const LANE_PAIR_UNITS = 150;
+/** Height of the automation SVG, covering every lane pair. */
+export const AUTOMATION_VIEWBOX_UNITS = LANE_PAIR_UNITS * TIMELINE_LANE_COUNT;
 /** Filter sub-lane height, matching `.timeline-filter-lane` in the stylesheet. */
 export const FILTER_LANE_UNITS = (LANE_PAIR_UNITS / 3) * (43 / 50);
 

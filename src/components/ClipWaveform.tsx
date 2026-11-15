@@ -196,30 +196,39 @@ export const ClipWaveform = memo(function ClipWaveform({
     if (!element || !raster) return;
     const context = element.getContext("2d", { alpha: true });
     if (!context) return;
-    context.clearRect(0, 0, pixelWidth, 100);
-    // Une colonne occupe cette largeur. Le trait, lui, garde la sienne : c'est
-    // pourquoi l'échelle est portée par les coordonnées et non par une
-    // transformation du contexte, qui aurait épaissi les verticales.
-    const scaleX = raster.width > 1 ? (pixelWidth - 1) / (raster.width - 1) : 1;
+    const paint = () => {
+      const style = getComputedStyle(element);
+      const ink = style.getPropertyValue("--waveform-ink").trim() || "#000000";
+      context.clearRect(0, 0, pixelWidth, 100);
+      // Une colonne occupe cette largeur. Le trait, lui, garde la sienne : c'est
+      // pourquoi l'échelle est portée par les coordonnées et non par une
+      // transformation du contexte, qui aurait épaissi les verticales.
+      const scaleX = raster.width > 1 ? (pixelWidth - 1) / (raster.width - 1) : 1;
 
-    context.strokeStyle = "#000000";
-    context.lineWidth = 1.5;
-    context.fillStyle = "rgba(0, 0, 0, 0.18)";
-    drawEnvelope(context, raster.leftMin, raster.leftMax, 24, 21, scaleX);
-    drawEnvelope(context, raster.rightMin, raster.rightMax, 76, 21, scaleX);
+      context.strokeStyle = ink;
+      context.lineWidth = 1.5;
+      context.fillStyle = style.getPropertyValue("--waveform-peak").trim() || "rgba(0, 0, 0, 0.18)";
+      drawEnvelope(context, raster.leftMin, raster.leftMax, 24, 21, scaleX);
+      drawEnvelope(context, raster.rightMin, raster.rightMax, 76, 21, scaleX);
 
-    context.fillStyle = "#000000";
-    drawRms(context, raster.leftRms, 24, 21, scaleX);
-    drawRms(context, raster.rightRms, 76, 21, scaleX);
+      context.fillStyle = style.getPropertyValue("--waveform-rms").trim() || ink;
+      drawRms(context, raster.leftRms, 24, 21, scaleX);
+      drawRms(context, raster.rightRms, 76, 21, scaleX);
 
-    context.strokeStyle = "rgba(0, 0, 0, 0.4)";
-    context.lineWidth = 1;
-    context.beginPath();
-    context.moveTo(0, 24.5);
-    context.lineTo(pixelWidth, 24.5);
-    context.moveTo(0, 76.5);
-    context.lineTo(pixelWidth, 76.5);
-    context.stroke();
+      context.strokeStyle = style.getPropertyValue("--waveform-zero").trim() || "rgba(0, 0, 0, 0.4)";
+      context.lineWidth = 1;
+      context.beginPath();
+      context.moveTo(0, 24.5);
+      context.lineTo(pixelWidth, 24.5);
+      context.moveTo(0, 76.5);
+      context.lineTo(pixelWidth, 76.5);
+      context.stroke();
+    };
+    paint();
+    // The bitmap keeps its cached geometry; only its ink changes with the theme.
+    const observer = new MutationObserver(paint);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => observer.disconnect();
   }, [pixelWidth, raster]);
 
   if (!raster || !window) {

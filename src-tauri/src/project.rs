@@ -28,7 +28,7 @@ use crate::library::{
 const PROJECT_FORMAT: &str = "mixcanvas-project";
 /// Version du format. À incrémenter dès qu'un fichier écrit aujourd'hui ne
 /// pourrait plus être relu tel quel, jamais pour un simple ajout de champ.
-const PROJECT_VERSION: u32 = 1;
+const PROJECT_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -812,6 +812,9 @@ pub fn apply(connection: &mut Connection, project: &ProjectFile) -> Result<(), S
         )
         .map_err(database_write_error)?;
 
+    transaction
+        .execute("UPDATE timeline_lanes SET is_muted = 0, is_solo = 0", [])
+        .map_err(database_write_error)?;
     for lane in &project.lanes {
         transaction
             .execute(
@@ -1569,7 +1572,9 @@ mod tests {
         crate::timeline::add_clip(&mut origin.connection, track_id, Some(8.0), Some(0))
             .expect("a clip should be added");
 
-        let file = collect(&origin.connection).expect("the session should be collected");
+        let mut file = collect(&origin.connection).expect("the session should be collected");
+        file.version = 1;
+        file.lanes.retain(|lane| lane.lane < 3);
         let mut text = serde_json::to_value(&file).expect("the project should serialize");
         // On retire les cinq champs du JSON, comme le ferait un fichier écrit
         // avant qu'ils n'existent.
@@ -1591,9 +1596,19 @@ mod tests {
         }
 
         let (mut target, target_path, _) = scratch_store("older-file-target");
+        crate::timeline::set_lane_solo(&target.connection, 3, true).expect("D should solo");
         let reread: ProjectFile =
             serde_json::from_value(text).expect("an older project should still read");
         apply(&mut target.connection, &reread).expect("the project should apply");
+        let solo: bool = target
+            .connection
+            .query_row(
+                "SELECT is_solo FROM timeline_lanes WHERE lane = 3",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!solo, "an older project must not inherit D's previous solo");
 
         let clip = crate::timeline::snapshot(&target.connection)
             .expect("the rebuilt timeline should read")
@@ -1622,15 +1637,15 @@ mod tests {
             )
             .expect("track should be inserted");
         let track_id = origin.connection.last_insert_rowid();
-        crate::timeline::add_clip(&mut origin.connection, track_id, Some(8.0), Some(1))
+        crate::timeline::add_clip(&mut origin.connection, track_id, Some(8.0), Some(3))
             .expect("a clip should be added");
-        crate::timeline::set_lane_muted(&origin.connection, 2, true).expect("lane should mute");
+        crate::timeline::set_lane_muted(&origin.connection, 3, true).expect("lane should mute");
         origin
             .connection
             .execute(
                 "INSERT INTO timeline_draw_groups
                  (id, kind, lane, start_beat, end_beat, shape, period)
-                 VALUES (42, 'volume', 1, 16.0, 18.0, 'sine', 2.0)",
+                 VALUES (42, 'volume', 3, 16.0, 18.0, 'sine', 2.0)",
                 [],
             )
             .expect("the Draw metadata should be recorded");
@@ -1639,7 +1654,7 @@ mod tests {
                 .connection
                 .execute(
                     "INSERT INTO timeline_volume_nodes (lane, beat, gain_db, draw_group_id)
-                     VALUES (1, ?1, ?2, 42)",
+                     VALUES (3, ?1, ?2, 42)",
                     params![beat, gain_db],
                 )
                 .expect("the Draw DSP sample should be recorded");
@@ -1658,7 +1673,7 @@ mod tests {
             .expect("the rebuilt timeline should read");
         assert_eq!(restored.clips.len(), 1, "the clip should come back");
         let clip = &restored.clips[0];
-        assert_eq!(clip.lane, 1, "on the lane it was saved from");
+        assert_eq!(clip.lane, 3, "on the lane it was saved from");
         assert_eq!(clip.anchor_beat, 8);
         // La correction manuelle est la seule chose qu'aucune ré-analyse ne
         // retrouverait : elle doit traverser le fichier intacte.
@@ -1667,7 +1682,7 @@ mod tests {
             restored
                 .lanes
                 .iter()
-                .any(|lane| lane.lane == 2 && lane.is_muted),
+                .any(|lane| lane.lane == 3 && lane.is_muted),
             "lane states should survive"
         );
         assert_eq!(
@@ -1739,6 +1754,92 @@ mod tests {
         );
 
         scrub(&[origin_path, target_path, origin_mp3, stray_mp3]);
+    }
+
+    #[test]
+    fn wav_and_flac_survive_project_save_load_and_bounce() {
+        let (mut origin, origin_path, origin_dummy) = scratch_store("audio-formats");
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/audio");
+        origin
+            .import_paths(
+                ["pcm24-stereo.wav", "tagged-stereo.flac"]
+                    .map(|name| fixtures.join(name).to_string_lossy().into_owned())
+                    .into(),
+            )
+            .unwrap();
+        let sources: Vec<(i64, String)> = {
+            let mut statement = origin
+                .connection
+                .prepare("SELECT id, file_path FROM library_tracks ORDER BY id")
+                .unwrap();
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        assert_eq!(sources.len(), 2);
+        for (index, (id, path)) in sources.iter().enumerate() {
+            origin.update_beatgrid_correction(*id, 120.0, 0).unwrap();
+            let waveform = crate::analysis::analyze_waveform(Path::new(path)).unwrap();
+            origin.save_waveform(*id, &waveform).unwrap();
+            crate::timeline::add_clip(
+                &mut origin.connection,
+                *id,
+                Some(0.0),
+                Some(if index == 0 { 0 } else { 3 }),
+            )
+            .unwrap();
+        }
+        let file_path = origin_path.with_extension("mixcanvas");
+        write_to(&origin.connection, &file_path).unwrap();
+        let project = read_from(&file_path).unwrap();
+        let (mut target, target_path, target_dummy) = scratch_store("audio-formats-restored");
+        apply(&mut target.connection, &project).unwrap();
+        let tracks = collect(&target.connection).unwrap().tracks;
+        assert_eq!(tracks.len(), 2);
+        assert!(
+            tracks.iter().any(|track| track.file_name.ends_with(".wav")
+                && track.title.as_deref() == Some("PCM 24"))
+        );
+        assert!(tracks.iter().any(|track| track.file_name.ends_with(".flac")
+            && track.title.as_deref() == Some("FLAC Test")));
+        let snapshot = crate::timeline::snapshot(&target.connection).unwrap();
+        assert_eq!(snapshot.clips.len(), 2);
+        assert!(snapshot.clips.iter().all(|clip| clip.waveform.is_some()));
+        assert!(snapshot.clips.iter().any(|clip| clip.lane == 3));
+        let output = target_path.with_extension("wav");
+        let mut plan = crate::timeline::render_plan(&target.connection).unwrap();
+        for mask in [plan.audible_lane_mask, 1, 8] {
+            plan.audible_lane_mask = mask;
+            let summary = crate::audio::bounce_timeline(
+                &plan,
+                &output,
+                crate::audio::BounceFormat::Wav,
+                None,
+                &mut |_| {},
+            )
+            .unwrap();
+            assert!(summary.frames > 4_000);
+            let energy: f32 = crate::audio::open_audio_decoder(&output)
+                .unwrap()
+                .take(4_000)
+                .map(|sample| sample * sample)
+                .sum();
+            assert!(
+                energy > 0.1,
+                "mask {mask}: each lossless source must reach the rendered mix"
+            );
+            std::fs::remove_file(&output).unwrap();
+        }
+        scrub(&[
+            origin_path,
+            target_path,
+            origin_dummy,
+            target_dummy,
+            file_path,
+            output,
+        ]);
     }
 
     #[test]

@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { BeatgridEditor } from "./components/BeatgridEditor";
 import { ClipEqModal } from "./components/ClipEqModal";
@@ -42,6 +42,7 @@ import {
   serializeLibrarySort,
   type LibrarySort,
 } from "./lib/librarySort";
+import { TIMELINE_LANES } from "./lib/timelineLane";
 import type { LibraryPointerDrag } from "./lib/timelinePointerDrag";
 import { snapTimelineBeat } from "./lib/timelineSnap";
 import { resolveLaneShortcut, resolveSpaceTarget, shouldCaptureTimelineSpace } from "./lib/timelineShortcut";
@@ -62,6 +63,8 @@ import type {
 } from "./timeline/types";
 
 type PreviewStatus = "empty" | "paused" | "playing" | "ended";
+type Theme = "light" | "dark";
+const THEME_PREFERENCE = "appearance.theme";
 
 interface PreviewSnapshot {
   status: PreviewStatus;
@@ -90,11 +93,7 @@ const EMPTY_TIMELINE: TimelineSnapshot = {
   limiterEnabled: true,
   compressorEnabled: false,
   tempoPoints: [{ beat: 0, bpm: 120, clipId: null }],
-  lanes: [
-    { lane: 0, isMuted: false, isSolo: false },
-    { lane: 1, isMuted: false, isSolo: false },
-    { lane: 2, isMuted: false, isSolo: false },
-  ],
+  lanes: TIMELINE_LANES.map((lane) => ({ lane, isMuted: false, isSolo: false })),
   clips: [],
   volumeNodes: [],
     panNodes: [],
@@ -123,6 +122,24 @@ function errorMessage(error: unknown): string {
 }
 
 function App() {
+  const [theme, setTheme] = useState<Theme>("light");
+  const themeChanged = useRef(false);
+  const themeWrite = useRef(Promise.resolve());
+
+  useLayoutEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
+
+  const toggleTheme = () => {
+    const next = theme === "dark" ? "light" : "dark";
+    themeChanged.current = true;
+    setTheme(next);
+    // Serialize writes so rapid toggles retain the last choice on disk too.
+    themeWrite.current = themeWrite.current
+      .then(() => invoke<void>("write_app_preference", { key: THEME_PREFERENCE, value: next }))
+      .catch((preferenceError) => setError(errorMessage(preferenceError)));
+  };
+
   const [preview, setPreview] = useState<PreviewSnapshot>(EMPTY_PREVIEW);
   const [busy, setBusy] = useState(false);
   const [library, setLibrary] = useState<LibraryTrack[]>([]);
@@ -505,6 +522,10 @@ function App() {
           /* Posé avant la liste : le tri doit être en place quand les morceaux
              arrivent, sinon on les verrait se réordonner sous les yeux. */
           setLibrarySort(parseLibrarySort(preferences[LIBRARY_SORT_PREFERENCE]));
+          // A late startup read must not undo a choice already made in the UI.
+          if (!themeChanged.current) {
+            setTheme(preferences[THEME_PREFERENCE] === "dark" ? "dark" : "light");
+          }
           setMastering(parseMasteringSettings(preferences[MASTERING_PREFERENCE]));
           /* Armé sauf refus explicite : une préférence absente est celle de
              quelqu'un qui n'a jamais ouvert la boîte. */
@@ -664,12 +685,12 @@ function App() {
    * Les fichiers lâchés depuis l'explorateur entrent dans la bibliothèque.
    *
    * Le dépôt est accepté **partout dans la fenêtre**, pas seulement sur le
-   * panneau : un MP3 lâché ici ne peut aller nulle part ailleurs, et exiger de
+   * panneau : un fichier audio lâché ici ne peut aller nulle part ailleurs, et exiger de
    * viser juste n'ajouterait que des échecs. Le panneau s'allume pendant le
    * survol pour dire où ça atterrit.
    *
    * Le tri est fait par l'import : il descend dans les dossiers et ne retient
-   * que les MP3, donc un dossier entier — ou un mélange — se lâche tel quel.
+   * que les MP3, WAV et FLAC, donc un dossier entier — ou un mélange — se lâche tel quel.
    */
   useEffect(() => {
     // `getCurrentWebview()` lève quand le pont natif n'est pas là — dans un
@@ -705,14 +726,14 @@ function App() {
     };
   }, []);
 
-  const addMp3Files = useCallback(async () => {
+  const addAudioFiles = useCallback(async () => {
     setError(null);
 
     try {
       const selectedPaths = await open({
         multiple: true,
         directory: false,
-        filters: [{ name: "MP3 Files", extensions: ["mp3"] }],
+        filters: [{ name: "Audio Files (MP3, WAV, FLAC)", extensions: ["mp3", "wav", "flac"] }],
       });
 
       if (!selectedPaths) {
@@ -1842,6 +1863,8 @@ function App() {
       <div className="workspace">
         <div className="main-workspace">
           <TimelinePanel
+            darkMode={theme === "dark"}
+            onToggleTheme={toggleTheme}
             timeline={timeline}
             transport={timelineTransport}
             liveTransport={liveTransport}
@@ -1940,10 +1963,10 @@ function App() {
           previewDurationMs={preview.durationMs}
           previewPositionMs={preview.positionMs}
           message={libraryMessage}
-          onAddFiles={() => void addMp3Files()}
+          onAddFiles={() => void addAudioFiles()}
           onAddFolder={() => void addMusicFolder()}
           onEditGrid={(track) => setEditingTrackId(track.id)}
-          /* No lane: the backend rotates A-B-C and takes the first that is
+          /* No lane: the backend rotates A-B-C-D and takes the first that is
              actually free at the playhead. Naming one here is what made this
              refuse itself when the rotation came back round to a busy track. */
           onAddToTimeline={(track) => void addTimelineClip(

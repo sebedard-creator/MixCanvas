@@ -1,9 +1,9 @@
-use std::{fs::File, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
-use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, cpal::BufferSize};
+use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player, cpal::BufferSize};
 use serde::Serialize;
 
-use super::metadata::{metadata_from_decoder, open_mp3_decoder};
+use super::metadata::{metadata_from_decoder, open_audio_decoder};
 
 const PREVIEW_OUTPUT_BUFFER_FRAMES: u32 = 4_096;
 const NORMAL_PREVIEW_SPEED: f32 = 1.0;
@@ -79,7 +79,7 @@ impl Default for PreviewEngine {
 impl PreviewEngine {
     pub fn load(&mut self, raw_path: String) -> Result<PreviewSnapshot, String> {
         let path = PathBuf::from(raw_path);
-        let decoder = open_mp3_decoder(&path)?;
+        let decoder = open_audio_decoder(&path)?;
         let metadata = metadata_from_decoder(&decoder);
 
         let track = LoadedTrack {
@@ -108,7 +108,7 @@ impl PreviewEngine {
 
     pub fn play(&mut self) -> Result<PreviewSnapshot, String> {
         if self.track.is_none() {
-            return Err("Choose an MP3 file first.".to_owned());
+            return Err("Choose an audio file first.".to_owned());
         }
 
         self.ensure_output()?;
@@ -191,7 +191,7 @@ impl PreviewEngine {
 
         self.player_ref()?
             .try_seek(player_position_for_source(target, self.playback_speed))
-            .map_err(|error| format!("Could not seek within the MP3: {error}"))?;
+            .map_err(|error| format!("Could not seek within the audio file: {error}"))?;
 
         if was_playing {
             self.player_ref()?.play();
@@ -301,10 +301,7 @@ impl PreviewEngine {
             .track
             .as_ref()
             .ok_or_else(|| "No track is loaded.".to_owned())?;
-        let file = File::open(&track.path)
-            .map_err(|error| format!("Could not reopen the MP3: {error}"))?;
-        let decoder = Decoder::try_from(file)
-            .map_err(|error| format!("Could not re-decode the MP3: {error}"))?;
+        let decoder = open_audio_decoder(&track.path)?;
 
         self.player_ref()?.append(decoder);
         Ok(())

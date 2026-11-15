@@ -2,10 +2,12 @@
 
 **Build DJ mixes with the precision of a timeline and the feel of a studio.**
 
+Version **1.9.0** · [Changelog](changelog.md)
+
 MixCanvas is a free, open-source Windows application for creating complete DJ
-mixes before the party starts. Import your own MP3s, correct the beatgrid when
-needed, arrange tracks on a musical timeline, shape transitions with automation,
-and play or export the finished mix.
+mixes before the party starts. Import your own MP3, WAV or FLAC files, correct
+the beatgrid when needed, arrange tracks on a musical timeline, shape
+transitions with automation, and play or export the finished mix.
 
 It is deliberately focused: no streaming service, no account, no cloud library,
 and no VST plugin ecosystem. Your music, your files, your computer.
@@ -16,7 +18,9 @@ Traditional DJ software is made for performing in the moment. MixCanvas is made
 for refining a mix over time. Move a transition, hear it again, draw the change
 you want, and keep editing while the timeline plays.
 
-- Three stereo tracks on one beat-based timeline.
+- Four stereo tracks, A–D, on one beat-based timeline, with vertical scrolling.
+- MP3, WAV and FLAC imports, including mixed folders and drag-and-drop.
+- Light aluminium and matte graphite dark themes, with your choice remembered.
 - Automatic BPM and downbeat analysis, with practical manual correction.
 - Pitch-preserving time-stretching and a global tempo curve for beatmatched
   transitions.
@@ -28,25 +32,36 @@ you want, and keep editing while the timeline plays.
   previous version of the file.
 - No subscriptions, no telemetry, and no network connection required.
 
-![MixCanvas: the console with transport, VU meters and Mix FX pads above three stereo tracks carrying clips, waveforms, tempo targets and automation, with the Library on the right](assets/screenshots/timeline.png)
+![MixCanvas: the console with transport, VU meters and Mix FX pads above stereo tracks carrying clips, waveforms, tempo targets and automation, with the Library on the right](assets/screenshots/timeline.png)
 
-*The whole mix at a glance: console across the top, three lanes of clips,
-waveforms and automation below, Library on the right. A fifty-eight minute set,
-all of it editable while it plays.*
+*The whole mix at a glance: console across the top, clips, waveforms and
+automation below, Library on the right. A fifty-eight minute set, all of it
+editable while it plays.*
 
 ## Core workflow
 
-1. Add MP3s to the Library.
-2. MixCanvas reads ID3 artist/title data, creates a waveform, and analyses BPM,
+1. Add MP3, WAV or FLAC files to the Library with **+ AUDIO**, **Add Folder**, or
+   drag-and-drop.
+2. MixCanvas reads artist/title tags, creates a waveform, and analyses BPM,
    beatgrid, and first downbeat in the background.
 3. Preview a track, correct it in the Beatgrid Editor if required, then drag it
    onto the Timeline.
 4. Arrange, beatmatch, automate, play, save, and bounce the finished mix.
 
+## Appearance
+
+Use the small moon/sun button beside **HELP** to switch between the light
+aluminium console and the matte graphite dark theme. MixCanvas remembers your
+choice between launches. The library, waveforms and editing dialogs follow the
+selected theme.
+
 ## Library and beatgrid
 
-- Import individual MP3 files, whole folders, or drag MP3s in from Explorer.
-- Library display uses Artist – Track Title when metadata is available.
+- Import MP3, WAV and FLAC files individually, from whole folders, or by
+  dragging them in from Explorer. The three formats share the same preview,
+  beatgrid, editing and mixing workflow; original files are never converted.
+- Library display uses Artist – Track Title from ID3, WAV INFO or FLAC tags
+  when available.
 - Sort by BPM, artist, title, or timeline use; used tracks receive a visual
   overlay to prevent accidental duplicate additions.
 - Filter the library from the magnifier beside the sort keys. It searches the
@@ -66,10 +81,15 @@ audible, guided, and repeatable.*
 
 ## Musical timeline
 
-- Three stereo lanes: A, B, and C.
+- Four stereo lanes: A, B, C, and D, each with mute, solo, automation and Mix FX.
 - Drag-and-drop placement or one-click insertion into the next free lane.
 - Beat/bar snapping keeps downbeats aligned while clips move horizontally or
   vertically — even during playback.
+- Scroll vertically through the tracks with the mouse wheel. The transport and
+  horizontal navigator stay visible while clips, automation and track controls
+  scroll together.
+- Zoom with Ctrl + wheel or the R/T keys; use Shift + wheel to scroll along the
+  timeline.
 - Continuous zoom, full-project zoom-out, centered playhead follow, click-to-seek,
   and a horizontal navigator.
 - Drag clips, trim either edge, split a clip, remove it, or undo/redo up to
@@ -133,7 +153,7 @@ Nothing to open and nothing to put away.
 
 <p align="center">
   <img src="assets/screenshots/mix-fx.png" width="344"
-       alt="The Mix FX bay: rows for tracks A, B, and C, each with reverb, flange, crush, delay, and eraser pads. Delay is lit orange on A and reverb lit purple on B.">
+       alt="The Mix FX bay with per-track reverb, flange, crush, delay, and eraser pads. Delay is lit orange on A and reverb lit purple on B.">
   <br>
   <em>Five pads per track, in the console beside the transport. A pad lights
   while its effect is sounding — here delay on A and reverb on B.</em>
@@ -172,7 +192,7 @@ Nothing to open and nothing to put away.
   parametric bells, low-pass, and an output gain. The graph shows what the
   filters do, so the bells keep their full range however far the clip's gain is
   pushed.
-- Sidechain compression on three tracks: the chain key cycles through off, key
+- Sidechain compression on four tracks: the chain key cycles through off, key
   and ducking, so you pick which clip pumps under the source and which one
   stays untouched. The key pumps only the clips you mark.
 - Master Glue Compressor with console colour and saturation, on from the start.
@@ -222,6 +242,8 @@ tracks for you.
   automation curve, and the effect passes you played by hand. Saving writes
   beside the old file and swaps it in, so an interrupted save cannot cost you
   the previous version.
+- Older three-track projects open with an empty track D. New saves require
+  MixCanvas 1.9.0 or later.
 - Bounce the complete mix to 16-bit / 44.1 kHz stereo WAV with dither, or to
   44.1 kHz CBR 320 kbps stereo MP3 encoded with LAME at its most thorough
   setting. The mix reaches the encoder in floating point, so an MP3 is never
@@ -235,7 +257,7 @@ tracks for you.
   without the playback safeguard, which would otherwise clip the transients
   first. Choosing MP3 lowers the ceiling a decibel, because a lossy codec
   rebuilds peaks slightly higher than the file it came from.
-- The original MP3 files are never modified.
+- The original audio files are never modified.
 - The Library only stores references and metadata, and warns when a source file
   was moved or is missing.
 
@@ -247,7 +269,7 @@ separation, and all audio processing run on your machine.
 Everything MixCanvas creates lives in MixCanvas Files beside the executable:
 the database, extracted resources, separated stems, baked clips, and project
 media. Copy the executable and that folder to move your setup. Your original
-MP3s always stay where you put them.
+audio files always stay where you put them.
 
 ### Windows requirement
 

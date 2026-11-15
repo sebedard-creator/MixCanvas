@@ -3,20 +3,20 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use mixcanvas_lib::analysis::{BeatModelPaths, analyze_mp3};
+use mixcanvas_lib::analysis::{BeatModelPaths, analyze_audio};
 
 fn main() {
     let mut arguments = env::args().skip(1);
     let Some(resources) = arguments.next().map(PathBuf::from) else {
         eprintln!(
-            "Usage: cargo run --example analyze_tracks -- <resources-folder> <track.mp3> [...]"
+            "Usage: cargo run --example analyze_tracks -- <resources-folder> <track.mp3|track.wav|track.flac> [...]"
         );
         std::process::exit(2);
     };
     let paths = arguments.collect::<Vec<_>>();
     if paths.is_empty() {
         eprintln!(
-            "Usage: cargo run --example analyze_tracks -- <resources-folder> <track.mp3> [...]"
+            "Usage: cargo run --example analyze_tracks -- <resources-folder> <track.mp3|track.wav|track.flac> [...]"
         );
         std::process::exit(2);
     }
@@ -28,7 +28,7 @@ fn main() {
     let mut failed = false;
     for path in paths {
         let started = std::time::Instant::now();
-        match analyze_mp3(Path::new(&path), &models) {
+        match analyze_audio(Path::new(&path), &models) {
             Ok(analysis) => println!(
                 "{}\t{:.3} BPM\tconfidence {:.3}\tfirst downbeat {} ms\t{} beats\t{:.2} s",
                 path,

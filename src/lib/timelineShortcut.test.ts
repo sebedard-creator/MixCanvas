@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   isDeleteShortcut,
+  resolveTimelineWheel,
   resolveSpaceTarget,
   shouldCaptureTimelineSpace,
   shouldCaptureTimelineZoom,
@@ -73,5 +74,17 @@ describe("isDeleteShortcut", () => {
     // de clip, et le confondre serait un mauvais réveil.
     expect(isDeleteShortcut("Delete", { ...plain, ctrl: true })).toBe(false);
     expect(isDeleteShortcut("Backspace", { ...plain, shift: true })).toBe(false);
+  });
+});
+
+
+describe("timeline wheel navigation", () => {
+  const wheel = { ctrlKey: false, metaKey: false, shiftKey: false, deltaX: 0, deltaY: 100 };
+  it("scrolls tracks vertically unless time or zoom is requested", () => {
+    expect(resolveTimelineWheel(wheel)).toBe("vertical");
+    expect(resolveTimelineWheel({ ...wheel, shiftKey: true })).toBe("horizontal");
+    expect(resolveTimelineWheel({ ...wheel, deltaX: 150 })).toBe("horizontal");
+    expect(resolveTimelineWheel({ ...wheel, ctrlKey: true })).toBe("zoom");
+    expect(resolveTimelineWheel({ ...wheel, metaKey: true, shiftKey: true })).toBe("zoom");
   });
 });
