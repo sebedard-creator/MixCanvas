@@ -58,6 +58,7 @@ import type {
   ClipEqSettings,
   SidechainRole,
   TimelineClip,
+  TimelineInsertion,
   TimelineSnapshot,
   TimelineTransportSnapshot,
 } from "./timeline/types";
@@ -341,6 +342,7 @@ function App() {
         snapshot: target,
       });
       setTimeline(restored);
+      setLibrary(await invoke<LibraryTrack[]>("list_library_tracks"));
       publishTransport(
         await invoke<TimelineTransportSnapshot>("timeline_transport_snapshot"),
       );
@@ -810,6 +812,23 @@ function App() {
     }
   }, [refreshTimeline]);
 
+  const setTrackTempoMatching = useCallback(async (trackId: number, enabled: boolean) => {
+    if (historyBusy.current) return;
+    historyBusy.current = true;
+    setGridBusy(true);
+    try {
+      const edit = () => invoke<TimelineSnapshot>("set_track_tempo_matching", { id: trackId, enabled });
+      if (timelineRef.current.clips.some((clip) => clip.libraryTrackId === trackId)) await runTimelineEdit(edit, refreshTimeline);
+      else { setError(null); setTimeline(await edit()); }
+      setLibrary(await invoke<LibraryTrack[]>("list_library_tracks"));
+    } catch (tempoError) {
+      setError(errorMessage(tempoError));
+    } finally {
+      historyBusy.current = false;
+      setGridBusy(false);
+    }
+  }, [refreshTimeline, runTimelineEdit]);
+
   const saveBeatgridCorrection = useCallback(
     async (track: LibraryTrack, bpm: number, firstBeatMs: number) => {
       setGridBusy(true);
@@ -905,6 +924,7 @@ function App() {
     trackId: number,
     anchorBeat?: number,
     lane?: number,
+    insertion?: TimelineInsertion,
   ) => {
     setTimelineBusy(true);
 
@@ -914,6 +934,7 @@ function App() {
           libraryTrackId: trackId,
           anchorBeat: anchorBeat ?? null,
           lane: lane ?? null,
+          insertion: insertion ?? null,
         }),
         refreshTimeline,
       );
@@ -1879,7 +1900,7 @@ function App() {
             onClearEffectRange={clearTimelineEffectRange}
             onShiftClipDownbeat={(trackId, beats) => void shiftTrackDownbeat(trackId, beats)}
             onDuplicateClip={duplicateTimelineClip}
-            busy={timelineBusy || timelinePreparing}
+            busy={timelineBusy || timelinePreparing || gridBusy}
             preparing={timelinePreparing}
             libraryTracks={library}
             libraryPointerDrag={libraryPointerDrag}
@@ -1966,6 +1987,7 @@ function App() {
           onAddFiles={() => void addAudioFiles()}
           onAddFolder={() => void addMusicFolder()}
           onEditGrid={(track) => setEditingTrackId(track.id)}
+          onSetTempoMatching={(track, enabled) => void setTrackTempoMatching(track.id, enabled)}
           /* No lane: the backend rotates A-B-C-D and takes the first that is
              actually free at the playhead. Naming one here is what made this
              refuse itself when the rotation came back round to a busy track. */
@@ -2000,6 +2022,7 @@ function App() {
             onSeekPreview={(positionMs) => void seekPreview(positionMs)}
             onSetPreviewSpeed={(speed) => void setPreviewSpeed(speed)}
             onReanalyze={() => void analyzeLibraryTracks([editingTrack.id])}
+            onSetTempoMatching={(enabled) => void setTrackTempoMatching(editingTrack.id, enabled)}
             onSave={(bpm, firstBeatMs) =>
               void saveBeatgridCorrection(editingTrack, bpm, firstBeatMs)
             }

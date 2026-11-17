@@ -30,6 +30,11 @@ export interface ClipEqSettings {
  */
 export type SidechainRole = "none" | "key" | "ducked";
 
+export interface TimelineInsertion {
+  clipId: number;
+  position: "before" | "after";
+}
+
 export interface TimelineClip {
   id: number;
   libraryTrackId: number;
@@ -48,6 +53,7 @@ export interface TimelineClip {
    * vers elle, sans que la bibliothèque soit touchée.
    */
   tempoTargetBpm: number | null;
+  tempoMatchingEnabled: boolean;
   firstBeatMs: number | null;
   preRollBeats: number;
   durationBeats: number;

@@ -3,8 +3,19 @@ import { memo, useLayoutEffect, useMemo, useRef } from "react";
 import { buildWaveformPyramid, selectWaveformLevel } from "../lib/waveformPyramid";
 import { waveformWindow, windowBucketRange } from "../lib/waveformWindow";
 import type { WaveformPeaks } from "../timeline/types";
+import type { TempoClock } from "../lib/tempoCurve";
+import { warpWaveform } from "../lib/waveformWarp";
 
 interface ClipWaveformProps {
+  freeTiming?: {
+    clock: TempoClock;
+    anchorBeat: number;
+    bpm: number;
+    sourceStartBeat: number;
+    sourceDurationBeats: number;
+    projectStartBeat: number;
+    projectEndBeat: number;
+  };
   waveform: WaveformPeaks | null;
   displayWidth: number;
   trimStartBeats?: number;
@@ -89,6 +100,7 @@ export const ClipWaveform = memo(function ClipWaveform({
   trimStartBeats = 0,
   trimEndBeats = 0,
   durationBeats,
+  freeTiming,
   visibleFromPx,
   visibleWidthPx,
 }: ClipWaveformProps) {
@@ -116,9 +128,21 @@ export const ClipWaveform = memo(function ClipWaveform({
     };
   }, [waveform, trimStartBeats, trimEndBeats, durationBeats]);
 
+  const projectedWaveform = useMemo(() => {
+    if (!slicedWaveform || !freeTiming || freeTiming.sourceDurationBeats <= 0) return slicedWaveform;
+    const { clock, anchorBeat, bpm, sourceStartBeat, sourceDurationBeats, projectStartBeat, projectEndBeat } = freeTiming;
+    const anchorSeconds = clock.secondsAtBeat(anchorBeat);
+    return warpWaveform(slicedWaveform, (progress) => {
+      const beat = projectStartBeat + progress * (projectEndBeat - projectStartBeat);
+      const sourceBeat = anchorBeat + (clock.secondsAtBeat(beat) - anchorSeconds) * bpm / 60;
+      return (sourceBeat - sourceStartBeat) / sourceDurationBeats;
+    });
+  }, [slicedWaveform, freeTiming?.clock, freeTiming?.anchorBeat, freeTiming?.bpm, freeTiming?.sourceStartBeat,
+    freeTiming?.sourceDurationBeats, freeTiming?.projectStartBeat, freeTiming?.projectEndBeat]);
+
   const pyramid = useMemo(
-    () => (slicedWaveform ? buildWaveformPyramid(slicedWaveform) : []),
-    [slicedWaveform],
+    () => (projectedWaveform ? buildWaveformPyramid(projectedWaveform) : []),
+    [projectedWaveform],
   );
 
   /**

@@ -2,15 +2,46 @@
 
 Notable changes to MixCanvas, newest first.
 
-Versions follow [semantic versioning](https://semver.org): the **major** number
-moves when a project file or a library written by an older build can no longer
-be opened, the **minor** number when something new appears, the **patch** number
-when something is fixed.
+Compatibility changes are documented for each release, including which older
+versions can open saved projects and upgraded libraries.
 
 Entries are written for the person using the program, not for the person who
 wrote it. What changed, and what it means when you sit down to build a mix.
 
 ---
+
+## 1.9.5 — 2026-11-17
+
+### Added
+
+- **Find songs inside the timeline.** A discreet magnifier below Undo/Redo searches
+  title, artist and filename. Results distinguish each use of the same song by
+  its sequence number, track and bar. Select one to bring it into view and
+  highlight it, including tracks hidden by vertical scrolling. Playback stays
+  at its current position. Arrow keys, Enter and Escape work in the search panel.
+
+- **Original-speed playback for individual Library songs.** Right-click a song's
+  BPM to disable tempo matching, or use the same toggle in the Beatgrid Editor.
+  The song keeps its analyzed grid and plays without time-stretching in every
+  clip. FREE marks the setting; enabling matching restores synchronization.
+  Native durations, trims, loops, waveforms, insertions and bounces follow the
+  selected mode. Projects using this option require 1.9.5 or later.
+
+- **Drop a Library song onto an existing clip to insert before or after it.**
+  Drag either the song name or its + button. A dialog names both songs and shows
+  how much each choice moves the following mix. Clips on all four tracks move
+  with their tempo points and every automation curve. Cancel leaves the mix
+  untouched; Undo restores the whole insertion in one step. Clicking a Library
+  song name still previews it.
+
+### Compatibility
+
+- Existing libraries upgrade to schema 41 with tempo matching enabled for
+  every song. Earlier executables cannot open the upgraded Library; keep a
+  backup of the **MixCanvas Files** folder if you need to return to 1.9.0.
+- Older projects still open. Projects containing a Library song with tempo
+  matching disabled use format 3 and require 1.9.5 or later. Projects with
+  matching enabled for every song remain format 2, compatible with 1.9.0.
 
 ## 1.9.0 — 2026-11-15
 

@@ -30,6 +30,7 @@ function track(id: number, overrides: Partial<LibraryTrack> = {}): LibraryTrack 
     analysisError: null,
     analysisVersion: 1,
     isMissing: false,
+    tempoMatchingEnabled: true,
     ...overrides,
   };
 }

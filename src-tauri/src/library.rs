@@ -39,6 +39,7 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
         analysis_status TEXT NOT NULL DEFAULT 'not_analyzed',
         analysis_error  TEXT,
         analysis_version INTEGER NOT NULL DEFAULT 0,
+        tempo_matching_enabled INTEGER NOT NULL DEFAULT 1 CHECK (tempo_matching_enabled IN (0, 1)),
         added_at        INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
@@ -376,14 +377,14 @@ const CURRENT_DATABASE_SCHEMA: &str = r#"
         right_rms      BLOB
     );
 
-    PRAGMA user_version = 40;
+    PRAGMA user_version = 41;
 "#;
 
 /// Schema version described by `CURRENT_DATABASE_SCHEMA`. The constant and the
 /// `PRAGMA user_version` above must move together: the schema is also replayed
 /// after a migration, so a stale value there would push the database back down
 /// and replay the last migrations on every start.
-const LATEST_SCHEMA_VERSION: i64 = 40;
+const LATEST_SCHEMA_VERSION: i64 = 41;
 
 const MIGRATE_VERSION_39_TO_40: &str = include_str!("migrations/0040_four_tracks.sql");
 
@@ -606,6 +607,7 @@ pub struct LibraryTrack {
     analysis_error: Option<String>,
     analysis_version: u32,
     is_missing: bool,
+    tempo_matching_enabled: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -760,7 +762,7 @@ impl LibraryStore {
                 "SELECT id, file_path, file_name, artist, title, duration_ms, sample_rate, channels,
                         bpm, manual_bpm, bpm_confidence,
                         first_beat_ms, manual_first_beat_ms, beat_count,
-                        analysis_status, analysis_error, analysis_version
+                        analysis_status, analysis_error, analysis_version, tempo_matching_enabled
                  FROM library_tracks
                  WHERE ?1 IS NULL OR id = ?1
                  ORDER BY COALESCE(NULLIF(artist, ''), file_name) COLLATE NOCASE,
@@ -788,6 +790,7 @@ impl LibraryStore {
                     row.get::<_, String>(14)?,
                     row.get::<_, Option<String>>(15)?,
                     row.get::<_, i64>(16)?,
+                    row.get::<_, bool>(17)?,
                 ))
             })
             .map_err(database_read_error)?;
@@ -812,6 +815,7 @@ impl LibraryStore {
                 analysis_status,
                 analysis_error,
                 analysis_version,
+                tempo_matching_enabled,
             ) = row.map_err(database_read_error)?;
             let duration_ms = u64::try_from(duration_ms).unwrap_or_default();
             let analyzed_first_beat_ms =
@@ -847,6 +851,7 @@ impl LibraryStore {
                 analysis_status,
                 analysis_error,
                 analysis_version: u32::try_from(analysis_version).unwrap_or_default(),
+                tempo_matching_enabled,
             });
         }
 
@@ -2125,6 +2130,24 @@ fn initialize_database(connection: &Connection) -> Result<(), String> {
                 migrate_to_four_tracks(connection)?;
                 version = 40;
             }
+            40 => {
+                let transaction = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    rusqlite::TransactionBehavior::Immediate,
+                )
+                .map_err(database_write_error)?;
+                ensure_column(
+                    &transaction,
+                    "library_tracks",
+                    "tempo_matching_enabled",
+                    "INTEGER NOT NULL DEFAULT 1 CHECK (tempo_matching_enabled IN (0, 1))",
+                )?;
+                transaction
+                    .pragma_update(None, "user_version", 41)
+                    .map_err(database_write_error)?;
+                transaction.commit().map_err(database_write_error)?;
+                version = 41;
+            }
             _ => {
                 let (target_version, migration) = match version {
                     1 => (2, MIGRATE_VERSION_1_TO_2),
@@ -2672,7 +2695,7 @@ mod tests {
         let schema = super::CURRENT_DATABASE_SCHEMA
             .replace("lane BETWEEN 0 AND 3", "lane BETWEEN 0 AND 2")
             .replace(", (3, 0, 0)", "")
-            .replace("PRAGMA user_version = 40", "PRAGMA user_version = 39");
+            .replace("PRAGMA user_version = 41", "PRAGMA user_version = 39");
         connection.execute_batch(&schema).unwrap();
         connection.execute_batch(
             "INSERT INTO library_tracks (id, file_path, path_key, file_name, duration_ms, sample_rate, channels)
@@ -2691,6 +2714,32 @@ mod tests {
             connection.execute(&format!("INSERT INTO timeline_{effect}_nodes (lane, beat, value) VALUES (2, 16, 0.7)"), []).unwrap();
         }
         connection
+    }
+
+    #[test]
+    fn tempo_matching_upgrade_defaults_to_on_and_preserves_the_grid() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(super::CURRENT_DATABASE_SCHEMA)
+            .unwrap();
+        connection.execute_batch("ALTER TABLE library_tracks DROP COLUMN tempo_matching_enabled;
+            INSERT INTO library_tracks (file_path, path_key, file_name, duration_ms, sample_rate, channels, bpm, manual_bpm, first_beat_ms)
+            VALUES ('song.wav','song.wav','song.wav',4000,44100,2,100,105,500);
+            PRAGMA user_version = 40;").unwrap();
+        super::initialize_database(&connection).unwrap();
+        let stored: (bool, f64, f64, i64) = connection
+            .query_row(
+                "SELECT tempo_matching_enabled, bpm, manual_bpm, first_beat_ms FROM library_tracks",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(stored, (true, 100.0, 105.0, 500));
+        assert!(
+            connection
+                .execute("UPDATE library_tracks SET tempo_matching_enabled = 2", [])
+                .is_err()
+        );
     }
 
     #[test]

@@ -81,7 +81,10 @@ const SHORTCUTS: ShortcutItem[] = [
   { surface: "pointer", group: "Clips", keys: ["Drag an edge"], description: "Trim the head or tail — the audio under the rest stays put, and dragging back out restores it" },
   { surface: "pointer", group: "Clips", keys: ["Drag the title bar"], description: "Move along the timeline, or onto another track" },
   { surface: "pointer", group: "Clips", keys: ["Drag the body"], description: "Draw the pencil's shape across the drag, live, onto whichever line VIEW is showing — nothing to arm" },
-  { surface: "pointer", group: "Clips", keys: ["Drag from library"], description: "Drop a track straight onto the lane you want" },
+  { surface: "pointer", group: "Clips", keys: ["Drag from library"], description: "Drag the song name or + button onto the lane you want. Clicking the name still previews it" },
+  { surface: "pointer", group: "Clips", keys: ["Drop onto an existing clip"], description: "Choose Insert before, Insert after, or Cancel. Following clips, tempo points and all automation shift together on all four tracks. Ctrl+Z undoes the whole insertion" },
+  { surface: "pointer", group: "Clips", keys: ["Right click Library BPM"], description: "Enable or disable tempo matching for this song. FREE plays it at original speed in every clip and keeps the analyzed grid. The Beatgrid Editor has the same toggle" },
+  { surface: "control", group: "Moving around", keys: ["Magnifier below Undo/Redo"], description: "Find a song in the timeline by title, artist or filename. Select an occurrence to locate and highlight it on its track; playback keeps its position. Arrow keys and Enter select a result, Escape closes search" },
 
   { surface: "control", group: "Clips", keys: ["∞"], description: "Make the clip loopable. Its two edges then repeat it instead of trimming it — drag either one out and the pattern fills the space. Turning it off leaves the clip exactly as it was" },
   { surface: "control", group: "Clips", keys: ["M"], description: "Mute this clip alone. Its EQ, automation and bake stay put and come back untouched — unlike the lane MUTE, which takes its neighbours with it" },

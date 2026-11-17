@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
 import { formatDuration } from "../lib/formatDuration";
 import { libraryDisplayName } from "../lib/libraryDisplayName";
@@ -66,6 +66,7 @@ interface LibraryPanelProps {
   onAddFiles: () => void;
   onAddFolder: () => void;
   onEditGrid: (track: LibraryTrack) => void;
+  onSetTempoMatching: (track: LibraryTrack, enabled: boolean) => void;
   onAddToTimeline: (track: LibraryTrack) => void;
   onTimelineDragMove: (trackId: number, clientX: number, clientY: number) => void;
   onTimelineDrop: (trackId: number, clientX: number, clientY: number) => void;
@@ -104,6 +105,7 @@ export function LibraryPanel({
   onAddFiles,
   onAddFolder,
   onEditGrid,
+  onSetTempoMatching,
   onAddToTimeline,
   onTimelineDragMove,
   onTimelineDrop,
@@ -122,6 +124,13 @@ export function LibraryPanel({
      raison d'en être la source, et l'y garder aurait fait vivre l'état à un
      endroit et sa persistance à un autre. */
   const [contextMenu, setContextMenu] = useState<LibraryContextMenu | null>(null);
+  useLayoutEffect(() => {
+    if (!contextMenu || !contextMenuRef.current) return;
+    const bounds = contextMenuRef.current.getBoundingClientRect();
+    const x = Math.max(8, Math.min(contextMenu.x, window.innerWidth - bounds.width - 8));
+    const y = Math.max(8, Math.min(contextMenu.y, window.innerHeight - bounds.height - 8));
+    if (x !== contextMenu.x || y !== contextMenu.y) setContextMenu({ ...contextMenu, x, y });
+  }, [contextMenu]);
   /**
    * La recherche par nom, et si sa boîte est ouverte.
    *
@@ -189,15 +198,15 @@ export function LibraryPanel({
   }, []);
 
   const startPointerDrag = (
-    event: ReactPointerEvent<HTMLButtonElement>,
-    trackId: number,
+    event: ReactPointerEvent<HTMLElement>,
+    track: LibraryTrack,
   ) => {
-    if (event.button !== 0) {
+    if (event.button !== 0 || timelineAddBusy || track.isMissing || track.bpm === null || track.firstBeatMs === null) {
       return;
     }
     pointerDrag.current = {
       pointerId: event.pointerId,
-      trackId,
+      trackId: track.id,
       startX: event.clientX,
       startY: event.clientY,
       dragging: false,
@@ -205,7 +214,7 @@ export function LibraryPanel({
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
-  const movePointerDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+  const movePointerDrag = (event: ReactPointerEvent<HTMLElement>) => {
     const candidate = pointerDrag.current;
     if (!candidate || candidate.pointerId !== event.pointerId) {
       return;
@@ -224,7 +233,7 @@ export function LibraryPanel({
     }
   };
 
-  const finishPointerDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+  const finishPointerDrag = (event: ReactPointerEvent<HTMLElement>) => {
     const candidate = pointerDrag.current;
     if (!candidate || candidate.pointerId !== event.pointerId) {
       return;
@@ -240,7 +249,7 @@ export function LibraryPanel({
     }
   };
 
-  const cancelPointerDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+  const cancelPointerDrag = (event: ReactPointerEvent<HTMLElement>) => {
     const candidate = pointerDrag.current;
     if (!candidate || candidate.pointerId !== event.pointerId) {
       return;
@@ -404,7 +413,7 @@ export function LibraryPanel({
               <span className="analysis-running"><span aria-hidden="true" />Analyzing</span>
             ) : track.bpm ? (
               <button
-                className={`bpm-value${track.isCorrected ? " bpm-value--manual" : ""}`}
+                className={`bpm-value${track.isCorrected ? " bpm-value--manual" : ""}${track.tempoMatchingEnabled === false ? " bpm-value--free" : ""}`}
                 type="button"
                 disabled={libraryBusy || analysisBusy || track.isMissing}
                 onClick={() => onEditGrid(track)}
@@ -431,7 +440,7 @@ export function LibraryPanel({
                     se lit sur une seule rangée — les deux signaux ne
                     s'adressent pas au même coup d'œil. */}
                 <span className="bpm-edit-hint" aria-hidden="true">
-                  {track.isCorrected ? "EDITED" : "EDIT"}
+                  {track.tempoMatchingEnabled === false ? "FREE" : track.isCorrected ? "EDITED" : "EDIT"}
                 </span>
               </button>
             ) : (
@@ -465,9 +474,9 @@ export function LibraryPanel({
                   <button
                     className="timeline-drag-handle"
                     type="button"
-                    disabled={timelineAddBusy || track.isMissing || track.bpm === null}
+                    disabled={timelineAddBusy || track.isMissing || track.bpm === null || track.firstBeatMs === null}
                     onDragStart={(event) => event.preventDefault()}
-                    onPointerDown={(event) => startPointerDrag(event, track.id)}
+                    onPointerDown={(event) => startPointerDrag(event, track)}
                     onPointerMove={movePointerDrag}
                     onPointerUp={finishPointerDrag}
                     onPointerCancel={cancelPointerDrag}
@@ -495,8 +504,14 @@ export function LibraryPanel({
                         role="button"
                         tabIndex={previewDisabled || isLoading || track.isMissing ? -1 : 0}
                         aria-disabled={previewDisabled || isLoading || track.isMissing}
-                        title={previewTitle}
+                        title={`${previewTitle} · Drag onto a timeline clip to insert before or after`}
+                        onDragStart={(event) => event.preventDefault()}
+                        onPointerDown={(event) => startPointerDrag(event, track)}
+                        onPointerMove={movePointerDrag}
+                        onPointerUp={finishPointerDrag}
+                        onPointerCancel={cancelPointerDrag}
                         onClick={() => {
+                          if (performance.now() < suppressClickUntil.current) return;
                           if (previewDisabled || isLoading || track.isMissing) return;
                           onPreview(track);
                         }}
@@ -527,6 +542,13 @@ export function LibraryPanel({
           aria-label={`Actions for ${libraryDisplayName(contextMenu.track)}`}
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
+          <button type="button" role="menuitem" disabled={libraryBusy || analysisBusy}
+            onClick={() => {
+              onSetTempoMatching(contextMenu.track, contextMenu.track.tempoMatchingEnabled === false);
+              setContextMenu(null);
+            }}>
+            {contextMenu.track.tempoMatchingEnabled === false ? "Enable tempo matching" : "Disable tempo matching"}
+          </button>
           {/* Le décalage d'abord : c'est le geste courant, et il ne détruit
               rien. Le retrait ferme la liste, séparé et en dernier. */}
           <button

@@ -10,6 +10,47 @@ export interface TempoCurveGeometry {
   markers: TempoCurveMarker[];
 }
 
+export interface TempoClock {
+  projectBpm: number;
+  points: TimelineTempoPoint[];
+  secondsAtBeat: (beat: number) => number;
+  beatAtSeconds: (seconds: number) => number;
+}
+
+/** Same beat-stepped clock as Rust TempoMap, including fractional beat positions. */
+export function createTempoClock(projectBpm: number, points: readonly TimelineTempoPoint[]): TempoClock {
+  const byBeat = new Map<number, TimelineTempoPoint>([[0, { beat: 0, bpm: projectBpm, clipId: null }]]);
+  for (const point of points) byBeat.set(point.beat, point);
+  const sorted = [...byBeat.values()].sort((a, b) => a.beat - b.beat);
+  const bpmAt = (beat: number): number => {
+    let low = 0, high = sorted.length;
+    while (low < high) { const mid = (low + high) >>> 1; if (sorted[mid].beat <= beat) low = mid + 1; else high = mid; }
+    const left = sorted[Math.max(0, low - 1)], right = sorted[low];
+    return right ? left.bpm + (right.bpm - left.bpm) * (beat - left.beat) / (right.beat - left.beat) : left.bpm;
+  };
+  const elapsed = [0];
+  const last = Math.min(100_000, Math.ceil(sorted[sorted.length - 1].beat));
+  for (let beat = 0; beat < last; beat++) elapsed.push(elapsed[beat] + 60 / bpmAt(beat));
+  return {
+    projectBpm,
+    points: sorted,
+    secondsAtBeat(beat) {
+      if (!Number.isFinite(beat)) return beat;
+      if (beat < 0) return beat * 60 / bpmAt(0);
+      const index = Math.min(Math.floor(beat), elapsed.length - 1);
+      return elapsed[index] + (beat - index) * 60 / bpmAt(index);
+    },
+    beatAtSeconds(seconds) {
+      if (!Number.isFinite(seconds)) return seconds;
+      if (seconds < 0) return seconds * bpmAt(0) / 60;
+      let low = 0, high = elapsed.length;
+      while (low < high) { const mid = (low + high) >>> 1; if (elapsed[mid] <= seconds) low = mid + 1; else high = mid; }
+      const index = Math.max(0, low - 1);
+      return index + (seconds - elapsed[index]) * bpmAt(index) / 60;
+    },
+  };
+}
+
 export function tempoBpmAtBeat(points: TimelineTempoPoint[], beat: number): number {
   const sorted = [...points].sort((left, right) => left.beat - right.beat);
   if (sorted.length === 0) return 120;

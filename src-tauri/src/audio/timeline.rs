@@ -1463,6 +1463,7 @@ struct PlacedClip {
     output_frames: usize,
     visual_start_beat: f64,
     source_bpm: f64,
+    tempo_matching_enabled: bool,
     trim_start_beats: f64,
     trim_end_beats: f64,
     is_sidechain_key: bool,
@@ -1483,6 +1484,7 @@ impl Clone for PlacedClip {
             output_frames: self.output_frames,
             visual_start_beat: self.visual_start_beat,
             source_bpm: self.source_bpm,
+            tempo_matching_enabled: self.tempo_matching_enabled,
             trim_start_beats: self.trim_start_beats,
             trim_end_beats: self.trim_end_beats,
             is_sidechain_key: self.is_sidechain_key,
@@ -1633,6 +1635,18 @@ impl PlacedClip {
         output_sample_rate: u32,
         tempo_map: &TempoMap,
     ) -> GrainBlend {
+        if !self.tempo_matching_enabled {
+            return GrainBlend {
+                current_position: self.source_position_at_timeline_frame(
+                    self.start_frame + output_frame,
+                    source_sample_rate,
+                    output_sample_rate,
+                    tempo_map,
+                ),
+                previous_position: None,
+                fade_in: 1.0,
+            };
+        }
         let grain_index = output_frame / WSOLA_HOP_FRAMES;
         let phase = output_frame % WSOLA_HOP_FRAMES;
         let cache = match self.grain_cache {
@@ -1691,6 +1705,12 @@ impl PlacedClip {
         output_sample_rate: u32,
         tempo_map: &TempoMap,
     ) -> f64 {
+        if !self.tempo_matching_enabled {
+            return (timeline_frame.saturating_sub(self.start_frame) as f64
+                / f64::from(output_sample_rate)
+                + self.trim_start_beats * 60.0 / self.source_bpm)
+                * f64::from(source_sample_rate);
+        }
         let timeline_seconds = timeline_frame as f64 / f64::from(output_sample_rate);
         let timeline_beat = tempo_map.beat_at_seconds(timeline_seconds);
         let source_beat = (timeline_beat - self.visual_start_beat) + self.trim_start_beats;
@@ -2914,20 +2934,26 @@ pub(crate) fn prepare_timeline(
         let (minimum_bpm, maximum_bpm) = plan
             .tempo_map
             .bpm_extrema_between(clip.visual_start_beat, clip_end_beat);
-        validate_stretch_ratio(
-            stretch_duration_ratio(clip.source_bpm, minimum_bpm),
-            &clip.file_path,
-        )?;
-        validate_stretch_ratio(
-            stretch_duration_ratio(clip.source_bpm, maximum_bpm),
-            &clip.file_path,
-        )?;
+        if clip.tempo_matching_enabled {
+            validate_stretch_ratio(
+                stretch_duration_ratio(clip.source_bpm, minimum_bpm),
+                &clip.file_path,
+            )?;
+            validate_stretch_ratio(
+                stretch_duration_ratio(clip.source_bpm, maximum_bpm),
+                &clip.file_path,
+            )?;
+        }
         if verify_files && verified_paths.insert(clip.file_path.clone()) {
             open_audio_decoder(Path::new(&clip.file_path))?;
         }
         let start_seconds = plan.tempo_map.seconds_at_beat(clip.visual_start_beat);
         let start_frame = seconds_to_frames(start_seconds, output_sample_rate)?;
-        let end_seconds = plan.tempo_map.seconds_at_beat(clip_end_beat);
+        let end_seconds = if clip.tempo_matching_enabled {
+            plan.tempo_map.seconds_at_beat(clip_end_beat)
+        } else {
+            start_seconds + clip.duration_beats * 60.0 / clip.source_bpm
+        };
         let end_frame = seconds_to_frames(end_seconds, output_sample_rate)?;
         let output_frames = end_frame.saturating_sub(start_frame).max(1);
         total_frames = total_frames.max(start_frame.saturating_add(output_frames));
@@ -2943,6 +2969,7 @@ pub(crate) fn prepare_timeline(
             output_frames,
             visual_start_beat: clip.visual_start_beat,
             source_bpm: clip.source_bpm,
+            tempo_matching_enabled: clip.tempo_matching_enabled,
             trim_start_beats: clip.trim_start_beats,
             trim_end_beats: clip.trim_end_beats,
             is_sidechain_key: clip.is_sidechain_key,
@@ -3130,6 +3157,7 @@ fn playback_signature(plan: &TimelineRenderPlan) -> u64 {
         clip.lane.hash(&mut hasher);
         clip.file_path.hash(&mut hasher);
         clip.source_bpm.to_bits().hash(&mut hasher);
+        clip.tempo_matching_enabled.hash(&mut hasher);
         clip.first_beat_ms.hash(&mut hasher);
         clip.anchor_beat.to_bits().hash(&mut hasher);
         clip.visual_start_beat.to_bits().hash(&mut hasher);
@@ -3253,6 +3281,7 @@ mod tests {
 
     fn placed_clip(start_frame: usize, output_frames: usize) -> PlacedClip {
         PlacedClip {
+            tempo_matching_enabled: true,
             file_path: "test.mp3".to_owned(),
             lane: 0,
             start_frame,
@@ -3273,6 +3302,112 @@ mod tests {
 
     fn constant_tempo() -> TempoMap {
         TempoMap::new(120.0, Vec::new()).expect("valid constant tempo")
+    }
+
+    #[test]
+    fn free_tempo_audio_uses_source_seconds_through_ramps_seeks_and_sample_rates() {
+        let map = TempoMap::new(120.0, vec![TempoPoint::clip_target(16.0, 180.0, 2)]).unwrap();
+        let mut clip = placed_clip(44_100, 10 * 44_100);
+        clip.tempo_matching_enabled = false;
+        clip.source_bpm = 100.0;
+        clip.trim_start_beats = 2.0;
+        for output in [0, 1, 1_024, 44_100, 3 * 44_100] {
+            let position = clip.source_position_at_timeline_frame(
+                clip.start_frame + output,
+                48_000,
+                44_100,
+                &map,
+            );
+            let expected = (output as f64 / 44_100.0 + 1.2) * 48_000.0;
+            assert!((position - expected).abs() < 1e-8);
+            let grain = clip.grain_blend(output, 48_000, 44_100, &map);
+            assert!((grain.current_position - expected).abs() < 1e-8);
+            assert!(
+                grain.previous_position.is_none(),
+                "native playback must bypass WSOLA alignment"
+            );
+        }
+        let before =
+            clip.source_position_at_timeline_frame(clip.start_frame + 88_200, 44_100, 44_100, &map);
+        clip.reset_reader();
+        assert_eq!(
+            clip.source_position_at_timeline_frame(clip.start_frame + 88_200, 44_100, 44_100, &map),
+            before
+        );
+    }
+
+    #[test]
+    fn free_tempo_renders_the_full_song_at_its_original_pitch() {
+        use crate::audio::stems::write_stereo_wav;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "mixcanvas-free-tempo-{}-{stamp}.wav",
+            std::process::id()
+        ));
+        let signal: Vec<f32> = (0..88_200)
+            .map(|index| 0.1 * (TAU * 220.0 * index as f64 / 44_100.0).sin() as f32)
+            .collect();
+        write_stereo_wav(&path, &signal, &signal).unwrap();
+        let plan = TimelineRenderPlan {
+            project_bpm: 180.0,
+            tempo_map: TempoMap::new(180.0, Vec::new()).unwrap(),
+            end_beat: 6.0,
+            audible_lane_mask: 1,
+            limiter_enabled: false,
+            compressor_enabled: false,
+            clips: vec![TimelineRenderClip {
+                id: 1,
+                lane: 0,
+                file_path: path.to_string_lossy().into_owned(),
+                source_bpm: 100.0,
+                tempo_matching_enabled: false,
+                first_beat_ms: 0,
+                anchor_beat: 0.0,
+                visual_start_beat: 0.0,
+                duration_beats: 100.0 / 30.0,
+                trim_start_beats: 0.0,
+                trim_end_beats: 0.0,
+                is_sidechain_key: false,
+                ducks_under_key: false,
+                eq_settings: None,
+            }],
+            volume_nodes: Vec::new(),
+            pan_nodes: Vec::new(),
+            filter_nodes: Vec::new(),
+            reverb_nodes: Vec::new(),
+            flanger_nodes: Vec::new(),
+            bitcrush_nodes: Vec::new(),
+            delay_nodes: Vec::new(),
+        };
+        let audio: Vec<f32> = prepare_timeline(&plan, true, 44_100)
+            .unwrap()
+            .take(97_020 * 2)
+            .collect();
+        let energy = |from: usize, to: usize| {
+            (from..to)
+                .map(|frame| f64::from(*audio.get(frame * 2).unwrap_or(&0.0)).powi(2))
+                .sum::<f64>()
+                / (to - from) as f64
+        };
+        assert!(
+            energy(79_380, 85_995) > 0.0001,
+            "the final part must still play after two seconds at the source BPM"
+        );
+        assert!(
+            energy(89_082, 92_610) < 1e-10,
+            "native audio must finish after its original two seconds"
+        );
+        let crossings = (8_821..52_920)
+            .filter(|frame| audio[(frame - 1) * 2] <= 0.0 && audio[frame * 2] > 0.0)
+            .count();
+        assert!(
+            (219..=221).contains(&crossings),
+            "220 Hz must stay 220 Hz: {crossings}"
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     fn unity_automation() -> [VolumeAutomation; TIMELINE_LANE_COUNT] {
@@ -4246,6 +4381,7 @@ mod tests {
                 limiter_enabled: false,
                 compressor_enabled: false,
                 clips: vec![TimelineRenderClip {
+                    tempo_matching_enabled: true,
                     id: 1,
                     lane: 0,
                     file_path: source.to_string_lossy().into_owned(),
@@ -4373,6 +4509,7 @@ mod tests {
             limiter_enabled: false,
             compressor_enabled: false,
             clips: vec![TimelineRenderClip {
+                tempo_matching_enabled: true,
                 id: 1,
                 lane: 0,
                 file_path: source.to_string_lossy().into_owned(),
@@ -5058,6 +5195,7 @@ mod tests {
             limiter_enabled: limiter,
             compressor_enabled: compressor,
             clips: vec![TimelineRenderClip {
+                tempo_matching_enabled: true,
                 id: 1,
                 lane: 0,
                 file_path: "definitely-missing-switch-test.mp3".to_owned(),
@@ -5118,6 +5256,7 @@ mod tests {
             limiter_enabled: false,
             compressor_enabled: false,
             clips: vec![TimelineRenderClip {
+                tempo_matching_enabled: true,
                 id: 1,
                 lane: 3,
                 file_path: path.to_string_lossy().into_owned(),
@@ -5210,6 +5349,7 @@ mod tests {
             limiter_enabled: true,
             compressor_enabled: false,
             clips: vec![TimelineRenderClip {
+                tempo_matching_enabled: true,
                 id: 1,
                 lane: 0,
                 file_path: "definitely-missing-live-edit-test.mp3".to_owned(),

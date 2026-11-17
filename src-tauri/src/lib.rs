@@ -202,7 +202,7 @@ fn shift_track_downbeat(
     beats: i32,
     state: State<'_, LibraryState>,
 ) -> Result<Vec<LibraryTrack>, String> {
-    with_library(&state, |library| library.shift_downbeat(id, beats))
+    with_grid_edit(&state, |library| library.shift_downbeat(id, beats))
 }
 
 #[tauri::command]
@@ -212,8 +212,26 @@ fn update_track_beatgrid(
     first_beat_ms: u64,
     state: State<'_, LibraryState>,
 ) -> Result<Vec<LibraryTrack>, String> {
-    with_library(&state, |library| {
+    with_grid_edit(&state, |library| {
         library.update_beatgrid_correction(id, bpm, first_beat_ms)
+    })
+}
+
+fn with_grid_edit(
+    state: &State<'_, LibraryState>,
+    edit: impl FnOnce(&LibraryStore) -> Result<Vec<LibraryTrack>, String>,
+) -> Result<Vec<LibraryTrack>, String> {
+    with_library(state, |library| {
+        let transaction = library
+            .connection
+            .unchecked_transaction()
+            .map_err(|error| format!("Could not update the beatgrid: {error}"))?;
+        let tracks = edit(library)?;
+        timeline::validate_clip_layout(&transaction)?;
+        transaction
+            .commit()
+            .map_err(|error| format!("Could not save the beatgrid: {error}"))?;
+        Ok(tracks)
     })
 }
 
@@ -749,13 +767,44 @@ fn add_timeline_clip(
     library_track_id: i64,
     anchor_beat: Option<f64>,
     lane: Option<i64>,
+    insertion: Option<timeline::TimelineInsertion>,
     library_state: State<'_, LibraryState>,
     playback_state: State<'_, TimelinePlaybackState>,
     transport_state: State<'_, TimelineTransportState>,
 ) -> Result<TimelineSnapshot, String> {
     let previous_timing = timeline_timing(&library_state)?;
     let snapshot = with_timeline(&library_state, |connection| {
-        timeline::add_clip(connection, library_track_id, anchor_beat, lane)
+        if let Some(insertion) = insertion {
+            timeline::insert_clip(
+                connection,
+                library_track_id,
+                insertion.clip_id,
+                insertion.position,
+            )
+        } else {
+            timeline::add_clip(connection, library_track_id, anchor_beat, lane)
+        }
+    })?;
+    refresh_live_timeline_after_edit(
+        &library_state,
+        &playback_state,
+        &transport_state,
+        previous_timing,
+    )?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn set_track_tempo_matching(
+    id: i64,
+    enabled: bool,
+    library_state: State<'_, LibraryState>,
+    playback_state: State<'_, TimelinePlaybackState>,
+    transport_state: State<'_, TimelineTransportState>,
+) -> Result<TimelineSnapshot, String> {
+    let previous_timing = timeline_timing(&library_state)?;
+    let snapshot = with_timeline(&library_state, |connection| {
+        timeline::set_track_tempo_matching(connection, id, enabled)
     })?;
     refresh_live_timeline_after_edit(
         &library_state,
@@ -2324,6 +2373,7 @@ pub fn run() {
             trim_timeline_clip,
             move_timeline_tempo_point,
             set_timeline_clip_tempo_target,
+            set_track_tempo_matching,
             set_timeline_effect_keys,
             set_timeline_effect_erase,
             write_timeline_effect_span,

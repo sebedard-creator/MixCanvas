@@ -238,6 +238,8 @@ pub struct TimelineClip {
     /// le clip joue Ã  un pour un. Une valeur est une dÃ©cision de mix, et le clip
     /// est Ã©tirÃ© vers elle. Voir [`effective_tempo_target`].
     pub tempo_target_bpm: Option<f64>,
+    #[serde(default = "tempo_matching_default")]
+    pub tempo_matching_enabled: bool,
     pub first_beat_ms: Option<u64>,
     pub pre_roll_beats: f64,
     pub duration_beats: f64,
@@ -346,6 +348,7 @@ pub(crate) struct TimelineRenderClip {
     pub lane: i64,
     pub file_path: String,
     pub source_bpm: f64,
+    pub tempo_matching_enabled: bool,
     pub first_beat_ms: u64,
     pub anchor_beat: f64,
     pub visual_start_beat: f64,
@@ -373,6 +376,147 @@ struct SourceTrack {
     duration_ms: u64,
     bpm: f64,
     first_beat_ms: u64,
+    tempo_matching_enabled: bool,
+}
+
+fn tempo_matching_default() -> bool {
+    true
+}
+
+pub fn set_track_tempo_matching(
+    connection: &mut Connection,
+    track_id: i64,
+    enabled: bool,
+) -> Result<TimelineSnapshot, String> {
+    let transaction = connection.transaction().map_err(database_write_error)?;
+    if transaction
+        .execute(
+            "UPDATE library_tracks SET tempo_matching_enabled = ?2 WHERE id = ?1",
+            params![track_id, enabled],
+        )
+        .map_err(database_write_error)?
+        == 0
+    {
+        return Err("This track is no longer in the library.".to_owned());
+    }
+    let updated = validate_clip_layout(&transaction)?;
+    transaction.commit().map_err(database_write_error)?;
+    Ok(updated)
+}
+
+/// A duration change must never silently cover a neighbour or place audio
+/// before project zero. Call while the edit can still roll back.
+pub(crate) fn validate_clip_layout(connection: &Connection) -> Result<TimelineSnapshot, String> {
+    let timeline = snapshot(connection)?;
+    for clip in &timeline.clips {
+        if clip.needs_analysis {
+            continue;
+        }
+        if clip.visual_start_beat < -BEAT_SAME_SLOT_EPSILON
+            || clip.visual_end_beat > MAX_TIMELINE_BEAT
+        {
+            return Err(
+                "This tempo change would place audio outside the timeline. Move the clip first."
+                    .to_owned(),
+            );
+        }
+        if timeline.clips.iter().any(|other| {
+            other.id != clip.id
+                && other.lane == clip.lane
+                && clips_overlap(
+                    clip.visual_start_beat,
+                    clip.visual_end_beat,
+                    other.visual_start_beat,
+                    other.visual_end_beat,
+                )
+        }) {
+            return Err(
+                "This tempo change would overlap clips on the same track. Make room first."
+                    .to_owned(),
+            );
+        }
+    }
+    Ok(timeline)
+}
+
+/// Free-running audio uses elapsed seconds around its downbeat anchor. The
+/// source beat units remain unchanged for trims, loops, stems and waveforms.
+fn free_project_beat(map: &TempoMap, anchor: f64, source_offset: f64, bpm: f64) -> f64 {
+    let seconds = map.seconds_at_beat(anchor) + source_offset * 60.0 / bpm;
+    if seconds < 0.0 {
+        seconds * map.bpm_at_beat(0.0) / 60.0
+    } else {
+        map.beat_at_seconds(seconds)
+    }
+}
+
+fn project_geometry(
+    mut geometry: ClipGeometry,
+    anchor: i64,
+    bpm: Option<f64>,
+    enabled: bool,
+    map: &TempoMap,
+) -> ClipGeometry {
+    if !enabled
+        && !geometry.needs_analysis
+        && let Some(bpm) = bpm
+    {
+        geometry.visual_start_beat = free_project_beat(
+            map,
+            anchor as f64,
+            geometry.visual_start_beat - anchor as f64,
+            bpm,
+        );
+        geometry.visual_end_beat = free_project_beat(
+            map,
+            anchor as f64,
+            geometry.visual_end_beat - anchor as f64,
+            bpm,
+        );
+    }
+    geometry
+}
+
+fn clip_geometry_at(
+    connection: &Connection,
+    clip_id: i64,
+    anchor: i64,
+    mut geometry: ClipGeometry,
+) -> Result<ClipGeometry, String> {
+    let (enabled, bpm, lead, tail): (bool, Option<f64>, f64, f64) = connection.query_row(
+        "SELECT tracks.tempo_matching_enabled, COALESCE(tracks.manual_bpm, tracks.bpm),
+                CASE WHEN clips.looping THEN clips.loop_lead_beats ELSE 0 END,
+                CASE WHEN clips.looping THEN clips.loop_tail_beats ELSE 0 END
+         FROM timeline_clips AS clips JOIN library_tracks AS tracks ON tracks.id = clips.library_track_id
+         WHERE clips.id = ?1", [clip_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+    ).map_err(database_read_error)?;
+    geometry.visual_start_beat -= lead;
+    geometry.visual_end_beat += tail;
+    if enabled {
+        return Ok(geometry);
+    }
+    let (map, _) = project_timing(connection)?;
+    Ok(project_geometry(geometry, anchor, bpm, enabled, &map))
+}
+
+fn clip_minimum_anchor(
+    connection: &Connection,
+    clip_id: i64,
+    pre_roll: f64,
+    trim_start: f64,
+) -> Result<i64, String> {
+    let (enabled, bpm, lead): (bool, f64, f64) = connection.query_row(
+        "SELECT tracks.tempo_matching_enabled, COALESCE(tracks.manual_bpm, tracks.bpm),
+                CASE WHEN clips.looping THEN clips.loop_lead_beats ELSE 0 END
+         FROM timeline_clips AS clips JOIN library_tracks AS tracks ON tracks.id = clips.library_track_id
+         WHERE clips.id = ?1", [clip_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    ).map_err(database_read_error)?;
+    let offset = (pre_roll - trim_start + lead).max(0.0);
+    if enabled {
+        return Ok(offset.ceil() as i64);
+    }
+    let (map, _) = project_timing(connection)?;
+    Ok(map.beat_at_seconds(offset * 60.0 / bpm).ceil() as i64)
 }
 
 pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
@@ -433,7 +577,8 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
                     -- le mapping est positionnel.
                     EXISTS(SELECT 1 FROM clip_stems
                            WHERE clip_stems.clip_id = clips.id
-                             AND clip_stems.from_bake = 1)
+                             AND clip_stems.from_bake = 1),
+                    tracks.tempo_matching_enabled
              FROM timeline_clips AS clips
              JOIN library_tracks AS tracks ON tracks.id = clips.library_track_id
              LEFT JOIN track_waveforms AS waveforms ON waveforms.track_id = tracks.id
@@ -485,6 +630,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
                 row.get::<_, f64>(29)?,
                 row.get::<_, i64>(30)? != 0,
                 row.get::<_, i64>(31)? != 0,
+                row.get::<_, bool>(32)?,
             ))
         })
         .map_err(database_read_error)?;
@@ -524,6 +670,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
             loop_tail_beats,
             ducks_under_key,
             has_bake_stems,
+            tempo_matching_enabled,
         ) = row.map_err(database_read_error)?;
         let geometry = clip_geometry(
             duration_ms,
@@ -558,6 +705,7 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
             tempo_anchor_beat,
             bpm,
             tempo_target_bpm,
+            tempo_matching_enabled,
             first_beat_ms: first_beat_ms.and_then(|value| u64::try_from(value).ok()),
             pre_roll_beats: geometry.pre_roll_beats,
             duration_beats: geometry.duration_beats,
@@ -590,6 +738,26 @@ pub fn snapshot(connection: &Connection) -> Result<TimelineSnapshot, String> {
     }
 
     let tempo_points = tempo_points_for_clips(project_bpm, &clips)?;
+    let tempo_map = TempoMap::new(project_bpm, tempo_points.clone())?;
+    for clip in &mut clips {
+        if !clip.tempo_matching_enabled
+            && !clip.needs_analysis
+            && let Some(bpm) = clip.bpm
+        {
+            clip.visual_start_beat = free_project_beat(
+                &tempo_map,
+                clip.anchor_beat as f64,
+                clip.visual_start_beat - clip.anchor_beat as f64,
+                bpm,
+            );
+            clip.visual_end_beat = free_project_beat(
+                &tempo_map,
+                clip.anchor_beat as f64,
+                clip.visual_end_beat - clip.anchor_beat as f64,
+                bpm,
+            );
+        }
+    }
     let volume_nodes = volume_nodes(connection)?;
     let pan_nodes = pan_nodes(connection)?;
     let draw_groups = draw_groups(connection)?;
@@ -895,6 +1063,10 @@ struct TimingRow {
     duration_ms: i64,
     trim_start_beats: f64,
     trim_end_beats: f64,
+    tempo_matching_enabled: bool,
+    looping: bool,
+    loop_lead_beats: f64,
+    loop_tail_beats: f64,
 }
 
 fn timing_rows(connection: &Connection) -> Result<Vec<TimingRow>, String> {
@@ -905,7 +1077,8 @@ fn timing_rows(connection: &Connection) -> Result<Vec<TimingRow>, String> {
                     clips.tempo_target_bpm,
                     COALESCE(tracks.manual_first_beat_ms, tracks.first_beat_ms),
                     tracks.duration_ms,
-                    clips.trim_start_beats, clips.trim_end_beats
+                    clips.trim_start_beats, clips.trim_end_beats,
+                    tracks.tempo_matching_enabled, clips.looping, clips.loop_lead_beats, clips.loop_tail_beats
              FROM timeline_clips AS clips
              JOIN library_tracks AS tracks ON tracks.id = clips.library_track_id
              ORDER BY clips.anchor_beat, clips.id",
@@ -923,6 +1096,10 @@ fn timing_rows(connection: &Connection) -> Result<Vec<TimingRow>, String> {
                 duration_ms: row.get(6)?,
                 trim_start_beats: row.get(7)?,
                 trim_end_beats: row.get(8)?,
+                tempo_matching_enabled: row.get(9)?,
+                looping: row.get(10)?,
+                loop_lead_beats: row.get(11)?,
+                loop_tail_beats: row.get(12)?,
             })
         })
         .map_err(database_read_error)?
@@ -953,6 +1130,7 @@ fn effective_tempo_target(target_bpm: Option<f64>, source_bpm: Option<f64>) -> O
 /// its own cache and stops seeking.
 fn tempo_targets(rows: &[TimingRow]) -> Vec<TempoPoint> {
     rows.iter()
+        .filter(|row| row.tempo_matching_enabled)
         .filter_map(|row| {
             effective_tempo_target(row.tempo_target_bpm, row.bpm)
                 .map(|bpm| TempoPoint::clip_target(row.tempo_anchor_beat as f64, bpm, row.id))
@@ -960,15 +1138,26 @@ fn tempo_targets(rows: &[TimingRow]) -> Vec<TempoPoint> {
         .collect()
 }
 
-fn project_end_beat(rows: &[TimingRow]) -> f64 {
+fn project_end_beat(rows: &[TimingRow], map: &TempoMap) -> f64 {
     rows.iter().fold(0.0_f64, |end, row| {
-        let geometry = clip_geometry(
+        let mut geometry = clip_geometry(
             row.duration_ms,
             row.bpm,
             row.first_beat_ms,
             row.anchor_beat,
             row.trim_start_beats,
             row.trim_end_beats,
+        );
+        if row.looping {
+            geometry.visual_start_beat -= row.loop_lead_beats;
+            geometry.visual_end_beat += row.loop_tail_beats;
+        }
+        let geometry = project_geometry(
+            geometry,
+            row.anchor_beat,
+            row.bpm,
+            row.tempo_matching_enabled,
+            map,
         );
         end.max(geometry.visual_end_beat)
     })
@@ -979,11 +1168,13 @@ pub fn project_timing(connection: &Connection) -> Result<(TempoMap, f64), String
     let rows = timing_rows(connection)?;
     let tempo_map = TempoMap::new(project_bpm, tempo_targets(&rows))?;
 
-    Ok((tempo_map, project_end_beat(&rows)))
+    let end = project_end_beat(&rows, &tempo_map);
+    Ok((tempo_map, end))
 }
 
 pub(crate) fn render_plan(connection: &Connection) -> Result<TimelineRenderPlan, String> {
     let timeline = snapshot(connection)?;
+    let tempo_map = TempoMap::new(timeline.project_bpm, timeline.tempo_points.clone())?;
     if timeline.clips.is_empty() {
         return Err("Add at least one clip before starting the timeline.".to_owned());
     }
@@ -1056,15 +1247,44 @@ pub(crate) fn render_plan(connection: &Connection) -> Result<TimelineRenderPlan,
         // `id` est partagé par les répétitions : le moteur ne s'en sert que
         // pour la signature du plan, qui hache aussi les bornes et les
         // rognages, si bien que chaque tour y contribue distinctement.
-        for tile in loop_tiles(&clip, trim_start_beats) {
+        let mut source_clip = clip.clone();
+        if !clip.tempo_matching_enabled {
+            source_clip.visual_start_beat = clip.anchor_beat as f64 - clip.pre_roll_beats
+                + clip.trim_start_beats
+                - if clip.looping {
+                    clip.loop_lead_beats
+                } else {
+                    0.0
+                };
+            source_clip.visual_end_beat = clip.anchor_beat as f64 - clip.pre_roll_beats
+                + clip.trim_start_beats
+                + clip.duration_beats
+                + if clip.looping {
+                    clip.loop_tail_beats
+                } else {
+                    0.0
+                };
+        }
+        for tile in loop_tiles(&source_clip, trim_start_beats) {
+            let visual_start_beat = if clip.tempo_matching_enabled {
+                tile.visual_start_beat
+            } else {
+                free_project_beat(
+                    &tempo_map,
+                    clip.anchor_beat as f64,
+                    tile.visual_start_beat - clip.anchor_beat as f64,
+                    source_bpm,
+                )
+            };
             clips.push(TimelineRenderClip {
                 id: clip.id,
                 lane: clip.lane,
                 file_path: file_path.clone(),
                 source_bpm,
+                tempo_matching_enabled: clip.tempo_matching_enabled,
                 first_beat_ms,
                 anchor_beat: tile.anchor_beat,
-                visual_start_beat: tile.visual_start_beat,
+                visual_start_beat,
                 duration_beats: tile.duration_beats,
                 trim_start_beats: tile.trim_start_beats,
                 trim_end_beats: tile.trim_end_beats,
@@ -1077,7 +1297,7 @@ pub(crate) fn render_plan(connection: &Connection) -> Result<TimelineRenderPlan,
 
     Ok(TimelineRenderPlan {
         project_bpm: timeline.project_bpm,
-        tempo_map: TempoMap::new(timeline.project_bpm, timeline.tempo_points.clone())?,
+        tempo_map,
         end_beat,
         audible_lane_mask,
         limiter_enabled: timeline.limiter_enabled,
@@ -1101,6 +1321,7 @@ fn tempo_points_for_clips(
     // the engine renders from and the map the transport polls stay identical.
     let targets = clips
         .iter()
+        .filter(|clip| clip.tempo_matching_enabled)
         .filter_map(|clip| {
             effective_tempo_target(clip.tempo_target_bpm, clip.bpm)
                 .map(|bpm| TempoPoint::clip_target(clip.tempo_anchor_beat as f64, bpm, clip.id))
@@ -1121,8 +1342,14 @@ pub fn add_clip(
     }
 
     let pre_roll_beats = beats_for_milliseconds(source.first_beat_ms, source.bpm);
-    let minimum_anchor = minimum_anchor_beat(pre_roll_beats, 0.0);
     let current = snapshot(connection)?;
+    let map = TempoMap::new(current.project_bpm, current.tempo_points.clone())?;
+    let minimum_anchor = if source.tempo_matching_enabled {
+        minimum_anchor_beat(pre_roll_beats, 0.0)
+    } else {
+        map.beat_at_seconds(source.first_beat_ms as f64 / 1000.0)
+            .ceil() as i64
+    };
     let is_first_clip = current.clips.is_empty();
     let duration_ms = i64::try_from(source.duration_ms)
         .map_err(|_| "This track's duration is not valid.".to_owned())?;
@@ -1155,16 +1382,29 @@ pub fn add_clip(
                 .filter(|clip| clip.lane == lane)
                 .map(|clip| clip.visual_end_beat)
                 .fold(0.0_f64, f64::max);
-            (last_end + pre_roll_beats).ceil()
+            if source.tempo_matching_enabled {
+                (last_end + pre_roll_beats).ceil()
+            } else {
+                map.beat_at_seconds(
+                    map.seconds_at_beat(last_end) + source.first_beat_ms as f64 / 1000.0,
+                )
+                .ceil()
+            }
         });
         let anchor_beat = snap_anchor_beat(requested, minimum_anchor)?;
-        let geometry = clip_geometry(
-            duration_ms,
-            Some(source.bpm),
-            i64::try_from(source.first_beat_ms).ok(),
+        let geometry = project_geometry(
+            clip_geometry(
+                duration_ms,
+                Some(source.bpm),
+                i64::try_from(source.first_beat_ms).ok(),
+                anchor_beat,
+                0.0,
+                0.0,
+            ),
             anchor_beat,
-            0.0,
-            0.0,
+            Some(source.bpm),
+            source.tempo_matching_enabled,
+            &map,
         );
 
         let is_overlapping = current.clips.iter().any(|c| {
@@ -1195,11 +1435,33 @@ pub fn add_clip(
     };
 
     let transaction = connection.transaction().map_err(database_write_error)?;
-    if is_first_clip {
+    write_added_clip(
+        &transaction,
+        library_track_id,
+        lane,
+        anchor_beat,
+        &geometry,
+        (is_first_clip && source.tempo_matching_enabled).then_some(source.bpm),
+    )?;
+    validate_clip_layout(&transaction)?;
+    transaction.commit().map_err(database_write_error)?;
+
+    snapshot(connection)
+}
+
+fn write_added_clip(
+    transaction: &Transaction<'_>,
+    library_track_id: i64,
+    lane: i64,
+    anchor_beat: i64,
+    geometry: &ClipGeometry,
+    initial_bpm: Option<f64>,
+) -> Result<(), String> {
+    if let Some(bpm) = initial_bpm {
         transaction
             .execute(
                 "UPDATE project_settings SET project_bpm = ?1 WHERE id = 1",
-                [rounded_bpm(source.bpm)],
+                [rounded_bpm(bpm)],
             )
             .map_err(database_write_error)?;
     }
@@ -1213,16 +1475,371 @@ pub fn add_clip(
         .map_err(database_write_error)?;
     for table in [VOLUME_AUTOMATION, PAN_AUTOMATION] {
         seed_clip_automation_nodes(
-            &transaction,
+            transaction,
             table,
             lane,
             geometry.visual_start_beat,
             geometry.visual_end_beat,
         )?;
     }
-    transaction.commit().map_err(database_write_error)?;
+    Ok(())
+}
 
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InsertionPosition {
+    Before,
+    After,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineInsertion {
+    pub clip_id: i64,
+    pub position: InsertionPosition,
+}
+
+/// Inserts beside an existing clip, moving the following mix as one edit.
+/// Anchors keep their bar alignment; source pre-roll also gets reserved space.
+pub fn insert_clip(
+    connection: &mut Connection,
+    library_track_id: i64,
+    target_clip_id: i64,
+    position: InsertionPosition,
+) -> Result<TimelineSnapshot, String> {
+    let source = source_track(connection, library_track_id)?;
+    if !Path::new(&source.file_path).is_file() {
+        return Err("This audio file is missing, and cannot be inserted.".to_owned());
+    }
+    let current = snapshot(connection)?;
+    let target = current
+        .clips
+        .iter()
+        .find(|clip| clip.id == target_clip_id)
+        .ok_or_else(|| "The insertion target is no longer on the timeline.".to_owned())?;
+    if target.needs_analysis
+        || target.visual_end_beat <= target.visual_start_beat
+        || source.duration_ms == 0
+    {
+        return Err("Analyze the tracks before inserting a clip.".to_owned());
+    }
+    let from_beat = match position {
+        InsertionPosition::Before => target.visual_start_beat,
+        InsertionPosition::After => target.visual_end_beat,
+    };
+    let pre_roll = beats_for_milliseconds(source.first_beat_ms, source.bpm);
+    let duration_ms = i64::try_from(source.duration_ms)
+        .map_err(|_| "This track's duration is not valid.".to_owned())?;
+    let shifted_ids: HashSet<i64> = current
+        .clips
+        .iter()
+        .filter(|clip| clip.visual_start_beat >= from_beat - BEAT_SAME_SLOT_EPSILON)
+        .map(|clip| clip.id)
+        .collect();
+    let mut delta = 0.0;
+    let mut placement = None;
+    // Moving future tempo points changes the musical width of native-speed
+    // audio. Recompute against the future map until the reserved bars fit it.
+    for _ in 0..64 {
+        let mut points = current.tempo_points.clone();
+        for point in &mut points {
+            if point.clip_id.is_some_and(|id| shifted_ids.contains(&id)) {
+                point.beat += delta;
+            }
+        }
+        let map = TempoMap::new(current.project_bpm, points)?;
+        let desired_anchor = if source.tempo_matching_enabled {
+            from_beat + pre_roll
+        } else {
+            map.beat_at_seconds(
+                map.seconds_at_beat(from_beat) + source.first_beat_ms as f64 / 1000.0,
+            )
+        };
+        let anchor = (desired_anchor / BEATS_PER_MEASURE as f64).ceil() * BEATS_PER_MEASURE as f64;
+        let anchor_beat = snap_anchor_beat(
+            anchor,
+            if source.tempo_matching_enabled {
+                minimum_anchor_beat(pre_roll, 0.0)
+            } else {
+                0
+            },
+        )?;
+        let geometry = project_geometry(
+            clip_geometry(
+                duration_ms,
+                Some(source.bpm),
+                i64::try_from(source.first_beat_ms).ok(),
+                anchor_beat,
+                0.0,
+                0.0,
+            ),
+            anchor_beat,
+            Some(source.bpm),
+            source.tempo_matching_enabled,
+            &map,
+        );
+        let required = ((geometry.visual_end_beat - from_beat) / BEATS_PER_MEASURE as f64).ceil()
+            * BEATS_PER_MEASURE as f64;
+        if required <= delta && delta > 0.0 {
+            placement = Some((anchor_beat, geometry));
+            break;
+        }
+        delta = required;
+        validate_restored_beat(from_beat + delta)?;
+    }
+    let (anchor_beat, geometry) = placement.ok_or_else(|| {
+        "Could not reserve enough room at this tempo. Try a free track.".to_owned()
+    })?;
+    validate_restored_beat(geometry.visual_end_beat)?;
+    let shifted = current
+        .clips
+        .iter()
+        .filter(|clip| clip.visual_start_beat >= from_beat - BEAT_SAME_SLOT_EPSILON)
+        .collect::<Vec<_>>();
+    for clip in &shifted {
+        for beat in [
+            clip.anchor_beat as f64,
+            clip.tempo_anchor_beat as f64,
+            clip.visual_end_beat,
+        ] {
+            validate_restored_beat(beat + delta)?;
+        }
+    }
+    let transaction = connection.transaction().map_err(database_write_error)?;
+    for clip in shifted {
+        move_bake_automation(&transaction, clip.id, delta, clip.lane)?;
+        transaction
+            .execute(
+                "UPDATE timeline_clips SET anchor_beat = anchor_beat + ?2,
+             tempo_anchor_beat = tempo_anchor_beat + ?2 WHERE id = ?1",
+                params![clip.id, delta as i64],
+            )
+            .map_err(database_write_error)?;
+    }
+    for table in [
+        "timeline_volume_nodes",
+        "timeline_pan_nodes",
+        "timeline_filter_nodes",
+        "timeline_reverb_nodes",
+        "timeline_flanger_nodes",
+        "timeline_bitcrush_nodes",
+        "timeline_delay_nodes",
+    ] {
+        shift_nodes_after(&transaction, table, from_beat, delta)?;
+    }
+    // A Draw spanning the insertion keeps both sets of samples and expands its
+    // hit-test bounds. A Draw wholly after it moves without changing its length.
+    for group in &current.draw_groups {
+        let start = group.start_beat
+            + if group.start_beat >= from_beat {
+                delta
+            } else {
+                0.0
+            };
+        let end = group.end_beat
+            + if group.end_beat >= from_beat {
+                delta
+            } else {
+                0.0
+            };
+        validate_restored_beat(end)?;
+        transaction
+            .execute(
+                "UPDATE timeline_draw_groups SET start_beat = ?2, end_beat = ?3 WHERE id = ?1",
+                params![group.id, start, end],
+            )
+            .map_err(database_write_error)?;
+    }
+    write_added_clip(
+        &transaction,
+        library_track_id,
+        target.lane,
+        anchor_beat,
+        &geometry,
+        None,
+    )?;
+    // Keep the new song neutral, rather than ramping across it towards a
+    // shifted neighbour's fade or effect. Tiny edge ramps avoid hard jumps.
+    for (table, column, rest) in [
+        ("timeline_volume_nodes", "gain_db", DEFAULT_TRACK_GAIN_DB),
+        ("timeline_pan_nodes", "value", 0.0),
+        ("timeline_filter_nodes", "value", 0.0),
+        ("timeline_reverb_nodes", "value", 0.0),
+        ("timeline_flanger_nodes", "value", 0.0),
+        ("timeline_bitcrush_nodes", "value", 0.0),
+        ("timeline_delay_nodes", "value", 0.0),
+    ] {
+        let edge = 0.01_f64.min((geometry.visual_end_beat - geometry.visual_start_beat) / 4.0);
+        for beat in [
+            geometry.visual_start_beat + edge,
+            geometry.visual_end_beat - edge,
+        ] {
+            transaction
+                .execute(
+                    &format!(
+                        "INSERT INTO {table} (lane, beat, {column}) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(lane, beat) DO NOTHING"
+                    ),
+                    params![target.lane, beat, rest],
+                )
+                .map_err(database_write_error)?;
+        }
+    }
+    validate_clip_layout(&transaction)?;
+    transaction.commit().map_err(database_write_error)?;
     snapshot(connection)
+}
+
+/// Moving later nodes first avoids UNIQUE(lane, beat) collisions, including
+/// dense Draw samples. Every table name is a program constant, never user input.
+fn shift_nodes_after(
+    transaction: &Transaction<'_>,
+    table: &str,
+    from_beat: f64,
+    delta: f64,
+) -> Result<(), String> {
+    let column = if table == "timeline_volume_nodes" {
+        "gain_db"
+    } else {
+        "value"
+    };
+    let tension = if table == "timeline_filter_nodes" {
+        "tension"
+    } else {
+        "0"
+    };
+    let mut boundaries = Vec::new();
+    for lane in 0..=MAX_LANE {
+        let read = |comparison: &str, order: &str| {
+            transaction
+                .query_row(
+                    &format!(
+                        "SELECT beat, {column}, {tension} FROM {table}
+                 WHERE lane = ?1 AND beat {comparison} ?2 ORDER BY beat {order} LIMIT 1"
+                    ),
+                    params![lane, from_beat],
+                    |row| {
+                        Ok((
+                            row.get::<_, f64>(0)?,
+                            row.get::<_, Option<f64>>(1)?,
+                            row.get::<_, f64>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(database_read_error)
+        };
+        let previous = read("<=", "DESC")?;
+        let next = read(">=", "ASC")?;
+        if previous.is_none() && next.is_none() {
+            continue;
+        }
+        let value = match (previous, next) {
+            (Some(previous), Some(next)) if next.0 > previous.0 => {
+                let mix = ((from_beat - previous.0) / (next.0 - previous.0))
+                    .powf(2_f64.powf((previous.2 * 2.0).clamp(-2.0, 2.0)));
+                let floor = if column == "gain_db" { -60.0 } else { 0.0 };
+                let value = previous.1.unwrap_or(floor)
+                    + (next.1.unwrap_or(floor) - previous.1.unwrap_or(floor)) * mix;
+                if column == "gain_db" && value <= -59.95 {
+                    None
+                } else {
+                    Some(value)
+                }
+            }
+            (Some(previous), _) => previous.1,
+            (_, Some(next)) if table == "timeline_pan_nodes" || column == "gain_db" => next.1,
+            _ => Some(0.0),
+        };
+        boundaries.push((lane, value));
+    }
+    let mut statement = transaction
+        .prepare(&format!(
+            "SELECT id, beat FROM {table} WHERE beat >= ?1 ORDER BY beat DESC"
+        ))
+        .map_err(database_read_error)?;
+    let nodes = statement
+        .query_map([from_beat], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
+        })
+        .map_err(database_read_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(database_read_error)?;
+    drop(statement);
+    for (id, beat) in nodes {
+        validate_restored_beat(beat + delta)?;
+        transaction
+            .execute(
+                &format!("UPDATE {table} SET beat = ?2 WHERE id = ?1"),
+                params![id, beat + delta],
+            )
+            .map_err(database_write_error)?;
+    }
+    // Pin both sides so inserting time cannot stretch a ramp over the new gap.
+    for (lane, value) in boundaries {
+        for beat in [from_beat, from_beat + delta] {
+            validate_restored_beat(beat)?;
+            transaction
+                .execute(
+                    &format!(
+                        "INSERT INTO {table} (lane, beat, {column}) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(lane, beat) DO NOTHING"
+                    ),
+                    params![lane, beat, value],
+                )
+                .map_err(database_write_error)?;
+        }
+    }
+    Ok(())
+}
+
+/// Unbaking must restore automation at the clip's new location, also after Undo.
+fn move_bake_automation(
+    transaction: &Transaction<'_>,
+    clip_id: i64,
+    delta: f64,
+    lane: i64,
+) -> Result<(), String> {
+    let stored = transaction
+        .query_row(
+            "SELECT removed FROM clip_bakes WHERE clip_id = ?1",
+            [clip_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(database_read_error)?;
+    if let Some(stored) = stored {
+        let mut removed: RemovedAutomation = serde_json::from_str(&stored)
+            .map_err(|error| format!("The stored automation could not be read: {error}"))?;
+        removed.lane = lane;
+        // Duplicates have an empty range; translating it must not make it real.
+        if removed.from_beat <= removed.to_beat {
+            removed.from_beat += delta;
+            removed.to_beat += delta;
+            validate_restored_beat(removed.from_beat)?;
+            validate_restored_beat(removed.to_beat)?;
+            for (beat, _) in &mut removed.volume {
+                *beat += delta;
+                validate_restored_beat(*beat)?;
+            }
+            for (beat, _) in &mut removed.pan {
+                *beat += delta;
+                validate_restored_beat(*beat)?;
+            }
+            for (beat, _, _) in &mut removed.filter {
+                *beat += delta;
+                validate_restored_beat(*beat)?;
+            }
+        }
+        let stored = serde_json::to_string(&removed).map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "UPDATE clip_bakes SET removed = ?2 WHERE clip_id = ?1",
+                params![clip_id, stored],
+            )
+            .map_err(database_write_error)?;
+    }
+    Ok(())
 }
 
 /// Pose aux deux bouts d'un clip neuf ses nÅ“uds d'ancrage, Ã  la valeur de repos
@@ -1494,24 +2111,34 @@ pub fn move_clip(
     }
     let anchor_beat = snap_anchor_beat(
         requested_anchor_beat,
-        minimum_anchor_beat(geometry.pre_roll_beats, trim_start),
+        clip_minimum_anchor(connection, clip_id, geometry.pre_roll_beats, trim_start)?,
     )?;
-    let old_geometry = clip_geometry(
-        duration_ms,
-        bpm,
-        first_beat_ms,
+    let old_geometry = clip_geometry_at(
+        connection,
+        clip_id,
         old_anchor_beat,
-        trim_start,
-        trim_end,
-    );
-    let new_geometry = clip_geometry(
-        duration_ms,
-        bpm,
-        first_beat_ms,
+        clip_geometry(
+            duration_ms,
+            bpm,
+            first_beat_ms,
+            old_anchor_beat,
+            trim_start,
+            trim_end,
+        ),
+    )?;
+    let new_geometry = clip_geometry_at(
+        connection,
+        clip_id,
         anchor_beat,
-        trim_start,
-        trim_end,
-    );
+        clip_geometry(
+            duration_ms,
+            bpm,
+            first_beat_ms,
+            anchor_beat,
+            trim_start,
+            trim_end,
+        ),
+    )?;
 
     let current = snapshot(connection)?;
     let is_overlapping = current.clips.iter().any(|c| {
@@ -1556,6 +2183,12 @@ pub fn move_clip(
             new_geometry.visual_start_beat - old_geometry.visual_start_beat,
         )?;
     }
+    move_bake_automation(
+        &transaction,
+        clip_id,
+        (anchor_beat - old_anchor_beat) as f64,
+        requested_lane,
+    )?;
     transaction
         .execute(
             "UPDATE timeline_clips
@@ -1566,6 +2199,7 @@ pub fn move_clip(
             params![clip_id, anchor_beat, requested_lane, old_anchor_beat],
         )
         .map_err(database_write_error)?;
+    validate_clip_layout(&transaction)?;
     transaction.commit().map_err(database_write_error)?;
 
     snapshot(connection)
@@ -1612,6 +2246,26 @@ pub fn set_clip_loop_extent(
     let body_end = clip.visual_end_beat - clip.loop_tail_beats;
     let start = body_start - lead_beats;
     let end = body_end + tail_beats;
+    let (start, end) = if !clip.tempo_matching_enabled {
+        let (map, _) = project_timing(connection)?;
+        let body = clip.anchor_beat as f64 - clip.pre_roll_beats + clip.trim_start_beats;
+        (
+            free_project_beat(
+                &map,
+                clip.anchor_beat as f64,
+                body - lead_beats - clip.anchor_beat as f64,
+                clip.bpm.unwrap_or(120.0),
+            ),
+            free_project_beat(
+                &map,
+                clip.anchor_beat as f64,
+                body + clip.duration_beats + tail_beats - clip.anchor_beat as f64,
+                clip.bpm.unwrap_or(120.0),
+            ),
+        )
+    } else {
+        (start, end)
+    };
     if start < 0.0 {
         return Err("A loop cannot start before the first beat of the project.".to_owned());
     }
@@ -1906,14 +2560,19 @@ pub fn set_clip_trim(
         return Err("A clip cannot be trimmed away entirely.".to_owned());
     }
 
-    let geometry = clip_geometry(
-        duration_ms,
-        bpm,
-        first_beat_ms,
+    let geometry = clip_geometry_at(
+        connection,
+        clip_id,
         anchor_beat,
-        trim_start_beats,
-        trim_end_beats,
-    );
+        clip_geometry(
+            duration_ms,
+            bpm,
+            first_beat_ms,
+            anchor_beat,
+            trim_start_beats,
+            trim_end_beats,
+        ),
+    )?;
     let current = snapshot(connection)?;
     let is_overlapping = current.clips.iter().any(|c| {
         c.id != clip_id
@@ -1929,7 +2588,10 @@ pub fn set_clip_trim(
         return Err("There is another clip in the way on this track.".to_owned());
     }
 
-    connection
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(database_write_error)?;
+    transaction
         .execute(
             "UPDATE timeline_clips
              SET trim_start_beats = ?2, trim_end_beats = ?3
@@ -1938,7 +2600,9 @@ pub fn set_clip_trim(
         )
         .map_err(database_write_error)?;
 
-    snapshot(connection)
+    let updated = validate_clip_layout(&transaction)?;
+    transaction.commit().map_err(database_write_error)?;
+    Ok(updated)
 }
 
 pub fn move_tempo_point(
@@ -1973,14 +2637,19 @@ pub fn move_tempo_point(
         .map_err(database_read_error)?
         .ok_or_else(|| "This clip is no longer on the timeline.".to_owned())?;
     let (duration_ms, bpm, first_beat_ms, anchor_beat, trim_start, trim_end) = source;
-    let geometry = clip_geometry(
-        duration_ms,
-        bpm,
-        first_beat_ms,
+    let geometry = clip_geometry_at(
+        connection,
+        clip_id,
         anchor_beat,
-        trim_start,
-        trim_end,
-    );
+        clip_geometry(
+            duration_ms,
+            bpm,
+            first_beat_ms,
+            anchor_beat,
+            trim_start,
+            trim_end,
+        ),
+    )?;
     if geometry.needs_analysis {
         return Err(
             "This track needs its BPM analyzed before its tempo marker can be moved.".to_owned(),
@@ -1991,13 +2660,18 @@ pub fn move_tempo_point(
         geometry.visual_start_beat,
         geometry.visual_end_beat,
     )?;
-    connection
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(database_write_error)?;
+    transaction
         .execute(
             "UPDATE timeline_clips SET tempo_anchor_beat = ?2 WHERE id = ?1",
             params![clip_id, tempo_anchor_beat],
         )
         .map_err(database_write_error)?;
-    snapshot(connection)
+    let updated = validate_clip_layout(&transaction)?;
+    transaction.commit().map_err(database_write_error)?;
+    Ok(updated)
 }
 
 /// Impose Ã  ce clip le tempo que la courbe doit viser Ã  son ancre, ou lui rend
@@ -2022,7 +2696,10 @@ pub fn set_clip_tempo_target(
         ));
     }
 
-    let updated = connection
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(database_write_error)?;
+    let updated = transaction
         .execute(
             "UPDATE timeline_clips SET tempo_target_bpm = ?2 WHERE id = ?1",
             params![clip_id, target_bpm],
@@ -2031,7 +2708,9 @@ pub fn set_clip_tempo_target(
     if updated == 0 {
         return Err("This clip is no longer on the timeline.".to_owned());
     }
-    snapshot(connection)
+    let updated = validate_clip_layout(&transaction)?;
+    transaction.commit().map_err(database_write_error)?;
+    Ok(updated)
 }
 
 /// Les morceaux de `span` que rien dans `covers` ne recouvre.
@@ -2065,37 +2744,12 @@ fn uncovered_intervals(span: (f64, f64), covers: &[(f64, f64)]) -> Vec<(f64, f64
 
 /// La voie et la portée visible de chaque clip, pour une voie donnée.
 fn lane_clip_spans(connection: &Connection, lane: i64) -> Result<Vec<(i64, f64, f64)>, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT clips.id, tracks.duration_ms,
-                    COALESCE(tracks.manual_bpm, tracks.bpm),
-                    COALESCE(tracks.manual_first_beat_ms, tracks.first_beat_ms),
-                    clips.anchor_beat, clips.trim_start_beats, clips.trim_end_beats
-             FROM timeline_clips AS clips
-             JOIN library_tracks AS tracks ON tracks.id = clips.library_track_id
-             WHERE clips.lane = ?1",
-        )
-        .map_err(database_read_error)?;
-    let spans = statement
-        .query_map([lane], |row| {
-            let geometry = clip_geometry(
-                row.get::<_, i64>(1)?,
-                row.get::<_, Option<f64>>(2)?,
-                row.get::<_, Option<i64>>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, f64>(5)?,
-                row.get::<_, f64>(6)?,
-            );
-            Ok((
-                row.get::<_, i64>(0)?,
-                geometry.visual_start_beat,
-                geometry.visual_end_beat,
-            ))
-        })
-        .map_err(database_read_error)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(database_read_error)?;
-    Ok(spans)
+    Ok(snapshot(connection)?
+        .clips
+        .into_iter()
+        .filter(|clip| clip.lane == lane)
+        .map(|clip| (clip.id, clip.visual_start_beat, clip.visual_end_beat))
+        .collect())
 }
 
 /// Retire un clip **et l'automation qui n'existait que pour lui**.
@@ -2295,38 +2949,12 @@ fn return_clip_media(transaction: &Transaction<'_>, clip_id: i64) -> Result<(), 
 }
 
 pub fn remove_clip(connection: &mut Connection, clip_id: i64) -> Result<TimelineSnapshot, String> {
-    let Some((lane, span_start, span_end)) = connection
-        .query_row(
-            "SELECT clips.lane, tracks.duration_ms,
-                    COALESCE(tracks.manual_bpm, tracks.bpm),
-                    COALESCE(tracks.manual_first_beat_ms, tracks.first_beat_ms),
-                    clips.anchor_beat, clips.trim_start_beats, clips.trim_end_beats
-             FROM timeline_clips AS clips
-             JOIN library_tracks AS tracks ON tracks.id = clips.library_track_id
-             WHERE clips.id = ?1",
-            [clip_id],
-            |row| {
-                let geometry = clip_geometry(
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Option<f64>>(2)?,
-                    row.get::<_, Option<i64>>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, f64>(5)?,
-                    row.get::<_, f64>(6)?,
-                );
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    geometry.visual_start_beat,
-                    geometry.visual_end_beat,
-                ))
-            },
-        )
-        .optional()
-        .map_err(database_read_error)?
-    else {
+    let current = snapshot(connection)?;
+    let Some(clip) = current.clips.iter().find(|clip| clip.id == clip_id) else {
         // Déjà parti : rien à faire, et surtout rien à effacer au hasard.
-        return snapshot(connection);
+        return Ok(current);
     };
+    let (lane, span_start, span_end) = (clip.lane, clip.visual_start_beat, clip.visual_end_beat);
 
     let transaction = connection.transaction().map_err(database_write_error)?;
     // Avant la suppression, sans quoi la cascade les emporte.
@@ -2391,6 +3019,7 @@ pub fn remove_clip(connection: &mut Connection, clip_id: i64) -> Result<Timeline
         }
     }
 
+    validate_clip_layout(&transaction)?;
     transaction.commit().map_err(database_write_error)?;
     snapshot(connection)
 }
@@ -3036,6 +3665,28 @@ pub fn restore_snapshot(
         )
         .map_err(database_write_error)?;
     for clip in &target.clips {
+        transaction
+            .execute(
+                "UPDATE library_tracks SET tempo_matching_enabled = ?2 WHERE id = ?1",
+                params![clip.library_track_id, clip.tempo_matching_enabled],
+            )
+            .map_err(database_write_error)?;
+        let previous_anchor = transaction
+            .query_row(
+                "SELECT anchor_beat FROM timeline_clips WHERE id = ?1",
+                [clip.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(database_read_error)?;
+        if let Some(previous_anchor) = previous_anchor {
+            move_bake_automation(
+                &transaction,
+                clip.id,
+                (clip.anchor_beat - previous_anchor) as f64,
+                clip.lane,
+            )?;
+        }
         let eq_json = clip
             .eq_settings
             .as_ref()
@@ -3189,6 +3840,7 @@ pub fn restore_snapshot(
         }
     }
 
+    validate_clip_layout(&transaction)?;
     transaction.commit().map_err(database_write_error)?;
 
     snapshot(connection)
@@ -3398,14 +4050,19 @@ pub fn split_timeline_clip(
         first_beat_ms,
     ) = current_clip;
 
-    let geometry = clip_geometry(
-        duration_ms,
-        bpm,
-        first_beat_ms,
+    let geometry = clip_geometry_at(
+        connection,
+        clip_id,
         anchor_beat,
-        trim_start,
-        trim_end,
-    );
+        clip_geometry(
+            duration_ms,
+            bpm,
+            first_beat_ms,
+            anchor_beat,
+            trim_start,
+            trim_end,
+        ),
+    )?;
     if geometry.needs_analysis {
         return Err("This track needs analyzing before it can be split.".to_owned());
     }
@@ -3429,7 +4086,15 @@ pub fn split_timeline_clip(
         return Err("Invalid split point: the playhead has to be inside the clip.".to_owned());
     }
 
-    let offset_beats = split_beat - geometry.visual_start_beat;
+    let enabled: bool = connection.query_row("SELECT tracks.tempo_matching_enabled FROM timeline_clips AS clips JOIN library_tracks AS tracks ON tracks.id = clips.library_track_id WHERE clips.id = ?1", [clip_id], |row| row.get(0)).map_err(database_read_error)?;
+    let offset_beats = if enabled {
+        split_beat - geometry.visual_start_beat
+    } else {
+        let (map, _) = project_timing(connection)?;
+        (map.seconds_at_beat(split_beat) - map.seconds_at_beat(geometry.visual_start_beat))
+            * bpm.unwrap_or(120.0)
+            / 60.0
+    };
     let new_left_trim_end = trim_end + (geometry.duration_beats - offset_beats);
     let new_right_trim_start = trim_start + offset_beats;
     let right_tempo_anchor_beat = tempo_anchor_beat.max(split_beat.round() as i64);
@@ -3501,6 +4166,7 @@ pub fn split_timeline_clip(
             params![right_id, clip_id],
         )
         .map_err(database_write_error)?;
+    validate_clip_layout(&transaction)?;
     transaction.commit().map_err(database_write_error)?;
 
     snapshot(connection)
@@ -3583,30 +4249,47 @@ pub fn duplicate_clip(
         first_beat_ms,
     ) = source;
 
-    let geometry = clip_geometry(
-        duration_ms,
-        bpm,
-        first_beat_ms,
+    let geometry = clip_geometry_at(
+        connection,
+        clip_id,
         anchor_beat,
-        trim_start,
-        trim_end,
-    );
+        clip_geometry(
+            duration_ms,
+            bpm,
+            first_beat_ms,
+            anchor_beat,
+            trim_start,
+            trim_end,
+        ),
+    )?;
     if geometry.needs_analysis {
         return Err("This track needs analyzing before it can be duplicated.".to_owned());
     }
 
     let current = snapshot(connection)?;
-    let minimum = minimum_anchor_beat(geometry.pre_roll_beats, trim_start);
+    let minimum = clip_minimum_anchor(connection, clip_id, geometry.pre_roll_beats, trim_start)?;
+    let enabled = current
+        .clips
+        .iter()
+        .find(|clip| clip.id == clip_id)
+        .is_none_or(|clip| clip.tempo_matching_enabled);
+    let map = TempoMap::new(current.project_bpm, current.tempo_points.clone())?;
     let placement = duplicate_placements(&geometry, lane, anchor_beat, minimum)
         .into_iter()
         .find(|(candidate_lane, candidate_anchor)| {
-            let candidate = clip_geometry(
-                duration_ms,
-                bpm,
-                first_beat_ms,
+            let candidate = project_geometry(
+                clip_geometry(
+                    duration_ms,
+                    bpm,
+                    first_beat_ms,
+                    *candidate_anchor,
+                    trim_start,
+                    trim_end,
+                ),
                 *candidate_anchor,
-                trim_start,
-                trim_end,
+                bpm,
+                enabled,
+                &map,
             );
             !current.clips.iter().any(|other| {
                 other.lane == *candidate_lane
@@ -3694,6 +4377,7 @@ pub fn duplicate_clip(
             )
             .map_err(database_write_error)?;
     }
+    validate_clip_layout(&transaction)?;
     transaction.commit().map_err(database_write_error)?;
 
     snapshot(connection)
@@ -3872,7 +4556,7 @@ fn source_track(connection: &Connection, id: i64) -> Result<SourceTrack, String>
         .query_row(
             "SELECT file_path, duration_ms,
                     COALESCE(manual_bpm, bpm),
-                    COALESCE(manual_first_beat_ms, first_beat_ms)
+                    COALESCE(manual_first_beat_ms, first_beat_ms), tempo_matching_enabled
              FROM library_tracks
              WHERE id = ?1",
             [id],
@@ -3882,6 +4566,7 @@ fn source_track(connection: &Connection, id: i64) -> Result<SourceTrack, String>
                     row.get::<_, i64>(1)?,
                     row.get::<_, Option<f64>>(2)?,
                     row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, bool>(4)?,
                 ))
             },
         )
@@ -3907,6 +4592,7 @@ fn source_track(connection: &Connection, id: i64) -> Result<SourceTrack, String>
         duration_ms,
         bpm,
         first_beat_ms,
+        tempo_matching_enabled: source.4,
     })
 }
 
@@ -4134,15 +4820,28 @@ pub(crate) fn prepare_bake(connection: &Connection, clip_id: i64) -> Result<Bake
     // Le clip Ã©largi de sa marge, des deux cÃ´tÃ©s. `clip_geometry` recalcule
     // alors une Ã©tendue plus longue qui commence plus tÃ´t â€” c'est elle qu'on
     // rend, et le rognage d'origine s'y retrouvera par simple soustraction.
+    let global_map = TempoMap::new(timeline.project_bpm, timeline.tempo_points.clone())?;
+    let bake_anchor = if clip.tempo_matching_enabled {
+        clip.anchor_beat
+    } else {
+        (global_map.seconds_at_beat(clip.anchor_beat as f64) * source_bpm / 60.0).ceil() as i64
+    };
     let beat_ms = 60_000.0 / source_bpm;
     let margin_beats = BAKE_MARGIN_MS / beat_ms;
-    let baked_trim_start = (clip.trim_start_beats - margin_beats).max(0.0);
+    let baked_trim_start =
+        (clip.trim_start_beats - margin_beats)
+            .max(0.0)
+            .max(if clip.tempo_matching_enabled {
+                0.0
+            } else {
+                (clip.pre_roll_beats - bake_anchor as f64).max(0.0)
+            });
     let baked_trim_end = (clip.trim_end_beats - margin_beats).max(0.0);
     let geometry = clip_geometry(
         duration_ms,
         Some(source_bpm),
         Some(first_beat_ms as i64),
-        clip.anchor_beat,
+        bake_anchor,
         baked_trim_start,
         baked_trim_end,
     );
@@ -4161,7 +4860,7 @@ pub(crate) fn prepare_bake(connection: &Connection, clip_id: i64) -> Result<Bake
         0.0
     };
 
-    let plan = TimelineRenderPlan {
+    let mut plan = TimelineRenderPlan {
         project_bpm: source_bpm,
         tempo_map: TempoMap::new(source_bpm, Vec::new())?,
         end_beat: geometry.visual_end_beat,
@@ -4173,12 +4872,13 @@ pub(crate) fn prepare_bake(connection: &Connection, clip_id: i64) -> Result<Bake
         delay_nodes: Vec::new(),
         compressor_enabled: false,
         clips: vec![TimelineRenderClip {
+            tempo_matching_enabled: true,
             id: clip.id,
             lane: clip.lane,
             file_path,
             source_bpm,
             first_beat_ms,
-            anchor_beat: clip.anchor_beat as f64,
+            anchor_beat: bake_anchor as f64,
             visual_start_beat: geometry.visual_start_beat,
             duration_beats: geometry.duration_beats,
             trim_start_beats: (baked_trim_start - stem_trim_beats).max(0.0),
@@ -4192,13 +4892,44 @@ pub(crate) fn prepare_bake(connection: &Connection, clip_id: i64) -> Result<Bake
         filter_nodes: timeline.filter_nodes.clone(),
     };
 
+    let (removed_start, removed_end) = if clip.tempo_matching_enabled {
+        (geometry.visual_start_beat, geometry.visual_end_beat)
+    } else {
+        let native_beat = |beat: f64| {
+            (bake_anchor as f64
+                + (global_map.seconds_at_beat(beat)
+                    - global_map.seconds_at_beat(clip.anchor_beat as f64))
+                    * source_bpm
+                    / 60.0)
+                .max(0.0)
+        };
+        for node in &mut plan.volume_nodes {
+            node.beat = native_beat(node.beat);
+        }
+        for node in &mut plan.pan_nodes {
+            node.beat = native_beat(node.beat);
+        }
+        for node in &mut plan.filter_nodes {
+            node.beat = native_beat(node.beat);
+        }
+        (
+            free_project_beat(
+                &global_map,
+                clip.anchor_beat as f64,
+                geometry.visual_start_beat - bake_anchor as f64,
+                source_bpm,
+            )
+            .max(0.0),
+            free_project_beat(
+                &global_map,
+                clip.anchor_beat as f64,
+                geometry.visual_end_beat - bake_anchor as f64,
+                source_bpm,
+            ),
+        )
+    };
     Ok(BakeSpec {
-        removed: collect_removed_automation(
-            &timeline,
-            clip.lane,
-            geometry.visual_start_beat,
-            geometry.visual_end_beat,
-        ),
+        removed: collect_removed_automation(&timeline, clip.lane, removed_start, removed_end),
         source_from_ms: baked_trim_start * beat_ms,
         plan,
     })
@@ -4510,6 +5241,626 @@ mod tests {
         fs,
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    fn insertion_fixture() -> (LibraryStore, i64, i64) {
+        let mut store = LibraryStore::open(std::path::Path::new(":memory:")).unwrap();
+        let source = std::env::current_exe().unwrap();
+        store
+            .connection
+            .execute(
+                "INSERT INTO library_tracks
+             (file_path, path_key, file_name, duration_ms, sample_rate, channels,
+              bpm, first_beat_ms, beat_count, analysis_status)
+             VALUES (?1, ?1, 'insert.wav', 4000, 44100, 2, 120, 500, 8, 'analyzed')",
+                [source.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+        let track_id = store.connection.last_insert_rowid();
+        let mut before_id = 0;
+        for (anchor, lane) in [(4.0, 0), (16.0, 0), (20.0, 1), (24.0, 2), (28.0, 3)] {
+            let added =
+                add_clip(&mut store.connection, track_id, Some(anchor), Some(lane)).unwrap();
+            if anchor == 16.0 {
+                before_id = added.clips.iter().map(|clip| clip.id).max().unwrap();
+            }
+        }
+        (store, track_id, before_id)
+    }
+
+    #[test]
+    fn free_tempo_keeps_native_bpm_and_duration_through_trim_loop_undo_and_project_save() {
+        let (mut store, track_id, clip_id) = insertion_fixture();
+        store
+            .connection
+            .execute(
+                "UPDATE library_tracks SET bpm = 100 WHERE id = ?1",
+                [track_id],
+            )
+            .unwrap();
+        store
+            .connection
+            .execute("UPDATE project_settings SET project_bpm = 120", [])
+            .unwrap();
+        let matched = snapshot(&store.connection).unwrap();
+        let free = super::set_track_tempo_matching(&mut store.connection, track_id, false).unwrap();
+        assert!(
+            free.clips
+                .iter()
+                .all(|clip| !clip.tempo_matching_enabled && clip.bpm == Some(100.0))
+        );
+        assert!(
+            free.tempo_points
+                .iter()
+                .all(|point| point.clip_id.is_none())
+        );
+        let clip = free.clips.iter().find(|clip| clip.id == clip_id).unwrap();
+        let (map, end) = project_timing(&store.connection).unwrap();
+        assert!(
+            (map.seconds_at_beat(clip.visual_end_beat)
+                - map.seconds_at_beat(clip.visual_start_beat)
+                - 4.0)
+                .abs()
+                < 1e-9
+        );
+        assert!((end - super::render_plan(&store.connection).unwrap().end_beat).abs() < 1e-9);
+        set_clip_trim(&mut store.connection, clip_id, 1.0, 1.0).unwrap();
+        set_clip_looping(&store.connection, clip_id, true).unwrap();
+        let looped = set_clip_loop_extent(&store.connection, clip_id, 0.0, 2.0).unwrap();
+        let clip = looped.clips.iter().find(|clip| clip.id == clip_id).unwrap();
+        assert!(
+            (map.seconds_at_beat(clip.visual_end_beat)
+                - map.seconds_at_beat(clip.visual_start_beat)
+                - 4.0)
+                .abs()
+                < 1e-9
+        );
+        let saved = crate::project::collect(&store.connection).unwrap();
+        let json = serde_json::to_value(&saved).unwrap();
+        assert_eq!(json["version"], 3);
+        assert_eq!(json["tracks"][0]["tempoMatchingEnabled"], false);
+        let mut reopened = LibraryStore::open(std::path::Path::new(":memory:")).unwrap();
+        crate::project::apply(&mut reopened.connection, &saved).unwrap();
+        let after = snapshot(&reopened.connection).unwrap();
+        assert!(after.clips.iter().all(|clip| !clip.tempo_matching_enabled));
+        restore_snapshot(&mut store.connection, &matched).unwrap();
+        assert!(
+            store
+                .connection
+                .query_row(
+                    "SELECT tempo_matching_enabled FROM library_tracks WHERE id = ?1",
+                    [track_id],
+                    |row| row.get::<_, bool>(0)
+                )
+                .unwrap()
+        );
+        restore_snapshot(&mut store.connection, &free).unwrap();
+        assert!(
+            !store
+                .connection
+                .query_row(
+                    "SELECT tempo_matching_enabled FROM library_tracks WHERE id = ?1",
+                    [track_id],
+                    |row| row.get::<_, bool>(0)
+                )
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn free_tempo_refuses_a_duration_change_that_would_overlap_a_neighbour() {
+        let (mut store, track_id, _) = insertion_fixture();
+        store
+            .connection
+            .execute("UPDATE project_settings SET project_bpm = 240", [])
+            .unwrap();
+        let before = serde_json::to_value(snapshot(&store.connection).unwrap()).unwrap();
+        assert!(
+            super::set_track_tempo_matching(&mut store.connection, track_id, false)
+                .unwrap_err()
+                .contains("overlap")
+        );
+        assert_eq!(
+            serde_json::to_value(snapshot(&store.connection).unwrap()).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn free_tempo_insertion_reserves_real_duration_and_bake_keeps_automation_timestamps() {
+        let (mut store, track_id, clip_id) = insertion_fixture();
+        store
+            .connection
+            .execute(
+                "UPDATE library_tracks SET bpm = 100 WHERE id = ?1",
+                [track_id],
+            )
+            .unwrap();
+        super::set_track_tempo_matching(&mut store.connection, track_id, false).unwrap();
+        let inserted = super::insert_clip(
+            &mut store.connection,
+            track_id,
+            clip_id,
+            super::InsertionPosition::After,
+        )
+        .unwrap();
+        let added = inserted.clips.iter().max_by_key(|clip| clip.id).unwrap();
+        let (map, _) = project_timing(&store.connection).unwrap();
+        assert!(
+            (map.seconds_at_beat(added.visual_end_beat)
+                - map.seconds_at_beat(added.visual_start_beat)
+                - 4.0)
+                .abs()
+                < 1e-9
+        );
+        store
+            .connection
+            .execute(
+                "INSERT INTO timeline_volume_nodes (lane, beat, gain_db) VALUES (0, 16.2, -9)",
+                [],
+            )
+            .unwrap();
+        let spec = super::prepare_bake(&store.connection, clip_id).unwrap();
+        let node = spec
+            .plan
+            .volume_nodes
+            .iter()
+            .find(|node| node.gain_db == Some(-9.0))
+            .unwrap();
+        let baked = &spec.plan.clips[0];
+        let original = inserted
+            .clips
+            .iter()
+            .find(|clip| clip.id == clip_id)
+            .unwrap();
+        let source_time = spec.plan.tempo_map.seconds_at_beat(node.beat)
+            - spec.plan.tempo_map.seconds_at_beat(baked.visual_start_beat);
+        let timeline_time =
+            map.seconds_at_beat(16.2) - map.seconds_at_beat(original.visual_start_beat);
+        assert!((source_time - timeline_time).abs() < 1e-9);
+        assert!(
+            spec.removed
+                .volume
+                .iter()
+                .any(|(beat, value)| *beat == 16.2 && *value == Some(-9.0))
+        );
+    }
+
+    #[test]
+    fn insertion_moves_all_following_lanes_and_automation_and_undoes_together() {
+        let (mut store, track_id, before_id) = insertion_fixture();
+        store
+            .connection
+            .execute(
+                "UPDATE timeline_clips SET tempo_anchor_beat = 18 WHERE id = ?1",
+                [before_id],
+            )
+            .unwrap();
+        store.connection.execute("INSERT INTO timeline_draw_groups
+            (id, kind, lane, start_beat, end_beat, shape, period) VALUES (1, 'volume', 0, 16, 20, 'sine', 1)", []).unwrap();
+        store
+            .connection
+            .execute(
+                "INSERT INTO timeline_volume_nodes (lane, beat, gain_db, draw_group_id)
+            VALUES (0, 16.05, -12, 1), (0, 16.1, -9, 1)",
+                [],
+            )
+            .unwrap();
+        for table in [
+            "timeline_filter_nodes",
+            "timeline_reverb_nodes",
+            "timeline_flanger_nodes",
+            "timeline_bitcrush_nodes",
+            "timeline_delay_nodes",
+        ] {
+            store.connection.execute(&format!("INSERT INTO {table} (lane, beat, value) VALUES (3, 18.05, 0.7), (3, 18.1, 0.2), (3, 2, 0)"), []).unwrap();
+        }
+        let before = snapshot(&store.connection).unwrap();
+        let after = super::insert_clip(
+            &mut store.connection,
+            track_id,
+            before_id,
+            super::InsertionPosition::Before,
+        )
+        .unwrap();
+        assert_eq!(after.clips.len(), before.clips.len() + 1);
+        for clip in &before.clips {
+            let moved = after
+                .clips
+                .iter()
+                .find(|other| other.id == clip.id)
+                .unwrap();
+            let delta = if clip.visual_start_beat >= 15.0 { 8 } else { 0 };
+            assert_eq!(moved.anchor_beat, clip.anchor_beat + delta);
+            assert_eq!(moved.tempo_anchor_beat, clip.tempo_anchor_beat + delta);
+            assert_eq!(moved.lane, clip.lane);
+        }
+        let inserted = after.clips.iter().max_by_key(|clip| clip.id).unwrap();
+        assert_eq!(
+            (inserted.visual_start_beat, inserted.visual_end_beat),
+            (15.0, 23.0)
+        );
+        assert_eq!(
+            (
+                after.draw_groups[0].start_beat,
+                after.draw_groups[0].end_beat
+            ),
+            (24.0, 28.0)
+        );
+        for old in &before.pan_nodes {
+            let new = after
+                .pan_nodes
+                .iter()
+                .find(|node| node.id == old.id)
+                .unwrap();
+            assert_eq!(
+                new.beat,
+                old.beat + if old.beat >= 15.0 { 8.0 } else { 0.0 }
+            );
+            assert_eq!(new.value, old.value);
+        }
+        for old in &before.filter_nodes {
+            let new = after
+                .filter_nodes
+                .iter()
+                .find(|node| node.id == old.id)
+                .unwrap();
+            assert_eq!(
+                new.beat,
+                old.beat + if old.beat >= 15.0 { 8.0 } else { 0.0 }
+            );
+            assert_eq!(new.value, old.value);
+            assert_eq!(new.tension, old.tension);
+        }
+        for (old, new) in before.volume_nodes.iter().map(|old| {
+            (
+                old,
+                after
+                    .volume_nodes
+                    .iter()
+                    .find(|node| node.id == old.id)
+                    .unwrap(),
+            )
+        }) {
+            assert_eq!(
+                new.beat,
+                old.beat + if old.beat >= 15.0 { 8.0 } else { 0.0 }
+            );
+            assert_eq!(new.gain_db, old.gain_db);
+        }
+        for (old_nodes, new_nodes) in [
+            (&before.reverb_nodes, &after.reverb_nodes),
+            (&before.flanger_nodes, &after.flanger_nodes),
+            (&before.bitcrush_nodes, &after.bitcrush_nodes),
+            (&before.delay_nodes, &after.delay_nodes),
+        ] {
+            for old in old_nodes {
+                let new = new_nodes.iter().find(|node| node.id == old.id).unwrap();
+                assert_eq!(
+                    new.beat,
+                    old.beat + if old.beat >= 15.0 { 8.0 } else { 0.0 }
+                );
+                assert_eq!(new.value, old.value);
+            }
+        }
+        let restored = restore_snapshot(&mut store.connection, &before).unwrap();
+        assert_eq!(
+            serde_json::to_value(restored).unwrap(),
+            serde_json::to_value(&before).unwrap()
+        );
+        let redone = restore_snapshot(&mut store.connection, &after).unwrap();
+        assert_eq!(
+            serde_json::to_value(redone).unwrap(),
+            serde_json::to_value(after).unwrap()
+        );
+    }
+
+    #[test]
+    fn insertion_reserves_pre_roll_before_trimmed_looped_clips() {
+        let (mut store, track_id, before_id) = insertion_fixture();
+        set_clip_trim(&mut store.connection, before_id, 1.25, 1.0).unwrap();
+        set_clip_looping(&store.connection, before_id, true).unwrap();
+        set_clip_loop_extent(&store.connection, before_id, 0.0, 4.0).unwrap();
+        let before = snapshot(&store.connection).unwrap();
+        let after = super::insert_clip(
+            &mut store.connection,
+            track_id,
+            before_id,
+            super::InsertionPosition::Before,
+        )
+        .unwrap();
+        let inserted = after.clips.iter().max_by_key(|clip| clip.id).unwrap();
+        let target = after
+            .clips
+            .iter()
+            .find(|clip| clip.id == before_id)
+            .unwrap();
+        assert_eq!(inserted.anchor_beat, 20);
+        assert_eq!(target.anchor_beat, 28);
+        assert!(inserted.visual_end_beat <= target.visual_start_beat);
+        let old = before
+            .clips
+            .iter()
+            .find(|clip| clip.id == before_id)
+            .unwrap();
+        assert_eq!(target.trim_start_beats, old.trim_start_beats);
+        assert_eq!(target.loop_tail_beats, old.loop_tail_beats);
+    }
+
+    #[test]
+    fn insertion_after_keeps_target_and_translates_every_later_automation_table() {
+        let (mut store, track_id, target_id) = insertion_fixture();
+        let queued = add_clip(&mut store.connection, track_id, Some(24.0), Some(0)).unwrap();
+        let neighbour = queued.clips.iter().max_by_key(|clip| clip.id).unwrap().id;
+        store
+            .connection
+            .execute(
+                "INSERT INTO timeline_draw_groups
+            (id, kind, lane, start_beat, end_beat, shape, period)
+            VALUES (1, 'volume', 0, 16, 20, 'sine', 1), (2, 'pan', 0, 24, 28, 'sine', 1)",
+                [],
+            )
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE timeline_clips SET tempo_anchor_beat = 26 WHERE id = ?1",
+                [neighbour],
+            )
+            .unwrap();
+        let mut original_nodes = Vec::new();
+        for (table, column, value) in [
+            ("timeline_volume_nodes", "gain_db", -12.0),
+            ("timeline_pan_nodes", "value", 0.5),
+            ("timeline_filter_nodes", "value", 0.5),
+            ("timeline_reverb_nodes", "value", 0.5),
+            ("timeline_flanger_nodes", "value", 0.5),
+            ("timeline_bitcrush_nodes", "value", 0.5),
+            ("timeline_delay_nodes", "value", 0.5),
+        ] {
+            for (lane, beat) in [(0, 18.05), (1, 25.05), (2, 25.1), (3, 29.05)] {
+                store
+                    .connection
+                    .execute(
+                        &format!("INSERT INTO {table} (lane, beat, {column}) VALUES (?1, ?2, ?3)"),
+                        params![lane, beat, value],
+                    )
+                    .unwrap();
+                original_nodes.push((
+                    table,
+                    column,
+                    store.connection.last_insert_rowid(),
+                    beat,
+                    value,
+                ));
+            }
+        }
+        let original = snapshot(&store.connection).unwrap();
+        let after = super::insert_clip(
+            &mut store.connection,
+            track_id,
+            target_id,
+            super::InsertionPosition::After,
+        )
+        .unwrap();
+        let target = after
+            .clips
+            .iter()
+            .find(|clip| clip.id == target_id)
+            .unwrap();
+        assert_eq!(
+            (
+                target.anchor_beat,
+                target.visual_start_beat,
+                target.visual_end_beat
+            ),
+            (16, 15.0, 23.0)
+        );
+        let inserted = after.clips.iter().max_by_key(|clip| clip.id).unwrap();
+        assert_eq!(
+            (
+                inserted.anchor_beat,
+                inserted.visual_start_beat,
+                inserted.visual_end_beat
+            ),
+            (24, 23.0, 31.0)
+        );
+        for old in &original.clips {
+            let new = after.clips.iter().find(|clip| clip.id == old.id).unwrap();
+            let delta = if old.visual_start_beat >= 23.0 { 8 } else { 0 };
+            assert_eq!(new.anchor_beat, old.anchor_beat + delta);
+            assert_eq!(new.tempo_anchor_beat, old.tempo_anchor_beat + delta);
+        }
+        for (table, column, id, beat, value) in original_nodes {
+            let shifted: (f64, f64) = store
+                .connection
+                .query_row(
+                    &format!("SELECT beat, {column} FROM {table} WHERE id = ?1"),
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                shifted,
+                (beat + if beat >= 23.0 { 8.0 } else { 0.0 }, value)
+            );
+        }
+        assert_eq!(
+            (
+                after.draw_groups[0].start_beat,
+                after.draw_groups[0].end_beat
+            ),
+            (16.0, 20.0)
+        );
+        assert_eq!(
+            (
+                after.draw_groups[1].start_beat,
+                after.draw_groups[1].end_beat
+            ),
+            (32.0, 36.0)
+        );
+        let restored = restore_snapshot(&mut store.connection, &original).unwrap();
+        assert_eq!(
+            serde_json::to_value(restored).unwrap(),
+            serde_json::to_value(&original).unwrap()
+        );
+        let redone = restore_snapshot(&mut store.connection, &after).unwrap();
+        assert_eq!(
+            serde_json::to_value(redone).unwrap(),
+            serde_json::to_value(after).unwrap()
+        );
+    }
+
+    #[test]
+    fn insertion_failure_rolls_back_clips_and_all_automation() {
+        let (mut store, track_id, before_id) = insertion_fixture();
+        store
+            .connection
+            .execute(
+                "INSERT INTO timeline_delay_nodes (lane, beat, value) VALUES (3, 999999, 0.5)",
+                [],
+            )
+            .unwrap();
+        let before = serde_json::to_value(snapshot(&store.connection).unwrap()).unwrap();
+        assert!(
+            super::insert_clip(
+                &mut store.connection,
+                track_id,
+                before_id,
+                super::InsertionPosition::Before
+            )
+            .is_err()
+        );
+        assert_eq!(
+            serde_json::to_value(snapshot(&store.connection).unwrap()).unwrap(),
+            before
+        );
+        assert!(
+            super::insert_clip(
+                &mut store.connection,
+                track_id,
+                -1,
+                super::InsertionPosition::Before
+            )
+            .is_err()
+        );
+        assert_eq!(
+            serde_json::to_value(snapshot(&store.connection).unwrap()).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn insertion_does_not_spread_the_next_clips_fade_over_the_new_song() {
+        let (mut store, track_id, before_id) = insertion_fixture();
+        store
+            .connection
+            .execute(
+                "UPDATE timeline_volume_nodes SET gain_db = NULL WHERE lane = 0 AND beat = 15",
+                [],
+            )
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE timeline_pan_nodes SET value = 1 WHERE lane = 0 AND beat = 15",
+                [],
+            )
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "INSERT INTO timeline_filter_nodes (lane, beat, value) VALUES (0, 15, 0.7)",
+                [],
+            )
+            .unwrap();
+        let after = super::insert_clip(
+            &mut store.connection,
+            track_id,
+            before_id,
+            super::InsertionPosition::Before,
+        )
+        .unwrap();
+        assert_eq!(
+            super::interpolated_volume_db(&after.volume_nodes, 0, 19.0),
+            Some(DEFAULT_TRACK_GAIN_DB)
+        );
+        assert_eq!(super::interpolated_pan(&after.pan_nodes, 0, 19.0), 0.0);
+        assert_eq!(
+            super::interpolated_volume_db(&after.volume_nodes, 0, 23.0),
+            None
+        );
+        assert_eq!(super::interpolated_pan(&after.pan_nodes, 0, 23.0), 1.0);
+        assert!(
+            after
+                .filter_nodes
+                .iter()
+                .any(|node| node.lane == 0 && node.beat == 23.0 && node.value == 0.7)
+        );
+        let surrounding: Vec<_> = after
+            .filter_nodes
+            .iter()
+            .filter(|node| node.lane == 0 && node.beat > 15.0 && node.beat < 23.0)
+            .collect();
+        assert!(surrounding.len() >= 2);
+        assert!(surrounding.iter().all(|node| node.value == 0.0));
+    }
+
+    #[test]
+    fn insertion_keeps_unbake_automation_aligned_after_undo_and_redo() {
+        let (mut store, track_id, before_id) = insertion_fixture();
+        let removed = super::RemovedAutomation {
+            lane: 0,
+            from_beat: 15.0,
+            to_beat: 23.0,
+            volume: vec![(15.0, Some(-12.0)), (23.0, Some(-8.0))],
+            ..Default::default()
+        };
+        store
+            .connection
+            .execute(
+                "INSERT INTO clip_bakes (clip_id, file_path, removed) VALUES (?1, ?2, ?3)",
+                params![
+                    before_id,
+                    std::env::current_exe().unwrap().to_string_lossy(),
+                    serde_json::to_string(&removed).unwrap()
+                ],
+            )
+            .unwrap();
+        let before = snapshot(&store.connection).unwrap();
+        let after = super::insert_clip(
+            &mut store.connection,
+            track_id,
+            before_id,
+            super::InsertionPosition::Before,
+        )
+        .unwrap();
+        for (target, expected) in [
+            (&before, 15.0),
+            (&after, 23.0),
+            (&before, 15.0),
+            (&after, 23.0),
+        ] {
+            restore_snapshot(&mut store.connection, target).unwrap();
+            let stored: String = store
+                .connection
+                .query_row(
+                    "SELECT removed FROM clip_bakes WHERE clip_id = ?1",
+                    [before_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let restored: super::RemovedAutomation = serde_json::from_str(&stored).unwrap();
+            assert_eq!(restored.from_beat, expected);
+            assert_eq!(restored.volume[0].0, expected);
+        }
+        let (unbaked, _) = unbake_clip(&mut store.connection, before_id).unwrap();
+        assert!(
+            unbaked
+                .volume_nodes
+                .iter()
+                .any(|node| node.beat == 23.0 && node.gain_db == Some(-12.0))
+        );
+    }
 
     #[test]
     fn geometry_places_the_source_first_beat_on_its_anchor() {
@@ -6801,6 +8152,7 @@ mod tests {
     /// Un clip de quatre temps qui boucle, pour les tests de carrelage.
     fn looping_clip() -> TimelineClip {
         TimelineClip {
+            tempo_matching_enabled: true,
             id: 1,
             library_track_id: 1,
             file_name: "loop.mp3".to_owned(),

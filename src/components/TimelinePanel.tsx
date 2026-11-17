@@ -17,8 +17,12 @@ import {
   resolveTimelinePointerDrop,
   type LibraryPointerDrag,
 } from "../lib/timelinePointerDrag";
-import { tempoBpmAtBeat, tempoCurveGeometry, tempoSecondsAtBeat } from "../lib/tempoCurve";
+import { createTempoClock, tempoBpmAtBeat, tempoCurveGeometry, tempoSecondsAtBeat } from "../lib/tempoCurve";
+import { clipAtAnchor, clipLoopTurns, clipSourceBeat, minimumClipAnchor, projectClip, sourceClip } from "../lib/clipClock";
 import { BEATS_PER_MEASURE, snapTimelineBeat } from "../lib/timelineSnap";
+import { resolveTimelineInsert, timelineDropConflict } from "../lib/timelineInsert";
+import { InsertClipDialog } from "./InsertClipDialog";
+import { TimelineSearch } from "./TimelineSearch";
 import { isDeleteShortcut, resolveViewShortcut, resolveTimelineWheel, shouldCaptureTimelineZoom } from "../lib/timelineShortcut";
 import {
   FILTER_BUBBLE_DEFAULT_WIDTH_BEATS,
@@ -45,9 +49,7 @@ import {
   clipTrimLimits,
   clipWithLoop,
   clipWithTrim,
-  minimumAnchorBeat,
   loopForEdge,
-  loopTurns,
   trimEdgeAtPointer,
   trimForEdge,
   type ClipLoop,
@@ -104,6 +106,7 @@ import {
 import type { PlayedEffect } from "../lib/mixEffects";
 import type {
   TimelineClip,
+  TimelineInsertion,
   TimelineReverbNode,
   TimelineDrawGroup,
   TimelineSnapshot,
@@ -224,7 +227,7 @@ interface TimelinePanelProps {
   libraryTracks?: LibraryTrack[];
   libraryPointerDrag: LibraryPointerDrag | null;
   onLibraryPointerDragComplete: () => void;
-  onAddClip: (trackId: number, anchorBeat: number, lane: number) => Promise<void>;
+  onAddClip: (trackId: number, anchorBeat: number, lane: number, insertion?: TimelineInsertion) => Promise<void>;
   onMoveClip: (clipId: number, anchorBeat: number, lane: number) => Promise<void>;
   onTrimClip: (clipId: number, trimStartBeats: number, trimEndBeats: number) => Promise<void>;
   onOpenClipEq?: (clip: TimelineClip) => void;
@@ -507,6 +510,9 @@ export function TimelinePanel({
   const [pixelsPerBeat, setPixelsPerBeat] = useState(16);
   const [clipDrafts, setClipDrafts] = useState<Record<number, ClipDraft>>({});
   const [showHelpModal, setShowHelpModal] = useState<boolean>(false);
+  const [timelineSearchOpen, setTimelineSearchOpen] = useState(false);
+  const [locatedClipId, setLocatedClipId] = useState<number | null>(null);
+  const timelineSearchButton = useRef<HTMLButtonElement>(null);
   const [showAboutModal, setShowAboutModal] = useState<boolean>(false);
   const [tempoPointDrafts, setTempoPointDrafts] = useState<Record<number, number>>({});
   const [volumeDrafts, setVolumeDrafts] = useState<Record<number, VolumeNodeDraft>>({});
@@ -575,6 +581,8 @@ export function TimelinePanel({
     } | null
   >(null);
   const [dropTargetLane, setDropTargetLane] = useState<number | null>(null);
+  const [dropClipId, setDropClipId] = useState<number | null>(null);
+  const [pendingInsertion, setPendingInsertion] = useState<{ trackId: number; clipId: number } | null>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
   const activeDrag = useRef<ActiveDrag | null>(null);
   /* The edge the pointer is hovering, which is what turns the cursor into a
@@ -632,13 +640,13 @@ export function TimelinePanel({
    * — doit passer par ici, sinon deux vérités coexistent pendant le glissement
    * et on voit la tranche se comprimer dans une boîte qui bouge.
    */
+  const playbackClock = useMemo(() => createTempoClock(timeline.projectBpm, timeline.tempoPoints), [timeline.projectBpm, timeline.tempoPoints]);
   const liveClip = useCallback(
-    (clip: TimelineClip): TimelineClip => (
+    (clip: TimelineClip): TimelineClip => projectClip(
       clip.looping
-        ? clipWithLoop(clip, loopDrafts[clip.id])
-        : clipWithTrim(clip, trimDrafts[clip.id])
-    ),
-    [loopDrafts, trimDrafts],
+        ? clipWithLoop(sourceClip(clip, playbackClock), loopDrafts[clip.id])
+        : clipWithTrim(sourceClip(clip, playbackClock), trimDrafts[clip.id]), playbackClock),
+    [loopDrafts, trimDrafts, playbackClock],
   );
   const activeTrim = useRef<
     { clipId: number; edge: TrimEdge; trim: ClipTrim; loop: ClipLoop } | null
@@ -667,6 +675,7 @@ export function TimelinePanel({
 
   useEffect(() => {
     setClipDrafts({});
+    setLocatedClipId(null);
     setTempoPointDrafts({});
     setVolumeDrafts({});
     setPanDrafts({});
@@ -785,7 +794,7 @@ export function TimelinePanel({
     }
   }, []);
   const currentBpmText = tempoBpmAtBeat(displayTempoPoints, transport.positionBeat).toFixed(2);
-  const totalTimeMs = Math.round(tempoSecondsAtBeat(displayTempoPoints, projectEndBeat) * 1_000);
+  const totalTimeMs = Math.round(playbackClock.secondsAtBeat(projectEndBeat) * 1_000);
   zoomState.current = {
     pixelsPerBeat,
     minimumZoom,
@@ -1010,6 +1019,34 @@ export function TimelinePanel({
   useEffect(() => releaseManualScroll(), [transport.status, releaseManualScroll]);
   useEffect(() => clearScrollReleaseTimer, []);
 
+  const closeTimelineSearch = useCallback((restoreFocus: boolean) => {
+    setTimelineSearchOpen(false);
+    if (restoreFocus) timelineSearchButton.current?.focus();
+  }, []);
+
+  const locateTimelineClip = (clipId: number) => {
+    const clip = timeline.clips.find((candidate) => candidate.id === clipId);
+    if (!clip) return;
+    closeTimelineSearch(false);
+    setLocatedClipId(clip.id);
+    onSelectLane(clip.lane);
+    clearScrollReleaseTimer();
+    // The existing manual viewport can browse independently of the transport.
+    // Keep the heading visible even when the song is wider than the viewport.
+    manualScrollBeat.current = clip.visualStartBeat + Math.min(
+      (clip.visualEndBeat - clip.visualStartBeat) / 2, viewportWidth / (4 * pixelsPerBeat),
+    );
+    paintView();
+    const body = timelineBody.current;
+    const tracks = timelineTracks.current;
+    if (body && tracks) {
+      const center = tracks.getBoundingClientRect().top
+        + (clip.lane + 2 / 3) * tracks.clientHeight / TIMELINE_LANE_COUNT;
+      body.scrollTop += center - body.getBoundingClientRect().top - body.clientHeight / 2;
+      body.focus({ preventScroll: true });
+    }
+  };
+
   /* Ce que la fenêtre montre du contenu, en pixels de contenu — à la position
      du **dernier rendu**, et non à celle de l'image en cours. Les waveforms se
      construisent à partir de là et se donnent leur propre marge : les
@@ -1036,9 +1073,8 @@ export function TimelinePanel({
     const toBeat = (visibleContentFromPx + viewportWidth + marginPx) / pixelsPerBeat;
     return timeline.clips.filter((clip) => {
       const draft = clipDrafts[clip.id];
-      const trimmed = liveClip(clip);
-      const offset = draft ? draft.anchorBeat - clip.anchorBeat : 0;
-      return trimmed.visualEndBeat + offset >= fromBeat && trimmed.visualStartBeat + offset <= toBeat;
+      const trimmed = clipAtAnchor(liveClip(clip), draft?.anchorBeat ?? clip.anchorBeat, playbackClock);
+      return trimmed.visualEndBeat >= fromBeat && trimmed.visualStartBeat <= toBeat;
     });
   }, [
     clipDrafts,
@@ -1046,6 +1082,7 @@ export function TimelinePanel({
     pixelsPerBeat,
     timeline.clips,
     liveClip,
+    playbackClock,
     visibleContentFromPx,
     viewportWidth,
   ]);
@@ -1058,6 +1095,17 @@ export function TimelinePanel({
     () => new Map(libraryTracks.map((track) => [track.id, track])),
     [libraryTracks],
   );
+
+  const insertionTrack = pendingInsertion ? libraryTracksById.get(pendingInsertion.trackId) : undefined;
+  const insertionTarget = pendingInsertion ? timeline.clips.find((clip) => clip.id === pendingInsertion.clipId) : undefined;
+  const beforeInsertion = pendingInsertion ? resolveTimelineInsert(timeline.clips, insertionTrack,
+    { clipId: pendingInsertion.clipId, position: "before" }, playbackClock) : null;
+  const afterInsertion = pendingInsertion ? resolveTimelineInsert(timeline.clips, insertionTrack,
+    { clipId: pendingInsertion.clipId, position: "after" }, playbackClock) : null;
+
+  useEffect(() => {
+    if (pendingInsertion && (!insertionTrack || !insertionTarget)) setPendingInsertion(null);
+  }, [pendingInsertion, insertionTrack, insertionTarget]);
 
   /* Un marqueur par mesure **visible**, pas par mesure du projet : sur un long
      mix, des milliers de marqueurs hors champ étaient mis en page à chaque
@@ -1304,12 +1352,14 @@ export function TimelinePanel({
   useEffect(() => {
     if (!libraryPointerDrag) {
       setDropTargetLane(null);
+      setDropClipId(null);
       return;
     }
     const tracksElement = timelineTracks.current;
     const scrollElement = timelineScroll.current;
     if (!tracksElement || !scrollElement) {
       setDropTargetLane(null);
+      setDropClipId(null);
       if (libraryPointerDrag.phase === "dropped") {
         onLibraryPointerDragComplete();
       }
@@ -1335,16 +1385,33 @@ export function TimelinePanel({
       TIMELINE_LANES.length,
     );
     setDropTargetLane(target?.lane ?? null);
+    const conflict = target && !busy ? timelineDropConflict(
+      timeline.clips,
+      libraryTracksById.get(libraryPointerDrag.trackId),
+      target.lane,
+      (libraryPointerDrag.clientX - tracksBounds.left) / pixelsPerBeat,
+      target.anchorBeat,
+      playbackClock,
+    ) : null;
+    setDropClipId(conflict?.id ?? null);
 
     if (libraryPointerDrag.phase === "dropped") {
-      if (target && !busy) {
-        void onAddClip(libraryPointerDrag.trackId, target.anchorBeat, target.lane);
+      if (target && !busy && !pendingInsertion) {
+        if (conflict) {
+          setPendingInsertion({ trackId: libraryPointerDrag.trackId, clipId: conflict.id });
+        } else {
+          void onAddClip(libraryPointerDrag.trackId, target.anchorBeat, target.lane);
+        }
       }
       onLibraryPointerDragComplete();
     }
   }, [
     busy,
     libraryPointerDrag,
+    libraryTracksById,
+    timeline.clips,
+    pendingInsertion,
+    playbackClock,
     onAddClip,
     onLibraryPointerDragComplete,
     pixelsPerBeat,
@@ -1416,7 +1483,7 @@ export function TimelinePanel({
       startClientX: event.clientX,
       startAnchorBeat: clipDrafts[clip.id]?.anchorBeat ?? clip.anchorBeat,
       currentAnchorBeat: clipDrafts[clip.id]?.anchorBeat ?? clip.anchorBeat,
-      minimumAnchorBeat: minimumAnchorBeat(clip.preRollBeats, clip.trimStartBeats),
+      minimumAnchorBeat: minimumClipAnchor(clip, playbackClock),
       startLane: clipDrafts[clip.id]?.lane ?? clip.lane,
       currentLane: clipDrafts[clip.id]?.lane ?? clip.lane,
     };
@@ -1515,16 +1582,22 @@ export function TimelinePanel({
     const beat = pointerBeat(event.clientX);
     if (beat === null) return true;
     const limits = clipTrimLimits(timeline.clips, clip);
+    const source = sourceClip(clip, playbackClock);
+    const sourceBeat = clipSourceBeat(clip, beat, playbackClock);
+    const sourceLimits = {
+      limitStartBeat: clipSourceBeat(clip, limits.limitStartBeat, playbackClock),
+      limitEndBeat: clipSourceBeat(clip, limits.limitEndBeat, playbackClock),
+    };
     // Bouclable : la poignée allonge au lieu de rogner. C'est le seul endroit
     // où les deux gestes se séparent — la prise du bord, sa surbrillance et le
     // relâchement sont les mêmes.
     if (clip.looping) {
-      const loop = loopForEdge(clip, drag.edge, beat, limits);
+      const loop = loopForEdge(source, drag.edge, sourceBeat, sourceLimits);
       drag.loop = loop;
       setLoopDrafts((current) => ({ ...current, [clip.id]: loop }));
       return true;
     }
-    const trim = trimForEdge(clip, drag.edge, beat, limits);
+    const trim = trimForEdge(source, drag.edge, sourceBeat, sourceLimits);
     drag.trim = trim;
     setTrimDrafts((current) => ({ ...current, [clip.id]: trim }));
     return true;
@@ -2708,6 +2781,12 @@ export function TimelinePanel({
                     <path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7" />
                   </svg>
                 </button>
+                <button ref={timelineSearchButton} className="undo-redo-btn" type="button"
+                  disabled={timeline.clips.length === 0} aria-label="Search timeline" aria-haspopup="dialog"
+                  aria-expanded={timelineSearchOpen} title="Find a song in the timeline"
+                  onClick={() => timelineSearchOpen ? closeTimelineSearch(true) : setTimelineSearchOpen(true)}>
+                  <TransportGlyph name="search" />
+                </button>
               </div>
 
               {/* Ce que l'œil regarde, pas ce que le moteur fait : un réglage
@@ -3167,6 +3246,7 @@ export function TimelinePanel({
           <div
             className="timeline-tracks"
             ref={timelineTracks}
+            onPointerDownCapture={() => setLocatedClipId(null)}
             onContextMenu={openVolumeTracksMenu}
           >
             {TIMELINE_LANES.map((lane) => {
@@ -3577,15 +3657,15 @@ export function TimelinePanel({
               const isAudible = laneState
                 ? !laneState.isMuted && (!anySolo || laneState.isSolo)
                 : true;
-              const live = liveClip(clip);
-              const visualStartBeat = live.visualStartBeat + (draft ? draft.anchorBeat - clip.anchorBeat : 0);
+              const live = clipAtAnchor(liveClip(clip), anchorBeat, playbackClock);
+              const visualStartBeat = live.visualStartBeat;
               const liveDurationBeats = live.visualEndBeat - live.visualStartBeat;
               const clipWidth = Math.max(0, liveDurationBeats * pixelsPerBeat);
               const trimEdge = hoveredTrim?.clipId === clip.id ? hoveredTrim.edge : null;
               const seqIndex = clipSequenceNumbers.get(clip.id) ?? 1;
               const track = libraryTracksById.get(clip.libraryTrackId);
               const trackDisplayName = track ? libraryDisplayName(track) : clip.fileName;
-              const clipLabel = `${trackDisplayName} - #${seqIndex}`;
+              const clipLabel = `${trackDisplayName} - #${seqIndex}${clip.tempoMatchingEnabled === false ? " · FREE" : ""}`;
               const canBeKey = canBeSidechainKey(clip, timeline.clips);
               const coveredCount = canBeKey ? clipsCoveredByKey(clip, timeline.clips).length : 0;
               // Le libellé nomme l'état **et** ce que le prochain clic fera :
@@ -3603,6 +3683,8 @@ export function TimelinePanel({
                     : `Use as sidechain key — it can then pump the clips you mark. Overlaps ${coveredCount} clip${coveredCount === 1 ? "" : "s"}`;
               const classNames = [
                 "timeline-clip",
+                locatedClipId === clip.id ? "timeline-clip--located" : "",
+                dropClipId === clip.id ? "timeline-clip--insert-target" : "",
                 clip.isSidechainKey ? "timeline-clip--sidechain-key" : "",
                 clip.ducksUnderKey ? "timeline-clip--sidechain-ducked" : "",
                 clip.isMissing ? "timeline-clip--missing" : "",
@@ -3618,6 +3700,7 @@ export function TimelinePanel({
                 <div
                   className={classNames}
                   key={clip.id}
+                  data-timeline-clip-id={clip.id}
                   /* L'ancre est placée sur l'ancre, et non par une propriété
                      personnalisée posée ici. Un seul descendant la lisait —
                      `.clip-anchor`, un `span` — mais la poser sur le clip
@@ -3864,7 +3947,7 @@ export function TimelinePanel({
                       </button>
                     </div>
                   </div>
-                  {loopTurns(live, pixelsPerBeat).map((turn, index) => (
+                  {clipLoopTurns(live, pixelsPerBeat, playbackClock).map((turn, index) => (
                   <div
                     key={turn.key}
                     className={`clip-waveform-turn${index > 0 || turn.offsetPx > 0 ? " clip-waveform-turn--repeat" : ""}`}
@@ -3891,6 +3974,11 @@ export function TimelinePanel({
                     trimStartBeats={turn.trimStartBeats}
                     trimEndBeats={turn.trimEndBeats}
                     durationBeats={turn.durationBeats}
+                    freeTiming={live.tempoMatchingEnabled === false && live.bpm ? {
+                      clock: playbackClock, anchorBeat: live.anchorBeat, bpm: live.bpm,
+                      sourceStartBeat: turn.sourceStartBeat, sourceDurationBeats: turn.durationBeats,
+                      projectStartBeat: turn.projectStartBeat, projectEndBeat: turn.projectEndBeat,
+                    } : undefined}
                     /* La fenêtre, ramenée dans les coordonnées du dessin.
                        Elles sont celles du tour, et non celles du clip : une
                        boucle en compte plusieurs, chacun avec sa propre
@@ -3904,7 +3992,7 @@ export function TimelinePanel({
                   ))}
                   <span
                     className="clip-anchor"
-                    style={{ left: clip.preRollBeats * pixelsPerBeat }}
+                    style={{ left: (clip.tempoMatchingEnabled === false ? anchorBeat - visualStartBeat : clip.preRollBeats) * pixelsPerBeat }}
                     aria-hidden="true"
                   />
                 </div>
@@ -3944,6 +4032,26 @@ export function TimelinePanel({
           </div>
         </div>
       </div>
+      {timelineSearchOpen && <TimelineSearch clips={timeline.clips} tracks={libraryTracks}
+        anchor={timelineSearchButton} onChoose={locateTimelineClip} onClose={closeTimelineSearch} />}
+      {pendingInsertion && insertionTrack && insertionTarget && (
+        <InsertClipDialog
+          sourceName={libraryDisplayName(insertionTrack)}
+          targetName={libraryTracksById.has(insertionTarget.libraryTrackId)
+            ? libraryDisplayName(libraryTracksById.get(insertionTarget.libraryTrackId)!) : insertionTarget.fileName}
+          before={beforeInsertion}
+          after={afterInsertion}
+          busy={busy}
+          onCancel={() => setPendingInsertion(null)}
+          onChoose={(position) => {
+            const plan = position === "before" ? beforeInsertion : afterInsertion;
+            if (busy || !plan) return;
+            setPendingInsertion(null);
+            void onAddClip(pendingInsertion.trackId, plan.anchorBeat, plan.lane,
+              { clipId: pendingInsertion.clipId, position });
+          }}
+        />
+      )}
       {libraryPointerDrag?.phase === "dragging" && (
         <div
           className={`timeline-pointer-drag-ghost${dropTargetLane === null ? "" : " is-over-timeline"}`}
@@ -3953,7 +4061,9 @@ export function TimelinePanel({
           }}
           aria-hidden="true"
         >
-          ↦ {dropTargetLane === null ? "Timeline" : `Drop on ${String.fromCharCode(65 + dropTargetLane)}`}
+          {dropClipId !== null
+            ? "Release to choose: insert before or after"
+            : dropTargetLane === null ? "Drag to the timeline" : `Drop on ${String.fromCharCode(65 + dropTargetLane)}`}
         </div>
       )}
       {volumeContextMenu && (

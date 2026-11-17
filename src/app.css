@@ -1327,6 +1327,59 @@ button:disabled{
     0 8px 20px rgba(120, 15, 15, 0.4);
 }
 
+.timeline-clip--insert-target{
+  outline: 3px solid #ef4444;
+  outline-offset: 2px;
+}
+
+.library-track-name{
+  touch-action: none;
+  user-select: none;
+}
+
+.bpm-value--free strong{ text-decoration: line-through; opacity: 0.65; }
+.bpm-value--free .bpm-edit-hint{ color: #e4b267; }
+.beatgrid-tempo-matching{ grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.beatgrid-tempo-matching button{
+  padding: 10px 14px;
+  border: 1px solid #689b8b;
+  border-radius: 5px;
+  color: var(--surface-ink, #0f2442);
+  background: linear-gradient(var(--control-top, #ffffff), var(--control-bottom, #edf1f7));
+  font: 700 11px "Cascadia Code", Consolas, monospace;
+  cursor: pointer;
+}
+.beatgrid-tempo-matching button[aria-pressed="false"]{ border-color: #d5a654; }
+.beatgrid-tempo-matching p{ font-size: 12px; line-height: 1.5; opacity: 0.8; }
+
+.timeline-insert-dialog{
+  width: min(500px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
+  margin: auto;
+  padding: 24px;
+  border: 1px solid var(--surface-edge, #b8c4d4);
+  border-radius: 12px;
+  color: var(--surface-ink, #0f2442);
+  background: var(--control-bottom, #edf1f7);
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.4);
+  overflow: auto;
+}
+
+.timeline-insert-dialog::backdrop{
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.timeline-insert-dialog h2{ margin: 0 0 14px; font-size: 20px; }
+.timeline-insert-dialog p{ margin: 0 0 16px; line-height: 1.5; overflow-wrap: anywhere; }
+.timeline-insert-options{ display: flex; gap: 12px; margin: 20px 0; }
+.timeline-insert-options button{ flex: 1; padding: 14px 10px; white-space: normal; }
+.timeline-insert-options strong,
+.timeline-insert-options span{ display: block; }
+.timeline-insert-options span{ margin-top: 8px; font-size: 11px; line-height: 1.4; }
+.timeline-insert-footer{ display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.timeline-insert-footer span{ font-size: 11px; }
+.timeline-insert-footer button{ padding: 8px 16px; }
+
 .timeline-empty{
   position: absolute;
   z-index: 0;
@@ -2981,7 +3034,7 @@ body,
      bas et redevient un bouton posé dessus. */
   .analog-play-stack{ padding-inline: 0; }
   .analog-play-stack .analog-play{ padding-inline: 6px; }
-  .timeline-summary{ display: none; }
+  .timeline-summary{ display: flex; }
 }
 
 /* Photorealistic Teenage Engineering x Braun CNC Hardware Library Module */
@@ -5624,6 +5677,8 @@ body,
   margin: auto;
 }
 
+.undo-redo-btn .transport-glyph{ width: 13px; height: 13px; }
+
 .undo-redo-btn:hover:not(:disabled){
   border-color: #0f2442;
   background: linear-gradient(180deg, var(--control-top, #ffffff) 0%, var(--control-hover, #dbe3ee) 100%);
@@ -5641,6 +5696,40 @@ body,
   cursor: not-allowed;
   filter: grayscale(0.5);
 }
+
+.timeline-clip--located{
+  outline: 2px solid #ef4444;
+  outline-offset: 2px;
+}
+
+.timeline-search{
+  position: fixed;
+  z-index: 1400;
+  width: min(380px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  padding: 14px;
+  border: 1px solid var(--surface-edge, #b8c4d4);
+  border-radius: 8px;
+  color: var(--surface-ink, #0f2442);
+  background: var(--control-bottom, #edf1f7);
+  box-shadow: 0 10px 35px rgba(0, 0, 0, 0.3);
+  font-size: 12px;
+  overflow: auto;
+}
+
+.timeline-search-heading{ display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.timeline-search-heading label{ font-weight: 700; }
+.timeline-search-heading button{ padding: 2px 6px; border: 0; color: inherit; background: transparent; cursor: pointer; font-size: 20px; }
+.timeline-search input{ width: 100%; padding: 9px; border: 1px solid var(--surface-edge, #b8c4d4); border-radius: 4px; color: inherit; background: var(--control-top, #ffffff); }
+.timeline-search-count,
+.timeline-search-hint{ margin: 9px 0; font-size: 11px; opacity: 0.8; }
+.timeline-search-results{ max-height: min(360px, 45vh); overflow-y: auto; overscroll-behavior: contain; }
+.timeline-search-results button{ display: block; width: 100%; padding: 10px 8px; border: 1px solid transparent; border-radius: 4px; color: inherit; background: transparent; text-align: left; cursor: pointer; }
+.timeline-search-results button:hover,
+.timeline-search-results button[aria-selected="true"]{ border-color: var(--surface-edge, #b8c4d4); background: var(--control-hover, #dbe3ee); }
+.timeline-search-results strong{ display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.timeline-search-results span{ display: block; margin-top: 4px; font-size: 10px; opacity: 0.8; }
+.timeline-search-empty{ padding: 10px 0; line-height: 1.5; }
 
 /* Photorealistic Teenage Engineering Help Modal Dialog */
 .help-modal-overlay{

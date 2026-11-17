@@ -28,7 +28,7 @@ use crate::library::{
 const PROJECT_FORMAT: &str = "mixcanvas-project";
 /// Version du format. À incrémenter dès qu'un fichier écrit aujourd'hui ne
 /// pourrait plus être relu tel quel, jamais pour un simple ajout de champ.
-const PROJECT_VERSION: u32 = 2;
+const PROJECT_VERSION: u32 = 3;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,7 +88,13 @@ struct ProjectTrack {
     /// partie d'un morceau qu'aucune ré-analyse ne peut retrouver.
     manual_bpm: Option<f64>,
     manual_first_beat_ms: Option<i64>,
+    #[serde(default = "tempo_matching_default")]
+    tempo_matching_enabled: bool,
     waveform: Option<ProjectWaveform>,
+}
+
+fn tempo_matching_default() -> bool {
+    true
 }
 
 /// Les six rampes d'une forme d'onde, en octets f32 petit-boutistes encodés en
@@ -305,7 +311,7 @@ pub fn collect(connection: &Connection) -> Result<ProjectFile, String> {
         .prepare(
             "SELECT id, file_path, file_name, artist, title, duration_ms, sample_rate,
                     channels, bpm, bpm_confidence, first_beat_ms, beat_count,
-                    analysis_status, analysis_version, manual_bpm, manual_first_beat_ms
+                    analysis_status, analysis_version, manual_bpm, manual_first_beat_ms, tempo_matching_enabled
              FROM library_tracks
              ORDER BY id",
         )
@@ -330,6 +336,7 @@ pub fn collect(connection: &Connection) -> Result<ProjectFile, String> {
                     analysis_version: row.get(13)?,
                     manual_bpm: row.get(14)?,
                     manual_first_beat_ms: row.get(15)?,
+                    tempo_matching_enabled: row.get(16)?,
                     waveform: None,
                 },
             ))
@@ -492,7 +499,11 @@ pub fn collect(connection: &Connection) -> Result<ProjectFile, String> {
 
     Ok(ProjectFile {
         format: PROJECT_FORMAT.to_owned(),
-        version: PROJECT_VERSION,
+        version: if tracks.iter().any(|track| !track.tempo_matching_enabled) {
+            PROJECT_VERSION
+        } else {
+            2
+        },
         project_bpm,
         limiter_enabled,
         compressor_enabled,
@@ -713,9 +724,14 @@ pub fn apply(connection: &mut Connection, project: &ProjectFile) -> Result<(), S
                 transaction
                     .execute(
                         "UPDATE library_tracks
-                         SET manual_bpm = ?2, manual_first_beat_ms = ?3
+                         SET manual_bpm = ?2, manual_first_beat_ms = ?3, tempo_matching_enabled = ?4
                          WHERE id = ?1",
-                        params![id, track.manual_bpm, track.manual_first_beat_ms],
+                        params![
+                            id,
+                            track.manual_bpm,
+                            track.manual_first_beat_ms,
+                            track.tempo_matching_enabled
+                        ],
                     )
                     .map_err(database_write_error)?;
                 id
@@ -727,9 +743,9 @@ pub fn apply(connection: &mut Connection, project: &ProjectFile) -> Result<(), S
                          (file_path, path_key, file_name, duration_ms, sample_rate, channels,
                           bpm, analysis_status, added_at, bpm_confidence, first_beat_ms,
                           beat_count, manual_bpm, manual_first_beat_ms, analysis_version,
-                          artist, title, id3_scanned)
+                          artist, title, id3_scanned, tempo_matching_enabled)
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, strftime('%s','now'),
-                                 ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1)",
+                                 ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1, ?17)",
                         params![
                             track.file_path,
                             key,
@@ -747,6 +763,7 @@ pub fn apply(connection: &mut Connection, project: &ProjectFile) -> Result<(), S
                             track.analysis_version,
                             track.artist,
                             track.title,
+                            track.tempo_matching_enabled,
                         ],
                     )
                     .map_err(database_write_error)?;

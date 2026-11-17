@@ -27,6 +27,7 @@ interface BeatgridEditorProps {
   onSeekPreview: (positionMs: number) => void;
   onSetPreviewSpeed: (speed: number) => void;
   onReanalyze: () => void;
+  onSetTempoMatching: (enabled: boolean) => void;
   onSave: (bpm: number, firstBeatMs: number) => void;
 }
 
@@ -53,6 +54,7 @@ export function BeatgridEditor({
   onSeekPreview,
   onSetPreviewSpeed,
   onReanalyze,
+  onSetTempoMatching,
   onSave,
 }: BeatgridEditorProps) {
   const [bpmInput, setBpmInput] = useState(String(track.bpm ?? 120));
@@ -296,6 +298,13 @@ export function BeatgridEditor({
       </ol>
 
       <div className="beatgrid-editor-body">
+        <div className="beatgrid-tempo-matching">
+          <button type="button" disabled={busy} aria-pressed={track.tempoMatchingEnabled !== false}
+            onClick={() => onSetTempoMatching(track.tempoMatchingEnabled === false)}>
+            Tempo matching: {track.tempoMatchingEnabled === false ? "OFF — original speed" : "ON"}
+          </button>
+          <p>Applies immediately to every use of this song. Its analyzed BPM and beatgrid are kept.</p>
+        </div>
         <div className="beatgrid-field-group">
           <label htmlFor="source-bpm">Source BPM</label>
           <div className="bpm-edit-row">

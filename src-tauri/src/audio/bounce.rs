@@ -661,6 +661,7 @@ mod tests {
             limiter_enabled: true,
             compressor_enabled: false,
             clips: vec![TimelineRenderClip {
+                tempo_matching_enabled: true,
                 id: 1,
                 lane: 0,
                 file_path: source.to_string_lossy().into_owned(),
@@ -979,6 +980,7 @@ mod tests {
             limiter_enabled: true,
             compressor_enabled: false,
             clips: vec![TimelineRenderClip {
+                tempo_matching_enabled: true,
                 id: 1,
                 lane: 0,
                 file_path: String::new(),

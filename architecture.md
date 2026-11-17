@@ -1,5 +1,91 @@
 # Architecture de MixCanvas
 
+## Recherche dans la timeline — 1.9.5 (2026-11-17)
+
+Une loupe discrète complète la colonne Undo/Redo et reste disponible à la largeur
+minimale de la fenêtre. Elle ouvre un panneau temporaire, ancré au bouton, avec
+focus dans la saisie. La recherche réutilise la normalisation de la bibliothèque
+(artiste, titre, fichier et chemin; accents, casse et séparateurs ignorés) et
+parcourt les clips de toute la session, y compris ceux virtualisés hors écran.
+Chaque occurrence conserve son rang dans le mix et affiche sa voie et sa mesure.
+
+Choisir un résultat ne produit aucune commande audio ni écriture dans le projet.
+La vue manuelle existante cadre le clip, sa voie devient la cible des raccourcis,
+et le défilement vertical le rend visible. Un contour temporaire le repère; une
+interaction dans les pistes ou une édition le retire. La vue reste sur le résultat
+jusqu'à une nouvelle navigation ou au retour du suivi du transport. Les flèches et
+Entrée choisissent un résultat; Échap, la fermeture, un clic extérieur ou le départ
+du focus vers un autre contrôle ferment le panneau. Aucun filtre n'est persisté.
+
+
+## Vitesse libre par morceau — 1.9.5 (2026-11-17)
+
+La bibliothèque porte `tempo_matching_enabled`, activé par défaut. Le clic droit
+sur le BPM et la bascule du Beatgrid Editor modifient le même réglage, pour tous
+les clips du morceau. Le BPM analysé et les corrections restent intacts. La
+bascule prend effet immédiatement et ne dépend pas du bouton Save de la grille.
+
+Un morceau libre ne fournit aucun point à la courbe de tempo. Son lecteur utilise
+les secondes écoulées depuis le début du clip, avec rééchantillonnage si nécessaire,
+et contourne les grains WSOLA. Les morceaux synchronisés continuent de suivre la
+carte globale. Le plan audio inclut le mode dans sa signature de cache.
+
+Les rognages et débordements de boucle gardent leurs unités de beats source.
+Leur projection sur la timeline passe par la carte de tempo : ancre musicale vers
+secondes, durée native, puis retour aux beats du projet. Le transport, les bornes
+visuelles et le bounce utilisent cette même projection. Le dessin de la waveform
+suit le temps source même sous une rampe de tempo; déplacer, rogner, boucler,
+dupliquer ou insérer un clip libre conserve sa vitesse et ses unités source.
+L'insertion recalcule sa réservation de mesures avec les futurs points de tempo.
+
+Les automations de voie restent placées dans la timeline. Pour cuire un clip libre,
+les nœuds sont projetés vers une horloge native; l'automation retirée reste stockée
+aux coordonnées du projet pour pouvoir décuire. L'historique restaure le mode et
+rafraîchit aussi la bibliothèque. Une modification de tempo ou de grille qui
+provoquerait un chevauchement sur la même voie ou dépasserait la timeline est
+refusée dans la transaction, sans enregistrement partiel.
+
+La base passe au schéma 41, sans changer les morceaux existants : leur mode reste
+synchronisé. Les projets contenant un morceau libre utilisent le format 3; les
+projets entièrement synchronisés continuent d'utiliser le format 2. Les formats
+antérieurs restent lisibles et activent le matching par défaut. La base migrée nécessite MixCanvas 1.9.5 ou une version ultérieure; une copie de
+`MixCanvas Files` est nécessaire pour pouvoir revenir à l'ancienne version.
+
+
+## Insertion avec décalage — 1.9.5 (2026-11-17)
+
+Le nom du morceau et le bouton « + » de la bibliothèque partagent le même
+chemin de glisser-déposer. Un clic sur le nom conserve la préécoute; un glissé
+supprime le clic de fin de geste. Un dépôt sur l'empreinte d'un clip existant,
+ou dont le placement recalé chevaucherait un clip de la même voie, ouvre une
+boîte native `<dialog>` : insérer avant, insérer après, ou annuler. Aucun ajout
+ni déplacement n'est enregistré avant le choix. Le dialogue gère le focus,
+l'arrière-plan inactif et Échap; il annonce le décalage de chaque choix.
+
+La commande d'ajout accepte une cible et une position `before`/`after`
+facultatives, validées par désérialisation. Rust recalcule la place depuis la
+source et la cible actuelles, en utilisant le début ou la fin visible du clip,
+rognage et boucles compris. Il réserve le pré-roll et la durée complète, puis
+arrondit le décalage à la mesure supérieure. Les clips commençant au point
+d'insertion ou après avancent ensemble sur les quatre voies, avec leurs ancres
+de tempo. Les clips commencés avant restent en place; le choix « après » garde
+donc la cible à sa position.
+
+Une transaction SQLite déplace aussi les sept tables d'automation et les bornes
+des Draw. Les nœuds avancent du dernier au premier pour respecter l'unicité des
+positions sans arrondir les échantillons denses. Des points aux deux bornes
+de l'insertion empêchent une rampe de s'étirer sur tout le morceau neuf; celui-ci
+reçoit un volume de repos, un panoramique centré et des effets à zéro, avec de
+brèves rampes aux bords. Une automation traversant le point d'insertion est
+séparée à cet endroit.
+
+L'automation retirée des clips cuits suit leurs nouvelles positions. La
+restauration de l'historique traduit également ces coordonnées : décuire après
+une insertion, une annulation ou un rétablissement rend les nœuds au bon endroit.
+L'ajout et tous les décalages forment une seule entrée dans l'historique existant.
+Un échec de validation ou d'écriture annule la transaction entière. Le format des
+projets et le schéma de la base restent identiques.
+
 ## Bounce normalisé — 1.8.1-beta4 (2026-09-27)
 
 La version stable 1.8.2 (2026-10-17) reprend cette chaîne sans changement de

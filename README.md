@@ -2,7 +2,7 @@
 
 **Build DJ mixes with the precision of a timeline and the feel of a studio.**
 
-Version **1.9.0** · [Changelog](changelog.md)
+Version **1.9.5** · [Download for Windows](https://github.com/sebedard-creator/MixCanvas/releases/tag/v1.9.5) · [Changelog](changelog.md)
 
 MixCanvas is a free, open-source Windows application for creating complete DJ
 mixes before the party starts. Import your own MP3, WAV or FLAC files, correct
@@ -24,6 +24,10 @@ you want, and keep editing while the timeline plays.
 - Automatic BPM and downbeat analysis, with practical manual correction.
 - Pitch-preserving time-stretching and a global tempo curve for beatmatched
   transitions.
+- Original-speed playback per song when you want to leave tempo matching off.
+- Insert a song before or after an existing clip, shifting the following mix
+  and all its automation together.
+- Search the whole timeline and jump to any occurrence of a song.
 - Clips you can loop, duplicate and mute one at a time, without disturbing what
   is already placed.
 - Four effects you play by hand while the mix runs, recorded onto the timeline.
@@ -44,8 +48,9 @@ editable while it plays.*
    drag-and-drop.
 2. MixCanvas reads artist/title tags, creates a waveform, and analyses BPM,
    beatgrid, and first downbeat in the background.
-3. Preview a track, correct it in the Beatgrid Editor if required, then drag it
-   onto the Timeline.
+3. Click a track name to preview it, correct its grid if required, then drag
+   its name or **+** button onto the Timeline. Drop it onto an existing clip
+   to choose **Insert before**, **Insert after**, or **Cancel**.
 4. Arrange, beatmatch, automate, play, save, and bounce the finished mix.
 
 ## Appearance
@@ -73,6 +78,11 @@ selected theme.
 - Beatgrid Editor with preview playback, manual BPM, half/double tempo tools,
   Tap 1 downbeat capture, Snap to Beat, and restoration of the automatic result.
 - Manual corrections remain yours: re-analysis does not overwrite them.
+- Right-click a song's BPM to disable or enable **tempo matching**, or use the
+  same toggle in the Beatgrid Editor. **OFF** plays the song at its original
+  speed in every clip, independently of the mix tempo. Its analyzed BPM and
+  beatgrid are kept, and **FREE** marks the setting in the Library. The toggle
+  takes effect immediately; it does not require saving a beatgrid correction.
 
 ![Beatgrid Editor: manual BPM, Tap 1, Snap to Beat, first downbeat, and re-analysis controls](assets/screenshots/beatgrid-editor.png)
 
@@ -83,6 +93,18 @@ audible, guided, and repeatable.*
 
 - Four stereo lanes: A, B, C, and D, each with mute, solo, automation and Mix FX.
 - Drag-and-drop placement or one-click insertion into the next free lane.
+- Drop a Library song onto an existing clip to insert it **before or after**
+  that clip. Drag either the song name or its **+** button; the dialog names
+  both songs and shows the shift in bars. Following clips on all four tracks
+  move with their tempo points and every automation curve. The existing clip
+  is kept, **Cancel** leaves the mix untouched, and **Ctrl+Z** undoes the entire
+  insertion in one step.
+- Find a song with the discreet **magnifier below Undo/Redo**. Search by title,
+  artist or filename, ignoring case and accents. Results distinguish each use
+  of a song by its sequence number, track and visible starting bar, including
+  trimmed clips. Select a result to bring it into view and highlight it;
+  vertical scrolling reaches its track too. Playback keeps its current
+  position. Arrow keys and Enter select a result; Escape closes the search.
 - Beat/bar snapping keeps downbeats aligned while clips move horizontally or
   vertically — even during playback.
 - Scroll vertically through the tracks with the mouse wheel. The transport and
@@ -116,8 +138,12 @@ audible, guided, and repeatable.*
 - Right-click a track in the Library, or a clip on the timeline, to shift its
   downbeat a beat either way — for when analysis puts the bar line on the 2 or
   the 3. The grid is right, it is only turned; the tempo does not move.
-- Every clip follows the project tempo through pitch-preserving stereo-linked
-  time-stretching, rather than varispeed, across a safe 0.5×–2× range.
+- Clips with tempo matching enabled follow the project tempo through
+  pitch-preserving stereo-linked time-stretching, rather than varispeed,
+  across a safe 0.5×–2× range. Songs marked **FREE** play at original speed
+  without time-stretching; durations, waveforms, trims, loops and bounces use
+  that playback mode. A mode change that would overlap clips on the same
+  track is refused until there is enough room.
 - Play/Pause transport, Spacebar control, optional Autoplay, and live timeline
   editing without pre-rendering the entire set.
 
@@ -140,9 +166,11 @@ MixCanvas lets you draw transitions directly where they happen.
   clutter the timeline with hundreds of visible nodes.
 - Under the hood, Draw still preserves the detailed automation points required
   by the audio engine. The simplified line is only a clearer way to edit it.
-- Automation belongs to the lane, not to the clip: it stays at the beats where
-  you drew it when a clip moves. Removing a clip does clear the automation that
-  was only its own, without touching a neighbour's.
+- Automation belongs to the lane. Volume and pan nodes within a moved clip
+  follow it; filter and Mix FX automation keep their timeline positions during
+  an ordinary clip move. Inserting a song before or after another shifts all
+  following automation across all four tracks with the mix. Removing a clip
+  clears only the automation that was its own, without touching a neighbour's.
 
 ## Play effects by hand
 
@@ -242,8 +270,13 @@ tracks for you.
   automation curve, and the effect passes you played by hand. Saving writes
   beside the old file and swaps it in, so an interrupted save cannot cost you
   the previous version.
-- Older three-track projects open with an empty track D. New saves require
-  MixCanvas 1.9.0 or later.
+- Older three-track projects open with an empty track D. Projects containing a
+  song with tempo matching disabled use format 3 and require **MixCanvas 1.9.5
+  or later**. Projects with tempo matching enabled for every Library song keep
+  format 2, compatible with 1.9.0 or later.
+- Existing libraries upgrade automatically. An upgraded Library requires
+  1.9.5 or later, so back up your **MixCanvas Files** folder and `.mixcanvas`
+  projects before upgrading if you need to return to an earlier release.
 - Bounce the complete mix to 16-bit / 44.1 kHz stereo WAV with dither, or to
   44.1 kHz CBR 320 kbps stereo MP3 encoded with LAME at its most thorough
   setting. The mix reaches the encoder in floating point, so an MP3 is never

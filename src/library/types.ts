@@ -27,6 +27,7 @@ export interface LibraryTrack {
   analysisError: string | null;
   analysisVersion: number;
   isMissing: boolean;
+  tempoMatchingEnabled: boolean;
 }
 
 export interface LibraryImportResult {
